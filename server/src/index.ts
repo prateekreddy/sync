@@ -1,8 +1,10 @@
 import Fastify from 'fastify';
 import { createPool } from './db.js';
+import { setLogger } from './log.js';
 import { sweepExpired } from './lease.js';
 import { mirrorReturn } from './mirror.js';
 import { PlaneClient } from './plane.js';
+import { PlaneMcp } from './planemcp.js';
 import { registerRoutes } from './routes.js';
 
 function required(name: string): string {
@@ -18,15 +20,37 @@ const plane = new PlaneClient(
   required('PLANE_WORKSPACE_SLUG'),
 );
 
+/**
+ * Plane's own MCP server, hosted here rather than on the agent boxes.
+ *
+ * Set PLANE_MCP=off to serve only the coordination tools — useful if you want to
+ * pin exactly what agents can reach, at the cost of cycles, modules, labels,
+ * worklogs and the rest of Plane's surface.
+ */
+const planeMcp =
+  (process.env['PLANE_MCP'] ?? 'on') === 'off'
+    ? null
+    : new PlaneMcp({
+        baseUrl: required('PLANE_BASE_URL'),
+        workspaceSlug: required('PLANE_WORKSPACE_SLUG'),
+        serviceToken: required('PLANE_API_KEY'),
+        idleMs: Number(process.env['PLANE_MCP_IDLE_MS'] ?? 600_000),
+        maxSessions: Number(process.env['PLANE_MCP_MAX_SESSIONS'] ?? 24),
+      });
+
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL ?? 'info' },
   // Agents retry; a request that hangs is worse than one that fails fast.
   requestTimeout: 30_000,
 });
 
+// Background work (the Plane mirror) reports through this rather than vanishing.
+setLogger(app.log);
+
 registerRoutes(app, {
   pool,
   plane,
+  planeMcp,
   // Agents close their own work and humans audit afterwards. Flip this to run a
   // stricter policy without touching the lease logic.
   allowAgentClose: (process.env.ALLOW_AGENT_CLOSE ?? 'true') === 'true',
@@ -72,6 +96,9 @@ async function shutdown(signal: string): Promise<void> {
   app.log.info({ signal }, 'shutting down');
   clearInterval(timer);
   await app.close();
+  // Child MCP processes are ours to clean up; leaving them would strand one node
+  // process per agent identity after every restart.
+  await planeMcp?.shutdown();
   await pool.end();
   process.exit(0);
 }

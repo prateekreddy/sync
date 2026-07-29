@@ -32,6 +32,17 @@ export interface CaptureInput {
   labels?: string[] | undefined;
   /** Provenance: the item being worked when this was noticed. */
   discoveredFrom?: string | undefined;
+  /**
+   * Decomposition: makes this a sub-item of `parentId`.
+   *
+   * Distinct from `discoveredFrom`, and the difference matters to the readiness
+   * gate. `discoveredFrom` is a fact about history — "I was here when I noticed
+   * this" — and constrains nothing. `parentId` is a claim about structure: the
+   * parent is not done until its children are, so a parent with open children
+   * stops being claimable work and becomes a container. Using the wrong one
+   * silently changes what the fleet is allowed to pick up.
+   */
+  parentId?: string | undefined;
   idempotencyKey?: string | undefined;
 }
 
@@ -41,6 +52,7 @@ export interface CaptureResult {
   title: string;
   deduped: boolean;
   replayed: boolean;
+  parentId?: string | undefined;
 }
 
 export async function capture(
@@ -84,12 +96,33 @@ export async function capture(
 
   let result: CaptureResult;
   if (dupe) {
+    // Dedup and decomposition interact badly if left alone. An agent that breaks a
+    // task into five children expects five children; if one of them dedups against
+    // a pre-existing item, that child silently ends up outside the parent and the
+    // parent looks complete when it is not. So adopt an orphan into the requested
+    // parent — but never re-parent an item that already belongs somewhere else,
+    // because that would rearrange work the agent knows nothing about.
+    let parent: string | undefined;
+    if (input.parentId && input.parentId !== dupe.id) {
+      const existing = await plane.getWorkItem(input.projectId, dupe.id).catch(() => null);
+      if (existing && !existing.parent) {
+        await plane
+          .updateWorkItem(input.projectId, dupe.id, { parent: input.parentId })
+          .then(() => {
+            parent = input.parentId;
+          })
+          .catch(() => {});
+      } else if (existing?.parent) {
+        parent = existing.parent;
+      }
+    }
     result = {
       workItemId: dupe.id,
       readableId: `${dupe.project__identifier}-${dupe.sequence_id}`,
       title: dupe.name,
       deduped: true,
       replayed: false,
+      ...(parent ? { parentId: parent } : {}),
     };
   } else {
     const created = await plane.createWorkItem(input.projectId, {
@@ -97,6 +130,9 @@ export async function capture(
       description_html: `<p>${escapeHtml(input.body)}</p>`,
       priority: input.priority ?? 'none',
       ...(input.labels?.length ? { labels: input.labels } : {}),
+      // Plane models a sub-item as a plain `parent` uuid on the work item — there
+      // is no separate sub-issue resource — so decomposition costs nothing extra.
+      ...(input.parentId ? { parent: input.parentId } : {}),
     });
     result = {
       workItemId: created.id,
@@ -104,6 +140,7 @@ export async function capture(
       title: created.name,
       deduped: false,
       replayed: false,
+      ...(created.parent ? { parentId: created.parent } : {}),
     };
 
     // Provenance. Plane has no `discovered_from` relation type, so this is

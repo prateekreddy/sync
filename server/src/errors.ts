@@ -22,6 +22,8 @@ export type ErrorCode =
   | 'LEASE_ENDED'
   /** Same idempotency key replayed with a different body. Caller bug. */
   | 'IDEMPOTENCY_MISMATCH'
+  /** The agent's token lacks a capability this tool requires. Not retryable. */
+  | 'FORBIDDEN'
   | 'NOT_FOUND'
   | 'INVALID'
   | 'UPSTREAM';
@@ -46,6 +48,7 @@ export const HTTP_STATUS: Record<ErrorCode, number> = {
   LEASE_EXPIRED: 410,
   LEASE_ENDED: 409,
   IDEMPOTENCY_MISMATCH: 422,
+  FORBIDDEN: 403,
   NOT_FOUND: 404,
   INVALID: 400,
   UPSTREAM: 502,
@@ -62,6 +65,8 @@ export const RECOVERY: Record<ErrorCode, string> = {
   LEASE_ENDED:
     'This lease was already completed or released. The work is finished — do not re-submit; claim fresh work instead.',
   IDEMPOTENCY_MISMATCH: 'That idempotency key was used with a different body. Use a new key.',
+  FORBIDDEN:
+    'Your token does not carry the capability this tool needs. Do not retry — ask your operator to grant it, or use a tool that does not need it.',
   NOT_FOUND: 'No such work item.',
   INVALID: 'Request was malformed.',
   UPSTREAM: 'Plane was unreachable or errored. Retry with backoff.',

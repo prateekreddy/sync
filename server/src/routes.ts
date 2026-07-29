@@ -7,19 +7,29 @@ import { GatewayError, HTTP_STATUS, RECOVERY } from './errors.js';
 import * as lease from './lease.js';
 import { mirrorClaim, mirrorComplete, mirrorReturn } from './mirror.js';
 import type { PlaneClient } from './plane.js';
+import type { PlaneMcp } from './planemcp.js';
 import { readyCandidates, verifyClaimable } from './readiness.js';
-
-const uuid = z.string().uuid();
-
-/** Defaults chosen so a stalled agent frees its work within a few minutes. */
-const DEFAULT_TTL = 600;
-const MAX_TTL = 3600;
+import { callTool, listTools } from './tools.js';
+import {
+  CaptureBody,
+  ClaimBody,
+  CompleteBody,
+  HeartbeatBody,
+  LinkBody,
+  NextQuery,
+  ReleaseBody,
+} from './toolspec.js';
 
 export interface Deps {
   pool: Pool;
   plane: PlaneClient;
   /** Agents may close their own work; humans audit afterwards. */
   allowAgentClose: boolean;
+  /**
+   * Plane's own MCP server, hosted here. Null disables the proxied half of the
+   * tool surface; the coordination half keeps working.
+   */
+  planeMcp?: PlaneMcp | null;
 }
 
 export function registerRoutes(app: FastifyInstance, deps: Deps): void {
@@ -63,16 +73,6 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   app.get('/healthz', async () => ({ ok: true }));
 
   // ── capture ──────────────────────────────────────────────────────────────
-  const CaptureBody = z.object({
-    projectId: uuid,
-    title: z.string().min(3).max(255),
-    body: z.string().min(1),
-    priority: z.enum(['urgent', 'high', 'medium', 'low', 'none']).optional(),
-    labels: z.array(z.string()).optional(),
-    discoveredFrom: uuid.optional(),
-    idempotencyKey: z.string().max(200).optional(),
-  });
-
   app.post('/v1/capture', async (req) => {
     const actor = await actorOf(req);
     const input = CaptureBody.parse(req.body);
@@ -83,12 +83,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   // ── next (read-only) ─────────────────────────────────────────────────────
   app.get('/v1/next', async (req) => {
     const actor = await actorOf(req);
-    const q = z
-      .object({
-        projectId: uuid,
-        limit: z.coerce.number().int().min(1).max(50).default(10),
-      })
-      .parse(req.query);
+    const q = NextQuery.parse(req.query);
 
     const candidates = await readyCandidates(plane, pool, {
       projectId: q.projectId,
@@ -99,22 +94,17 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   });
 
   // ── claim ────────────────────────────────────────────────────────────────
-  const ClaimBody = z.object({
-    projectId: uuid,
-    // Claim a specific item, or let the gateway pick. Picking must be one call:
-    // `next` followed by `claim` is a TOCTOU race by construction.
-    workItemId: uuid.optional(),
-    ttlSeconds: z.number().int().min(30).max(MAX_TTL).default(DEFAULT_TTL),
-    spawnedBy: z.array(z.string()).optional(),
-  });
-
+  // Claim a specific item, or let the gateway pick. Picking must be one call:
+  // `next` followed by `claim` is a TOCTOU race by construction.
   app.post('/v1/claim', async (req) => {
     const actor = await actorOf(req);
     const b = ClaimBody.parse(req.body);
     const chain = chainFor(actor, b.spawnedBy);
 
     if (b.workItemId) {
-      const blockers = await verifyClaimable(plane, b.projectId, b.workItemId);
+      const blockers = await verifyClaimable(plane, b.projectId, b.workItemId, {
+        checkChildren: true,
+      });
       if (blockers.length) {
         throw new GatewayError('NOT_CLAIMABLE', `Not ready: ${blockers.join('; ')}`, {
           workItemId: b.workItemId,
@@ -179,16 +169,9 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   });
 
   // ── heartbeat / release / complete ───────────────────────────────────────
-  const Held = z.object({
-    workItemId: uuid,
-    epoch: z.number().int().positive(),
-  });
-
   app.post('/v1/heartbeat', async (req) => {
     const actor = await actorOf(req);
-    const b = Held.extend({
-      ttlSeconds: z.number().int().min(30).max(MAX_TTL).default(DEFAULT_TTL),
-    }).parse(req.body);
+    const b = HeartbeatBody.parse(req.body);
 
     return {
       lease: await lease.heartbeat(pool, {
@@ -202,9 +185,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
 
   app.post('/v1/release', async (req) => {
     const actor = await actorOf(req);
-    const b = Held.extend({ reason: z.string().max(500).default('released by agent') }).parse(
-      req.body,
-    );
+    const b = ReleaseBody.parse(req.body);
 
     const l = await lease.release(pool, {
       workItemId: b.workItemId,
@@ -223,10 +204,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
 
   app.post('/v1/complete', async (req) => {
     const actor = await actorOf(req);
-    const b = Held.extend({
-      outcome: z.string().min(1).max(2000),
-      close: z.boolean().default(true),
-    }).parse(req.body);
+    const b = CompleteBody.parse(req.body);
 
     const l = await lease.complete(pool, {
       workItemId: b.workItemId,
@@ -247,16 +225,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   // ── link ─────────────────────────────────────────────────────────────────
   app.post('/v1/link', async (req) => {
     const actor = await actorOf(req);
-    const b = z
-      .object({
-        projectId: uuid,
-        workItemId: uuid,
-        // Plane's own vocabulary — 'blocking', not 'blocks'. Using anything else
-        // is silently accepted by the serializer and then ignored.
-        relation: z.enum(['blocking', 'blocked_by', 'duplicate', 'relates_to']),
-        targets: z.array(uuid).min(1).max(20),
-      })
-      .parse(req.body);
+    const b = LinkBody.parse(req.body);
 
     await plane.as(actor.planeToken).relate(b.projectId, b.workItemId, b.relation, b.targets);
     return { ok: true };
@@ -266,5 +235,35 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   app.get('/v1/held', async (req) => {
     const actor = await actorOf(req);
     return { leases: await lease.heldBy(pool, actor.holder) };
+  });
+
+  // ── the MCP tool surface ─────────────────────────────────────────────────
+  //
+  // Agents install one stdio MCP server that knows nothing and forwards
+  // everything here. That keeps the entire agent-facing surface — ours and
+  // Plane's — deployable from the server, with no agent box to update.
+  const toolDeps = { app, pool, plane: deps.planeMcp ?? null };
+
+  app.get('/v1/tools', async (req) => {
+    await actorOf(req); // authenticated: the catalogue names internal tooling
+    return { tools: await listTools(toolDeps) };
+  });
+
+  app.post('/v1/tools/call', async (req) => {
+    const actor = await actorOf(req);
+    const b = z
+      .object({
+        name: z.string().min(1),
+        arguments: z.record(z.unknown()).default({}),
+      })
+      .parse(req.body);
+
+    return callTool(
+      toolDeps,
+      actor,
+      req.headers['authorization'] as string,
+      b.name,
+      b.arguments,
+    );
   });
 }

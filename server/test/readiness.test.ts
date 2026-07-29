@@ -67,6 +67,22 @@ describe('readiness screen', () => {
     );
   });
 
+  it('withholds a parent that still has unfinished sub-items', () => {
+    // The work lives in the children. Handing the parent to a second agent
+    // duplicates effort that no lease can detect, because the two agents are
+    // holding different items.
+    expect(screen(item(), 'unstarted', labels, 2)).toContainEqual(
+      expect.stringContaining('2 unfinished sub-items'),
+    );
+    expect(screen(item(), 'unstarted', labels, 1)).toContainEqual(
+      expect.stringContaining('1 unfinished sub-item'),
+    );
+  });
+
+  it('releases the parent once every sub-item is done', () => {
+    expect(screen(item(), 'unstarted', labels, 0)).toEqual([]);
+  });
+
   it('reports every reason, not just the first', () => {
     // The item surfaces in Plane with all of its problems, so a human can fix them
     // in one pass rather than discovering them one at a time.

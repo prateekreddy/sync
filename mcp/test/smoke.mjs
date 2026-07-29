@@ -29,9 +29,29 @@ await client.connect(transport);
 
 const { tools } = await client.listTools();
 const names = tools.map((t) => t.name).sort();
-console.log('\ntools exposed:', names.join(', '));
-check('exactly the 8 agent tools', names.length === 8);
-check('no raw Plane API surface leaked', !names.some((n) => /issue|project|cycle|module/i.test(n)));
+console.log(`\ntools exposed: ${names.length}`);
+
+// The client ships no tool definitions of its own — everything here arrived from
+// the gateway over HTTP. That is the property under test: the agent-facing surface
+// is deployable from the server, so a new tool needs no agent-box change.
+const COORDINATION = ['capture', 'next', 'claim', 'heartbeat', 'release', 'complete', 'link', 'held'];
+check('the coordination tools are served', COORDINATION.every((n) => names.includes(n)));
+check(
+  "Plane's own surface is served alongside them",
+  ['create_cycle', 'update_issue', 'list_states', 'create_worklog'].every((n) => names.includes(n)),
+  `${names.length - COORDINATION.length} proxied`,
+);
+
+// Names must be unique. A Plane tool that ever took one of our names would shadow
+// the only safe way to claim work, so the gateway drops collisions — this is the
+// check that would notice if that stopped happening.
+check('no tool name is served twice', new Set(names).size === names.length);
+
+// A schema per tool, or the model cannot call it.
+check(
+  'every tool carries an input schema',
+  tools.every((t) => t.inputSchema && typeof t.inputSchema === 'object'),
+);
 
 const callJson = async (name, args) => {
   const r = await client.callTool({ name, arguments: args });

@@ -1,5 +1,5 @@
 import type { Pool } from './db.js';
-import type { PlaneClient, WorkItem } from './plane.js';
+import type { PlaneClient, State, WorkItem } from './plane.js';
 
 /**
  * Readiness gate.
@@ -50,10 +50,21 @@ export function screen(
   item: WorkItem,
   stateGroup: string | undefined,
   labelNames: Map<string, string>,
+  openChildren = 0,
 ): string[] {
   const reasons: string[] = [];
 
   if (item.is_draft) reasons.push('is a draft');
+
+  // A parent with unfinished children is not a unit of work, it is a container:
+  // the work itself lives in the children, and whoever holds them is already
+  // doing it. Handing the parent to a second agent produces duplicated effort
+  // that no lease can detect, because the two agents hold different items.
+  if (openChildren > 0) {
+    reasons.push(
+      `has ${openChildren} unfinished sub-item${openChildren === 1 ? '' : 's'} — claim those instead`,
+    );
+  }
   if (stateGroup !== 'backlog' && stateGroup !== 'unstarted') {
     reasons.push(`state group is "${stateGroup}", not backlog/unstarted`);
   }
@@ -100,11 +111,17 @@ export async function readyCandidates(
   const groupOf = new Map(states.map((s) => [s.id, s.group]));
   const labelNames = new Map<string, string>(); // resolved lazily; ids are fine for matching
 
+  // Children come free — every item in the list already carries its parent — so
+  // the sub-item check costs no extra API calls on the browse path.
+  const openChildren = countOpenChildren(items, groupOf);
+
   const wanted = (opts.capabilities ?? []).map((c) => c.toLowerCase());
 
   return items
     .filter((i) => !leased.has(i.id))
-    .filter((i) => screen(i, groupOf.get(i.state), labelNames).length === 0)
+    .filter(
+      (i) => screen(i, groupOf.get(i.state), labelNames, openChildren.get(i.id) ?? 0).length === 0,
+    )
     .filter((i) => {
       if (!wanted.length) return true;
       const names = i.labels.map((l) => l.toLowerCase());
@@ -127,6 +144,21 @@ export async function readyCandidates(
     }));
 }
 
+/** Unfinished sub-items, keyed by parent. Derived from a list already in hand. */
+export function countOpenChildren(
+  items: WorkItem[],
+  groupOf: Map<string, State['group']>,
+): Map<string, number> {
+  const open = new Map<string, number>();
+  for (const i of items) {
+    if (!i.parent) continue;
+    const g = groupOf.get(i.state);
+    if (g === 'completed' || g === 'cancelled') continue;
+    open.set(i.parent, (open.get(i.parent) ?? 0) + 1);
+  }
+  return open;
+}
+
 /**
  * The expensive half of the gate, run only for the item actually being claimed.
  *
@@ -137,12 +169,30 @@ export async function verifyClaimable(
   plane: PlaneClient,
   projectId: string,
   workItemId: string,
+  opts: { checkChildren?: boolean } = {},
 ): Promise<string[]> {
+  const reasons: string[] = [];
+
+  // Only needed when claiming a specific item by id. On the pick path the
+  // candidates have already been screened against the full item list, and
+  // re-listing once per candidate would turn one call into O(candidates).
+  if (opts.checkChildren) {
+    const [items, states] = await Promise.all([
+      plane.listWorkItems(projectId),
+      plane.states(projectId),
+    ]);
+    const n =
+      countOpenChildren(items, new Map(states.map((s) => [s.id, s.group]))).get(workItemId) ?? 0;
+    if (n > 0) {
+      reasons.push(`has ${n} unfinished sub-item${n === 1 ? '' : 's'} — claim those instead`);
+    }
+  }
+
   const [rel, states] = await Promise.all([
     plane.relations(projectId, workItemId),
     plane.states(projectId),
   ]);
-  if (rel.blocked_by.length === 0) return [];
+  if (rel.blocked_by.length === 0) return reasons;
 
   const groupOf = new Map(states.map((s) => [s.id, s.group]));
 
@@ -158,6 +208,12 @@ export async function verifyClaimable(
     ),
   );
 
+  // Note this reads Plane, which `complete` updates asynchronously — the lease is
+  // the source of truth and Plane is a mirror, so a completion is never made to
+  // wait on Plane being reachable. The cost is that a dependent item can stay
+  // blocked for a second or so after its blocker finishes. That lag is in the
+  // safe direction (briefly withholding work, never double-issuing it), so it is
+  // left alone rather than papered over with a read of the lease table.
   const open = blockers.filter((b) => {
     // A blocker we cannot read is treated as open: refusing work that might be
     // blocked is cheaper than dispatching an agent at work that cannot succeed.
@@ -166,8 +222,8 @@ export async function verifyClaimable(
     return g !== 'completed' && g !== 'cancelled';
   });
 
-  if (open.length === 0) return [];
+  if (open.length === 0) return reasons;
 
   const names = open.map((b) => (b ? `#${b.sequence_id}` : 'an unreadable item')).join(', ');
-  return [`blocked by ${names}`];
+  return [...reasons, `blocked by ${names}`];
 }

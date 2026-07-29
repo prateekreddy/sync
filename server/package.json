@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
@@ -11,9 +13,12 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@makeplane/plane-mcp-server": "^0.1.5",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "fastify": "^5.10.0",
     "pg": "^8.13.1",
-    "zod": "^3.24.1"
+    "zod": "^3.24.1",
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
