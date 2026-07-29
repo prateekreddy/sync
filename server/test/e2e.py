@@ -7,7 +7,7 @@ through the gateway.
 
   GATEWAY=http://localhost:8787 PROJECT=<uuid> T1=.. T2=.. T3=.. python3 e2e.py
 """
-import json, os, sys, threading, urllib.error, urllib.request, uuid
+import json, os, sys, threading, time, urllib.error, urllib.request, uuid
 
 GW = os.environ["GATEWAY"]
 PROJECT = os.environ["PROJECT"]
@@ -112,8 +112,19 @@ st, bl = call(TOKENS[0], "POST", "/v1/claim",
 call(TOKENS[0], "POST", "/v1/complete", {
     "workItemId": blocker["workItemId"], "epoch": bl["lease"]["epoch"],
     "outcome": "Blocker done.", "close": True})
-st, freed = call(TOKENS[1], "POST", "/v1/claim",
-                 {"projectId": PROJECT, "workItemId": blocked["workItemId"], "ttlSeconds": 120})
+
+# Poll rather than assert immediately. `complete` ends the lease synchronously but
+# writes Plane's state asynchronously, on purpose: the lease is the source of
+# truth and Plane is a mirror, so an agent's completion must not fail because
+# Plane was slow. The blocker check reads that mirror, so a dependent item can
+# stay blocked for a beat afterwards. Asserting with no wait tests the scheduler,
+# not the behaviour.
+for delay in (0, 0.5, 1, 2, 4):
+    time.sleep(delay)
+    st, freed = call(TOKENS[1], "POST", "/v1/claim",
+                     {"projectId": PROJECT, "workItemId": blocked["workItemId"], "ttlSeconds": 120})
+    if st == 200:
+        break
 check("completing the blocker unblocks the dependent item", st == 200,
       freed.get("error", "claimable"))
 

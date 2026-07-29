@@ -154,16 +154,25 @@ export class PlaneClient {
         });
   }
 
-  /** Plane paginates by cursor; pull every page. */
-  private async listAll<T>(path: string): Promise<T[]> {
+  /**
+   * Plane paginates by cursor; pull every page.
+   *
+   * `per_page` is set explicitly rather than left to Plane's default. The default
+   * happens to be large today, but it is not part of any contract — if a future
+   * release lowered it to 20, every list here would silently turn into five
+   * requests against a per-token rate limit, and the first symptom would be
+   * agents failing under load for no visible reason.
+   */
+  private async listAll<T>(path: string, perPage = 100): Promise<T[]> {
     const out: T[] = [];
     let cursor: string | undefined;
     let guard = 0;
 
+    const sep = path.includes('?') ? '&' : '?';
+    const sized = `${path}${sep}per_page=${perPage}`;
+
     while (guard++ < 50) {
-      const url = cursor
-        ? `${path}${path.includes('?') ? '&' : '?'}cursor=${encodeURIComponent(cursor)}`
-        : path;
+      const url = cursor ? `${sized}&cursor=${encodeURIComponent(cursor)}` : sized;
       const page = await this.request<{
         results: T[];
         next_page_results: boolean;
