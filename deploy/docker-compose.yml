@@ -1,0 +1,281 @@
+# Everything: Plane, and the agent gateway that fronts it.
+#
+#   ./gen-env.sh                # writes .env with real secrets
+#   docker compose up -d        # Plane comes up; gateway waits (see below)
+#   ./provision.sh              # workspace, project, tokens — then starts the gateway
+#
+# Why the Plane half is vendored here rather than fetched with Plane's setup.sh:
+# that script generates a compose file into a directory of its own and regenerates
+# it on upgrade, so anything added alongside is either clobbered or lives in a
+# second file glued on with an external network. Keeping one file means one
+# network, one `up`, and healthcheck-gated ordering that actually holds.
+#
+# The Plane services below are upstream's, pinned to APP_RELEASE. The only edits
+# are a healthcheck on plane-db (so the gateway's migration step can wait for it
+# properly) and an explicit network on each service. When you bump APP_RELEASE,
+# diff against upstream's compose for that tag:
+#   https://github.com/makeplane/plane/blob/master/docker-compose.yml
+#
+# Plane is AGPL-3.0; it runs here as unmodified published images.
+
+name: ${COMPOSE_PROJECT:-sync}
+
+include:
+  - gateway.yml
+
+# Plane's own services. Behind a profile so that setting PLANE_BASE_URL in .env
+# turns them off and the gateway attaches to an existing Plane instead.
+x-plane: &plane-svc
+  networks: [plane]
+  profiles: ["plane"]
+
+x-db-env: &db-env
+  PGHOST: ${PGHOST:-plane-db}
+  PGDATABASE: ${PGDATABASE:-plane}
+  POSTGRES_USER: ${POSTGRES_USER:-plane}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run ./gen-env.sh first}
+  POSTGRES_DB: ${POSTGRES_DB:-plane}
+  POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+  PGDATA: ${PGDATA:-/var/lib/postgresql/data}
+
+x-redis-env: &redis-env
+  REDIS_HOST: ${REDIS_HOST:-plane-redis}
+  REDIS_PORT: ${REDIS_PORT:-6379}
+  REDIS_URL: ${REDIS_URL:-redis://plane-redis:6379/}
+
+x-minio-env: &minio-env
+  MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:?run ./gen-env.sh first}
+  MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:?run ./gen-env.sh first}
+
+x-aws-s3-env: &aws-s3-env
+  AWS_REGION: ${AWS_REGION:-}
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+  AWS_S3_ENDPOINT_URL: ${AWS_S3_ENDPOINT_URL:-http://plane-minio:9000}
+  AWS_S3_BUCKET_NAME: ${AWS_S3_BUCKET_NAME:-uploads}
+
+x-proxy-env: &proxy-env
+  APP_DOMAIN: ${APP_DOMAIN:-localhost}
+  FILE_SIZE_LIMIT: ${FILE_SIZE_LIMIT:-5242880}
+  CERT_EMAIL: ${CERT_EMAIL:-}
+  # Must be non-empty even when serving plain HTTP. Plane's proxy templates this
+  # straight into a Caddyfile `acme_ca` directive, and Caddy refuses to parse a
+  # directive with no argument — so an empty value crash-loops the proxy on a
+  # stack that never intended to use TLS at all.
+  CERT_ACME_CA: ${CERT_ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
+  CERT_ACME_DNS: ${CERT_ACME_DNS:-}
+  LISTEN_HTTP_PORT: ${LISTEN_HTTP_PORT:-80}
+  LISTEN_HTTPS_PORT: ${LISTEN_HTTPS_PORT:-443}
+  BUCKET_NAME: ${AWS_S3_BUCKET_NAME:-uploads}
+  SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+
+x-mq-env: &mq-env
+  RABBITMQ_HOST: ${RABBITMQ_HOST:-plane-mq}
+  RABBITMQ_PORT: ${RABBITMQ_PORT:-5672}
+  RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-plane}
+  RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?run ./gen-env.sh first}
+  RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-plane}
+  RABBITMQ_VHOST: ${RABBITMQ_VHOST:-plane}
+
+x-live-env: &live-env
+  API_BASE_URL: ${API_BASE_URL:-http://api:8000}
+  LIVE_SERVER_SECRET_KEY: ${LIVE_SERVER_SECRET_KEY:?run ./gen-env.sh first}
+
+x-app-env: &app-env
+  WEB_URL: ${WEB_URL:-http://localhost}
+  DEBUG: ${DEBUG:-0}
+  CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+  GUNICORN_WORKERS: ${GUNICORN_WORKERS:-1}
+  USE_MINIO: ${USE_MINIO:-1}
+  DATABASE_URL: postgresql://${POSTGRES_USER:-plane}:${POSTGRES_PASSWORD}@${PGHOST:-plane-db}/${POSTGRES_DB:-plane}
+  SECRET_KEY: ${SECRET_KEY:?run ./gen-env.sh first}
+  AMQP_URL: amqp://${RABBITMQ_USER:-plane}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST:-plane-mq}:${RABBITMQ_PORT:-5672}/${RABBITMQ_VHOST:-plane}
+  # Plane's default is 60/minute, which is sized for a human clicking around. An
+  # agent fleet is API-driven by definition: a single claim costs a work item
+  # list, a relations read, a state write and a comment, so 60/minute caps an
+  # agent at roughly a dozen claims a minute and starts returning 429 under any
+  # burst. The limit is per token and this is your own instance, so raise it.
+  API_KEY_RATE_LIMIT: ${API_KEY_RATE_LIMIT:-300/minute}
+  MINIO_ENDPOINT_SSL: ${MINIO_ENDPOINT_SSL:-0}
+  LIVE_SERVER_SECRET_KEY: ${LIVE_SERVER_SECRET_KEY}
+  WEBHOOK_ALLOWED_IPS: ${WEBHOOK_ALLOWED_IPS:-}
+  # The gateway is an allowed webhook target so Plane can call back into it.
+  WEBHOOK_ALLOWED_HOSTS: ${WEBHOOK_ALLOWED_HOSTS:-gateway}
+
+services:
+  web:
+    <<: *plane-svc
+    image: makeplane/plane-frontend:${APP_RELEASE:-v1.3.1}
+    restart: unless-stopped
+    deploy:
+      replicas: ${WEB_REPLICAS:-1}
+    depends_on: [api, worker]
+
+  space:
+    <<: *plane-svc
+    image: makeplane/plane-space:${APP_RELEASE:-v1.3.1}
+    restart: unless-stopped
+    deploy:
+      replicas: ${SPACE_REPLICAS:-1}
+    depends_on: [api, worker, web]
+
+  admin:
+    <<: *plane-svc
+    image: makeplane/plane-admin:${APP_RELEASE:-v1.3.1}
+    restart: unless-stopped
+    deploy:
+      replicas: ${ADMIN_REPLICAS:-1}
+    depends_on: [api, web]
+
+  live:
+    <<: *plane-svc
+    image: makeplane/plane-live:${APP_RELEASE:-v1.3.1}
+    restart: unless-stopped
+    environment:
+      <<: [*live-env, *redis-env]
+    deploy:
+      replicas: ${LIVE_REPLICAS:-1}
+    depends_on: [api, web]
+
+  api:
+    <<: *plane-svc
+    image: makeplane/plane-backend:${APP_RELEASE:-v1.3.1}
+    restart: unless-stopped
+    command: ./bin/docker-entrypoint-api.sh
+    deploy:
+      replicas: ${API_REPLICAS:-1}
+    volumes:
+      - logs_api:/code/plane/logs
+    environment:
+      <<: [*app-env, *db-env, *redis-env, *minio-env, *aws-s3-env, *proxy-env]
+    depends_on:
+      plane-db:
+        condition: service_healthy
+      plane-redis:
+        condition: service_started
+      plane-mq:
+        condition: service_started
+
+  worker:
+    <<: *plane-svc
+    image: makeplane/plane-backend:${APP_RELEASE:-v1.3.1}
+    restart: unless-stopped
+    command: ./bin/docker-entrypoint-worker.sh
+    deploy:
+      replicas: ${WORKER_REPLICAS:-1}
+    volumes:
+      - logs_worker:/code/plane/logs
+    environment:
+      <<: [*app-env, *db-env, *redis-env, *minio-env, *aws-s3-env, *proxy-env]
+    depends_on: [api]
+
+  beat-worker:
+    <<: *plane-svc
+    image: makeplane/plane-backend:${APP_RELEASE:-v1.3.1}
+    restart: unless-stopped
+    command: ./bin/docker-entrypoint-beat.sh
+    deploy:
+      replicas: ${BEAT_WORKER_REPLICAS:-1}
+    volumes:
+      - logs_beat-worker:/code/plane/logs
+    environment:
+      <<: [*app-env, *db-env, *redis-env, *minio-env, *aws-s3-env, *proxy-env]
+    depends_on: [api]
+
+  migrator:
+    <<: *plane-svc
+    image: makeplane/plane-backend:${APP_RELEASE:-v1.3.1}
+    restart: on-failure
+    command: ./bin/docker-entrypoint-migrator.sh
+    volumes:
+      - logs_migrator:/code/plane/logs
+    environment:
+      <<: [*app-env, *db-env, *redis-env, *minio-env, *aws-s3-env, *proxy-env]
+    depends_on:
+      plane-db:
+        condition: service_healthy
+      plane-redis:
+        condition: service_started
+
+  plane-db:
+    <<: *plane-svc
+    image: postgres:${POSTGRES_VERSION:-15.7}-alpine
+    restart: unless-stopped
+    command: postgres -c 'max_connections=${PG_MAX_CONNECTIONS:-1000}'
+    environment:
+      <<: *db-env
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Over TCP on purpose. During first-boot initialisation the postgres image
+      # runs a temporary server that listens on the unix socket only, so a plain
+      # `pg_isready` reports success while the database is still being built and
+      # the migration step would race it.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER:-plane} -d $${POSTGRES_DB:-plane}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  plane-redis:
+    <<: *plane-svc
+    image: valkey/valkey:${VALKEY_VERSION:-7.2.11}-alpine
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+
+  plane-mq:
+    <<: *plane-svc
+    image: rabbitmq:${RABBITMQ_VERSION:-3.13.6}-management-alpine
+    restart: unless-stopped
+    environment:
+      <<: *mq-env
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+
+  plane-minio:
+    <<: *plane-svc
+    image: minio/minio:${MINIO_VERSION:-latest}
+    restart: unless-stopped
+    command: server /export --console-address ":9090"
+    environment:
+      <<: *minio-env
+    volumes:
+      - uploads:/export
+
+  proxy:
+    <<: *plane-svc
+    image: makeplane/plane-proxy:${APP_RELEASE:-v1.3.1}
+    restart: unless-stopped
+    environment:
+      <<: *proxy-env
+    ports:
+      - "${LISTEN_HTTP_PORT:-80}:80"
+      - "${LISTEN_HTTPS_PORT:-443}:443"
+    volumes:
+      - proxy_config:/config
+      - proxy_data:/data
+    depends_on: [web, api, space, admin, live]
+
+networks:
+  # One network, named explicitly and declared external, so that the same file can
+  # either deploy Plane or attach to one that already exists — in the second case
+  # this is that stack's network, which Compose must not try to own.
+  #
+  # gen-env.sh creates it when deploying Plane. The trade is that it outlives
+  # `docker compose down`; remove it with `docker network rm <name>`.
+  plane:
+    name: ${PLANE_NETWORK:?run ./gen-env.sh first}
+    external: true
+
+volumes:
+  pgdata:
+  redisdata:
+  uploads:
+  logs_api:
+  logs_worker:
+  logs_beat-worker:
+  logs_migrator:
+  rabbitmq_data:
+  proxy_config:
+  proxy_data:
