@@ -58,6 +58,11 @@ export function authServerMetadata(base: string) {
     authorization_endpoint: `${base}/oauth/authorize`,
     token_endpoint: `${base}/oauth/token`,
     registration_endpoint: `${base}/oauth/register`,
+    // RFC 7009. Advertised so a client that revokes on logout can make "Clear
+    // authentication" mean the token stops working everywhere, rather than only
+    // disappearing from this machine's keychain.
+    revocation_endpoint: `${base}/oauth/revoke`,
+    revocation_endpoint_auth_methods_supported: ['none'],
     response_types_supported: ['code'],
     grant_types_supported: ['authorization_code'],
     // PKCE is mandatory, and only S256 — `plain` offers no protection against an

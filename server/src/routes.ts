@@ -1,7 +1,14 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Pool } from './db.js';
-import { authenticate, chainFor, issueToken, type Actor } from './auth.js';
+import {
+  authenticate,
+  chainFor,
+  issueToken,
+  revokeByToken,
+  revokeOwnedAgent,
+  type Actor,
+} from './auth.js';
 import { agentName, createRateLimiter, identify, visibleProjects } from './mint.js';
 import {
   assertSafeRedirect,
@@ -368,6 +375,94 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     return reply
       .header('Cache-Control', 'no-store')
       .send({ access_token: accessToken, token_type: 'Bearer', scope: 'agent' });
+  });
+
+  /**
+   * RFC 7009. Present the token to retire it.
+   *
+   * Always answers 200, including for a token that was never valid: the spec
+   * requires an unknown token to be indistinguishable from a revoked one, so
+   * this cannot be used to probe whether a token is live.
+   */
+  app.post('/oauth/revoke', async (req, reply) => {
+    const body = (req.body ?? {}) as { token?: unknown };
+    if (typeof body.token === 'string' && body.token) {
+      await revokeByToken(pool, body.token);
+      app.log.info('agent token revoked via the revocation endpoint');
+    }
+    return reply.status(200).header('Cache-Control', 'no-store').send({});
+  });
+
+  /**
+   * Retire one of your own agents, by name.
+   *
+   * `claude mcp logout` and "Clear authentication" only drop the local copy of a
+   * credential, which does nothing about a token that has already been copied or
+   * a machine you no longer have. This is the out-of-band path: it works from
+   * anywhere, for tokens issued either way, and needs no shell on this host.
+   *
+   * The name may be given bare ("worker-1") or fully qualified ("you/worker-1");
+   * a bare one is namespaced to the caller, so it can only ever address their own.
+   */
+  app.delete('/v1/agent-tokens/*', async (req, reply) => {
+    if (!deps.allowMinting) {
+      throw new GatewayError(
+        'FORBIDDEN',
+        'Self-service token management is disabled on this gateway (MINT_TOKENS=off). Ask your operator to revoke it with the CLI.',
+      );
+    }
+    if (!mintAllowed(req.ip, Date.now())) {
+      return reply.status(429).send({
+        error: 'RATE_LIMITED',
+        message: 'Too many requests from this address.',
+        recovery: 'Wait a minute and try again.',
+      });
+    }
+
+    const raw = decodeURIComponent((req.params as Record<string, string>)['*'] ?? '');
+    if (!raw) throw new GatewayError('INVALID', 'name the agent to revoke: DELETE /v1/agent-tokens/<agent>');
+
+    const planeToken = (req.headers['authorization'] as string | undefined)
+      ?.replace(/^Bearer\s+/i, '')
+      .trim();
+    if (!planeToken) {
+      throw new GatewayError(
+        'UNAUTHENTICATED',
+        'Send your Plane personal token as Authorization: Bearer <token>.',
+      );
+    }
+
+    const identity = await identify(deps.planeBaseUrl, planeToken);
+    // Try the qualified form first, then the bare one. Tokens issued by the CLI
+    // are not namespaced, so without the second attempt this endpoint could not
+    // retire them at all — and those are exactly the ones an operator is least
+    // likely to be able to revoke by other means. Both are ownership-checked, so
+    // the fallback widens what you can name, never whose agents you can touch.
+    const candidates = raw.includes('/') ? [raw] : [agentName(identity, raw), raw];
+    let name = candidates[0] as string;
+    let revoked = false;
+    for (const candidate of candidates) {
+      if (await revokeOwnedAgent(pool, candidate, identity.id)) {
+        name = candidate;
+        revoked = true;
+        break;
+      }
+    }
+
+    if (!revoked) {
+      // One message for "no such agent" and "not yours": the distinction would
+      // only tell a caller which names exist, and the fix is the same either way.
+      throw new GatewayError(
+        'NOT_FOUND',
+        `No active agent named "${name}" that you own. Check the name, or list your agents in the reply from a mint call.`,
+      );
+    }
+
+    app.log.info({ agent: name, planeUser: identity.id }, 'agent token revoked');
+    return {
+      revoked: name,
+      note: 'That token stops working immediately. Any agent still using it will get UNAUTHENTICATED on its next call.',
+    };
   });
 
   app.post('/v1/agent-tokens', async (req, reply) => {

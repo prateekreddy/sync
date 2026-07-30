@@ -107,6 +107,42 @@ export async function issueToken(
   return { token, name: args.name };
 }
 
+/**
+ * Turn a token off, given the token itself (RFC 7009).
+ *
+ * Presenting the credential is the authorisation: whoever holds it can already
+ * use it, so letting them retire it removes capability rather than granting any.
+ * Returns quietly either way — the spec requires that an unknown token be
+ * indistinguishable from a revoked one, so this cannot be used to test whether a
+ * token is live.
+ */
+export async function revokeByToken(pool: Pool, token: string): Promise<void> {
+  await pool.query('update agent_token set active = false where token_sha256 = $1', [
+    sha256(token.replace(/^Bearer\s+/i, '').trim()),
+  ]);
+}
+
+/**
+ * Turn an agent off by name, on behalf of the Plane user who owns it.
+ *
+ * The ownership predicate is the whole point: minting is self-service, so
+ * revocation has to be too, and without this anyone could retire anyone else's
+ * agents — a denial of service that needs no credential of the victim's.
+ */
+export async function revokeOwnedAgent(
+  pool: Pool,
+  name: string,
+  planeUserId: string,
+): Promise<boolean> {
+  const { rows } = await pool.query<{ name: string }>(
+    `update agent_token set active = false
+      where name = $1 and plane_user_id = $2 and active
+      returning name`,
+    [name, planeUserId],
+  );
+  return rows.length > 0;
+}
+
 export async function authenticate(pool: Pool, bearer: string | undefined): Promise<Actor> {
   const token = bearer?.replace(/^Bearer\s+/i, '').trim();
   if (!token) throw new GatewayError('UNAUTHENTICATED', 'No Authorization: Bearer <token> header');

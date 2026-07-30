@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { issueToken, authenticate } from '../src/auth.js';
+import { issueToken, authenticate, revokeByToken, revokeOwnedAgent } from '../src/auth.js';
 import { createPool } from '../src/db.js';
 import { GatewayError } from '../src/errors.js';
 import { agentName, createRateLimiter } from '../src/mint.js';
@@ -114,6 +114,72 @@ describe('ownership guard', () => {
     await expect(
       issueToken(pool, { name, principal: 'human:b', planeUserId: randomUUID() }),
     ).resolves.toMatchObject({ name });
+  });
+});
+
+describe('revocation', () => {
+  const agent = async (owner: string) => {
+    const name = `t-${randomUUID().slice(0, 8)}/worker`;
+    const { token } = await issueToken(pool, {
+      name,
+      principal: 'human:a',
+      planeUserId: owner,
+      onlyIfOwnedBy: owner,
+    });
+    return { name, token };
+  };
+
+  it('kills a token when the holder presents it (RFC 7009)', async () => {
+    const { token } = await agent(randomUUID());
+    await expect(authenticate(pool, `Bearer ${token}`)).resolves.toBeTruthy();
+    await revokeByToken(pool, token);
+    await expect(authenticate(pool, `Bearer ${token}`)).rejects.toThrow(GatewayError);
+  });
+
+  it('tolerates a Bearer prefix and an unknown token without complaining', async () => {
+    const { token } = await agent(randomUUID());
+    await revokeByToken(pool, `Bearer ${token}`);
+    await expect(authenticate(pool, `Bearer ${token}`)).rejects.toThrow(GatewayError);
+    // An unknown token must not be distinguishable from a revoked one.
+    await expect(revokeByToken(pool, 'sync_agent_never_existed')).resolves.toBeUndefined();
+  });
+
+  it('lets the owner revoke by name', async () => {
+    const owner = randomUUID();
+    const { name, token } = await agent(owner);
+    expect(await revokeOwnedAgent(pool, name, owner)).toBe(true);
+    await expect(authenticate(pool, `Bearer ${token}`)).rejects.toThrow(GatewayError);
+  });
+
+  it('refuses to revoke an agent belonging to someone else', async () => {
+    const owner = randomUUID();
+    const { name, token } = await agent(owner);
+    expect(await revokeOwnedAgent(pool, name, randomUUID())).toBe(false);
+    // The victim's agent must keep working — a rejected revoke that still
+    // disabled the token would be the denial of service the check exists to stop.
+    await expect(authenticate(pool, `Bearer ${token}`)).resolves.toMatchObject({ name });
+  });
+
+  it('reports nothing revoked the second time, so callers can tell', async () => {
+    const owner = randomUUID();
+    const { name } = await agent(owner);
+    expect(await revokeOwnedAgent(pool, name, owner)).toBe(true);
+    expect(await revokeOwnedAgent(pool, name, owner)).toBe(false);
+  });
+
+  it('re-minting the same name brings the agent back with a fresh token', async () => {
+    const owner = randomUUID();
+    const { name, token } = await agent(owner);
+    await revokeOwnedAgent(pool, name, owner);
+    const again = await issueToken(pool, {
+      name,
+      principal: 'human:a',
+      planeUserId: owner,
+      onlyIfOwnedBy: owner,
+    });
+    await expect(authenticate(pool, `Bearer ${again.token}`)).resolves.toMatchObject({ name });
+    // The revoked one stays dead.
+    await expect(authenticate(pool, `Bearer ${token}`)).rejects.toThrow(GatewayError);
   });
 });
 
