@@ -166,7 +166,7 @@ look identical from the inside.
 `readyCandidates` now resolves ids once per browse from a per-project cache, and
 both consumers go through a single helper so they cannot drift apart again.
 
-## Agent surface (9 tools)
+## Agent surface (10 tools)
 
 | Tool | Why it exists |
 |---|---|
@@ -179,6 +179,7 @@ both consumers go through a single helper so they cannot drift apart again.
 | `link` | Typed edge — `discovered_from`, `blocks`, `duplicate_of`. Maps to Plane relations. |
 | `held` | What am I holding? The first call after a restart, so a resumed agent does not re-claim. |
 | `why` | The gate's own reasons for withholding an item. The reasons were always computed and thrown away, which made "`next` returned nothing" unanswerable. |
+| `tree` | The sub-tree with lease state. Plane holds the parent links and the gateway holds the leases, so only here can "what is left" mean "not done *and* not already being worked". |
 
 `link` is what makes this a memory substrate rather than a list: agent working A
 finds problem B, `capture` + `link(discovered_from)` keeps the provenance that makes

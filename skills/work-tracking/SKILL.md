@@ -8,8 +8,8 @@ user-invocable: true
 
 Two halves live on one MCP server. Do not confuse them:
 
-- **Coordination tools** (`capture`, `next`, `why`, `claim`, `heartbeat`, `complete`, `release`,
-  `link`, `held`) exist because Plane has no equivalent. They are the only safe way to take work.
+- **Coordination tools** (`capture`, `next`, `why`, `tree`, `claim`, `heartbeat`, `complete`,
+  `release`, `link`, `held`) exist because Plane has no equivalent. They are the only safe way to take work.
 - **Plane's own tools** — currently 47 — are a faithful wrapper over Plane's API and have **no
   notion of a lease**. Everything below the coordination loop is theirs.
 
@@ -117,6 +117,10 @@ one parent chain, but carries as many labels as apply. So "which feature is this
 module, "what kind of work is it" is a label. Reaching for a module because you want two groupings
 at once is the mistake — that is what labels are for.
 
+- **`tree(workItemId)`** shows what is already under an item — every sub-item with its state and,
+  if someone is working it, the holder and lease expiry. Call it *before* decomposing: it is the
+  only way to see whether the work was already broken up, and "unfinished" without a holder is a
+  different thing from "unfinished and already being worked".
 - **`capture(parentId: …)`** makes a sub-item. Use it for real decomposition. A parent with
   unfinished children stops being claimable, which is what you want: it is a container, not a task.
   This composes up the tree — a grandparent stays unclaimable while any leaf under it is open.

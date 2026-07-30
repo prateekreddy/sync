@@ -28,6 +28,7 @@ import { mirrorClaim, mirrorComplete, mirrorReturn } from './mirror.js';
 import type { PlaneClient } from './plane.js';
 import type { PlaneMcp } from './planemcp.js';
 import { explain, readyCandidates, verifyClaimable } from './readiness.js';
+import { tree } from './tree.js';
 import { handleMcpHttp } from './mcphttp.js';
 import { callTool, listTools } from './tools.js';
 import {
@@ -37,6 +38,7 @@ import {
   HeartbeatBody,
   LinkBody,
   NextQuery,
+  TreeQuery,
   WhyQuery,
   ReleaseBody,
 } from './toolspec.js';
@@ -550,6 +552,13 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       workItemId: q.workItemId,
       ...(actor.capabilities.length ? { capabilities: actor.capabilities } : {}),
     });
+  });
+
+  // ── tree (read-only) ─────────────────────────────────────────────────────
+  app.get('/v1/tree', async (req) => {
+    const query = TreeQuery.parse(req.query);
+    await actorOf(req);
+    return tree(plane, pool, query);
   });
 
   // ── claim ────────────────────────────────────────────────────────────────

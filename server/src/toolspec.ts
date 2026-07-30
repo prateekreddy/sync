@@ -55,6 +55,12 @@ export const WhyQuery = z.object({
   workItemId: uuid,
 });
 
+export const TreeQuery = z.object({
+  projectId: uuid,
+  workItemId: uuid,
+  depth: z.coerce.number().int().min(1).max(10).default(5),
+});
+
 export const ClaimBody = z.object({
   projectId: uuid,
   workItemId: uuid.optional().describe('Omit to let the gateway pick the best ready item.'),
@@ -154,6 +160,19 @@ export const NATIVE_TOOLS: NativeTool[] = [
     schema: WhyQuery,
     method: 'GET',
     request: (a) => ({ path: q('/v1/why', a) }),
+  },
+  {
+    name: 'tree',
+    title: 'What is under this item?',
+    description:
+      'The sub-tree under a work item — every sub-item with its state, priority and, if someone ' +
+      'is working it right now, the holder and when their lease runs out. Also returns the path ' +
+      'up to the root, so an item handed to you in isolation still shows what it is part of, and ' +
+      'openDescendants, the count of unfinished work below it. Use this before decomposing ' +
+      'further, and instead of listing the project and reassembling it yourself.',
+    schema: TreeQuery,
+    method: 'GET',
+    request: (a) => ({ path: q('/v1/tree', a) }),
   },
   {
     name: 'claim',
