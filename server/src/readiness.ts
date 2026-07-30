@@ -74,11 +74,22 @@ export function screen(
     reasons.push('no description — an agent cannot infer the acceptance criteria');
   }
 
-  const names = item.labels.map((id) => labelNames.get(id) ?? id).map((n) => n.toLowerCase());
-  const blocking = names.filter((n) => BLOCKING_LABELS.includes(n));
+  const blocking = labelsOf(item, labelNames).filter((n) => BLOCKING_LABELS.includes(n));
   if (blocking.length) reasons.push(`labelled ${blocking.join(', ')}`);
 
   return reasons;
+}
+
+/**
+ * A work item's labels as lowercased names.
+ *
+ * Plane returns label **ids** on a work item, so an unresolved id falls back to
+ * itself and simply matches nothing -- which is how both the blocking-label gate
+ * and capability routing were silently inert while looking correct. Both callers
+ * go through here so neither can regress to comparing names against uuids again.
+ */
+function labelsOf(item: WorkItem, labelNames: Map<string, string>): string[] {
+  return item.labels.map((id) => (labelNames.get(id) ?? id).toLowerCase());
 }
 
 interface ReadyOpts {
@@ -98,9 +109,13 @@ export async function readyCandidates(
   pool: Pool,
   opts: ReadyOpts,
 ): Promise<Candidate[]> {
-  const [items, states, leased] = await Promise.all([
+  const [items, states, labelNames, leased] = await Promise.all([
     plane.listWorkItems(opts.projectId),
     plane.states(opts.projectId),
+    // Both the blocking-label gate and capability routing below match on names,
+    // and a work item carries only label ids. Cached client-side, so this costs
+    // one request per project per minute rather than one per browse.
+    plane.labelNames(opts.projectId),
     pool
       .query<{ work_item_id: string }>(
         `select work_item_id from lease where state = 'held' and expires_at > now()`,
@@ -109,7 +124,6 @@ export async function readyCandidates(
   ]);
 
   const groupOf = new Map(states.map((s) => [s.id, s.group]));
-  const labelNames = new Map<string, string>(); // resolved lazily; ids are fine for matching
 
   // Children come free — every item in the list already carries its parent — so
   // the sub-item check costs no extra API calls on the browse path.
@@ -124,7 +138,7 @@ export async function readyCandidates(
     )
     .filter((i) => {
       if (!wanted.length) return true;
-      const names = i.labels.map((l) => l.toLowerCase());
+      const names = labelsOf(i, labelNames);
       return wanted.some((w) => names.includes(w));
     })
     .sort(

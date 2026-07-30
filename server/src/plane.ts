@@ -24,6 +24,16 @@ export interface State {
 }
 
 /**
+ * A project label. Work items reference labels by **id**, never by name, so
+ * anything matching on a label's meaning -- the readiness gate's blocking
+ * labels, capability routing -- has to resolve ids through here first.
+ */
+export interface Label {
+  id: string;
+  name: string;
+}
+
+/**
  * Plane's relation vocabulary, as returned by the relations endpoint.
  * Note there is no `discovered_from`: provenance is recorded as `relates_to`
  * plus an explanatory comment. See link() in routes.ts.
@@ -65,6 +75,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  */
 export class PlaneClient {
   private stateCache = new Map<string, { at: number; states: State[] }>();
+  private labelCache = new Map<string, { at: number; labels: Label[] }>();
 
   constructor(
     private readonly baseUrl: string,
@@ -86,6 +97,7 @@ export class PlaneClient {
     if (!token || token === this.apiKey) return this;
     const scoped = new PlaneClient(this.baseUrl, token, this.workspaceSlug, this.maxRetries);
     scoped.stateCache = this.stateCache;
+    scoped.labelCache = this.labelCache;
     return scoped;
   }
 
@@ -242,6 +254,28 @@ export class PlaneClient {
     const states = await this.listAll<State>(`/projects/${projectId}/states/`);
     this.stateCache.set(projectId, { at: Date.now(), states });
     return states;
+  }
+
+  /**
+   * Labels, cached like states and for the same reason: the readiness gate reads
+   * them on every browse, and they change far more rarely than work items do.
+   */
+  async labels(projectId: string, ttlMs = 60_000): Promise<Label[]> {
+    const hit = this.labelCache.get(projectId);
+    if (hit && Date.now() - hit.at < ttlMs) return hit.labels;
+
+    const labels = await this.listAll<Label>(`/projects/${projectId}/labels/`);
+    this.labelCache.set(projectId, { at: Date.now(), labels });
+    return labels;
+  }
+
+  /**
+   * id -> lowercased name, for matching a work item's `labels` against anything
+   * written by a human. Lowercased here rather than at each call site so the two
+   * consumers cannot drift on casing.
+   */
+  async labelNames(projectId: string): Promise<Map<string, string>> {
+    return new Map((await this.labels(projectId)).map((l) => [l.id, l.name.toLowerCase()]));
   }
 
   async stateByGroup(projectId: string, group: State['group']): Promise<State | undefined> {

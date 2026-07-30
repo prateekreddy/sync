@@ -149,6 +149,23 @@ not a hint. v1 evaluates it at query time from data Plane already has:
 
 Refinement is itself a task type, so an agent can be pointed at making things ready.
 
+### Labels are ids on the wire, names in the gate
+
+Plane returns label **uuids** on a work item, never names, while everything that
+reads a label's meaning — the blocking labels above, capability routing — is
+written in human words. Resolving one to the other is therefore not a detail; skip
+it and both features fail *silently and in opposite directions*: the blocking gate
+matches nothing and lets flagged work through, while capability routing matches
+nothing and starves a specialised agent of every item. That was the state of the
+code until 2026-07-30, undetected because the gate's unit tests called the pure
+predicate with a hand-built id→name map and never exercised the wiring that builds
+one. The lesson generalises: a pure function tested in isolation says nothing about
+the code that feeds it, and a filter that fails open and a filter that fails closed
+look identical from the inside.
+
+`readyCandidates` now resolves ids once per browse from a per-project cache, and
+both consumers go through a single helper so they cannot drift apart again.
+
 ## Agent surface (7 tools)
 
 | Tool | Why it exists |
