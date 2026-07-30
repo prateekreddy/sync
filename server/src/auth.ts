@@ -47,10 +47,25 @@ export async function issueToken(
      * agent is a server-side change rather than a visit to every box.
      */
     defaultProjectId?: string;
+    /**
+     * Refuse to rotate this name unless it is already owned by this Plane user.
+     *
+     * The upsert below is keyed on `name`, which is exactly right for an operator
+     * at a shell and exactly wrong once anyone can mint: without this guard,
+     * asking for a name someone else already took silently rotates their token
+     * and steals their agent identity. Set by the self-service endpoint; the CLI
+     * omits it, because an operator rotating a token by name is the intent there.
+     */
+    onlyIfOwnedBy?: string;
   },
 ): Promise<{ token: string; name: string }> {
   const token = generateToken();
-  await pool.query(
+  // Applied to the DO UPDATE rather than checked first, so two concurrent mints
+  // for the same name cannot both pass the check and then race.
+  const guard = args.onlyIfOwnedBy
+    ? 'where agent_token.plane_user_id is not distinct from excluded.plane_user_id'
+    : '';
+  const { rows } = await pool.query<{ name: string }>(
     `insert into agent_token
        (name, token_sha256, capabilities, plane_user_id, principal, plane_token_enc,
         default_project_id)
@@ -67,7 +82,9 @@ export async function issueToken(
             -- the agent from its project.
             default_project_id = coalesce(excluded.default_project_id,
                                           agent_token.default_project_id),
-            active          = true`,
+            active          = true
+     ${guard}
+     returning name`,
     [
       args.name,
       sha256(token),
@@ -78,6 +95,15 @@ export async function issueToken(
       args.defaultProjectId ?? null,
     ],
   );
+  // No row came back, so the guard rejected the update: the name exists and
+  // belongs to someone else. Never report this as success — the caller would hand
+  // out a token that was never stored and works nowhere.
+  if (rows.length === 0) {
+    throw new GatewayError(
+      'FORBIDDEN',
+      `The agent name "${args.name}" already belongs to a different Plane user. Choose another.`,
+    );
+  }
   return { token, name: args.name };
 }
 

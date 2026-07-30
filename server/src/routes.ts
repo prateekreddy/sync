@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Pool } from './db.js';
-import { authenticate, chainFor, type Actor } from './auth.js';
+import { authenticate, chainFor, issueToken, type Actor } from './auth.js';
+import { agentName, createRateLimiter, identify, visibleProjects } from './mint.js';
 import { capture } from './capture.js';
 import { GatewayError, HTTP_STATUS, RECOVERY } from './errors.js';
 import * as lease from './lease.js';
@@ -31,6 +32,12 @@ export interface Deps {
    * tool surface; the coordination half keeps working.
    */
   planeMcp?: PlaneMcp | null;
+  /** Where Plane lives, for the self-service mint endpoint's identity check. */
+  planeBaseUrl: string;
+  workspaceSlug: string;
+  /** Whether agents can be onboarded without a shell on this host. */
+  allowMinting: boolean;
+  mintRatePerMinute: number;
 }
 
 export function registerRoutes(app: FastifyInstance, deps: Deps): void {
@@ -72,6 +79,102 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   });
 
   app.get('/healthz', async () => ({ ok: true }));
+
+  // ── self-service onboarding ──────────────────────────────────────────────
+  //
+  // Exchange a Plane personal token for an agent token. This is the only
+  // endpoint that does not take a gateway token, because it is where gateway
+  // tokens come from — and requiring one to get one is the bootstrap problem
+  // that previously forced every onboarding through an operator with a shell.
+  //
+  // Safe to expose because the exchange only ever reduces privilege: see the
+  // header comment in mint.ts. It is *not* an admin endpoint — deliberately, per
+  // "admin can't do this for every user": each person mints their own agents
+  // with their own credential, and gets exactly their own reach.
+  const mintAllowed = createRateLimiter(deps.mintRatePerMinute);
+
+  app.post('/v1/agent-tokens', async (req, reply) => {
+    if (!deps.allowMinting) {
+      throw new GatewayError(
+        'FORBIDDEN',
+        'Self-service tokens are disabled on this gateway (MINT_TOKENS=off). Ask your operator to issue one with the CLI.',
+      );
+    }
+    if (!mintAllowed(req.ip, Date.now())) {
+      return reply.status(429).send({
+        error: 'RATE_LIMITED',
+        message: 'Too many token requests from this address.',
+        recovery: 'Wait a minute and try again.',
+      });
+    }
+
+    const body = z
+      .object({
+        // What to call this agent. Namespaced by owner before it is stored, so
+        // two people can both have a "worker-1" without colliding.
+        agent: z.string().min(1).max(40),
+        projectId: z.string().uuid().optional(),
+        capabilities: z.array(z.string()).default([]),
+      })
+      .parse(req.body);
+
+    const planeToken = (req.headers['authorization'] as string | undefined)
+      ?.replace(/^Bearer\s+/i, '')
+      .trim();
+    if (!planeToken) {
+      throw new GatewayError(
+        'UNAUTHENTICATED',
+        'Send your Plane personal token as Authorization: Bearer <token>. Create one in Plane under your profile settings.',
+      );
+    }
+
+    const identity = await identify(deps.planeBaseUrl, planeToken);
+
+    if (body.projectId) {
+      const visible = await visibleProjects(deps.planeBaseUrl, deps.workspaceSlug, planeToken);
+      if (!visible.has(body.projectId)) {
+        throw new GatewayError(
+          'FORBIDDEN',
+          `You are not a member of project ${body.projectId}, so an agent bound to it could not write. Add yourself to it in Plane first.`,
+          { visibleProjects: [...visible] },
+        );
+      }
+    }
+
+    const name = agentName(identity, body.agent);
+    const { token } = await issueToken(pool, {
+      name,
+      principal: `human:${identity.email || identity.displayName}`,
+      capabilities: body.capabilities,
+      planeUserId: identity.id,
+      // The caller's own token, so Plane's activity log attributes the agent's
+      // writes to them rather than to a shared service account.
+      planeToken,
+      ...(body.projectId ? { defaultProjectId: body.projectId } : {}),
+      onlyIfOwnedBy: identity.id,
+    });
+
+    // Minting is a credential-issuing event: it belongs in the log whether or not
+    // anyone is watching, because afterwards it is unreconstructable — only the
+    // hash is kept.
+    app.log.info(
+      { agent: name, planeUser: identity.id, email: identity.email, project: body.projectId },
+      'issued agent token (self-service)',
+    );
+
+    const proto = (req.headers['x-forwarded-proto'] as string) ?? req.protocol;
+    const base = `${proto}://${req.headers['host'] ?? 'your-gateway'}`;
+    return {
+      token,
+      agent: name,
+      planeUser: { id: identity.id, email: identity.email },
+      defaultProjectId: body.projectId ?? null,
+      // Handing back the exact next command removes the step where someone
+      // assembles it by hand from three places and gets the URL wrong.
+      install: `claude mcp add --transport http sync ${base}/mcp --header "Authorization: Bearer ${token}"`,
+      note: 'Shown once — only a hash is stored. Give this to the agent; never give it your Plane token.',
+    };
+  });
 
   // ── capture ──────────────────────────────────────────────────────────────
   app.post('/v1/capture', async (req) => {

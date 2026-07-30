@@ -91,6 +91,15 @@ services:
       PLANE_MCP: ${PLANE_MCP:-on}
       PLANE_MCP_IDLE_MS: ${PLANE_MCP_IDLE_MS:-600000}
       PLANE_MCP_MAX_SESSIONS: ${PLANE_MCP_MAX_SESSIONS:-24}
+      # Self-service onboarding: anyone in the workspace exchanges their own Plane
+      # personal token for an agent token, so nobody needs a shell here. The
+      # exchange only reduces privilege (see server/src/mint.ts), which is why it
+      # carries no admin gate. Set to `off` to issue exclusively from the CLI.
+      MINT_TOKENS: ${MINT_TOKENS:-on}
+      # Per source address. This endpoint takes no gateway credential and calls
+      # Plane twice per request, so an unthrottled one lets a stranger burn the
+      # workspace's rate-limit budget and take the whole fleet down with it.
+      MINT_RATE_LIMIT: ${MINT_RATE_LIMIT:-10}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       PORT: 8787
     ports:
