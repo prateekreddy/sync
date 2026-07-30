@@ -23,7 +23,10 @@ import {
 } from './oauth.js';
 import { board } from './board.js';
 import { capture } from './capture.js';
+import { claimsIn, corroborate, record } from './attest.js';
 import { evidenceWarning, findEvidence, type EvidencePolicy } from './evidence.js';
+import { verifySignature } from './github.js';
+import { handleDelivery } from './webhook.js';
 import { decompose } from './decompose.js';
 import { GatewayError, HTTP_STATUS, RECOVERY } from './errors.js';
 import * as lease from './lease.js';
@@ -71,6 +74,14 @@ export interface Deps {
   /** Where Plane lives, for the self-service mint endpoint's identity check. */
   planeBaseUrl: string;
   workspaceSlug: string;
+  /**
+   * Shared secret for GitHub webhook deliveries. Absent disables the endpoint —
+   * it is the endpoint's only authentication, so there is no "off" that still
+   * accepts.
+   */
+  githubWebhookSecret?: string | undefined;
+  /** May a merged pull request saying `Fixes SYNC-42` transition an unheld item? */
+  githubAutoClose: boolean;
   /** Whether agents can be onboarded without a shell on this host. */
   allowMinting: boolean;
   mintRatePerMinute: number;
@@ -87,6 +98,24 @@ export interface Deps {
 
 export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   const { pool, plane } = deps;
+
+  // GitHub signs the *bytes* it sent, so the parsed object cannot verify a
+  // delivery — re-serialising it changes key order and whitespace and the HMAC no
+  // longer matches. Fastify discards the raw body after parsing, so it is kept
+  // here. Applies to every JSON route rather than one, because a content type
+  // parser is per content type; the cost is one Buffer reference per request.
+  app.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, body, done) => {
+    const raw = body as Buffer;
+    (req as { rawBody?: Buffer }).rawBody = raw;
+    if (raw.length === 0) return done(null, undefined);
+    try {
+      done(null, JSON.parse(raw.toString('utf8')) as unknown);
+    } catch {
+      const err = new Error('Body is not valid JSON') as Error & { statusCode?: number };
+      err.statusCode = 400;
+      done(err, undefined);
+    }
+  });
 
   // OAuth speaks form encoding, not JSON — both the consent form and RFC 6749's
   // token endpoint. Fastify parses only JSON out of the box, so without this the
@@ -150,6 +179,47 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   });
 
   app.get('/healthz', async () => ({ ok: true }));
+
+  // ── GitHub webhook ───────────────────────────────────────────────────────
+  //
+  // The only unauthenticated write endpoint, and the only one that can transition
+  // a work item without an agent. Its authentication is the HMAC, so the order
+  // below is not negotiable: verify the signature against the raw bytes before
+  // anything else looks at the payload.
+  //
+  // Always answers 2xx once the signature checks out, including for events we do
+  // nothing with. A 4xx marks the delivery failed in GitHub's UI and puts it on a
+  // redelivery queue, which turns "we ignore `issue_comment`" into a permanent
+  // stream of red in someone's repository settings.
+  app.post('/v1/webhooks/github', async (req, reply) => {
+    if (!deps.githubWebhookSecret) {
+      // Not registered-but-404, which would read as "wrong URL" to whoever is
+      // setting the hook up. The problem is configuration and it says so.
+      return reply.status(503).send({
+        error: 'UNAVAILABLE',
+        message: 'GitHub webhooks are not configured on this gateway',
+        recovery: 'Set GITHUB_WEBHOOK_SECRET and restart, then use the same secret in the repository webhook settings.',
+      });
+    }
+
+    const raw = (req as { rawBody?: Buffer }).rawBody;
+    const signature = req.headers['x-hub-signature-256'] as string | undefined;
+    if (!raw || !verifySignature(deps.githubWebhookSecret, raw, signature)) {
+      req.log.warn({ delivery: req.headers['x-github-delivery'] }, 'webhook signature rejected');
+      return reply.status(401).send({ error: 'UNAUTHENTICATED', message: 'Bad signature' });
+    }
+
+    const event = (req.headers['x-github-event'] as string | undefined) ?? '';
+    if (event === 'ping') return { ok: true, pong: true };
+
+    const result = await handleDelivery(
+      { pool, plane, autoClose: deps.githubAutoClose },
+      event,
+      req.body,
+    );
+    req.log.info({ event, refs: result.refs }, 'github delivery');
+    return result;
+  });
 
   // ── self-service onboarding ──────────────────────────────────────────────
   //
@@ -662,10 +732,15 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   app.get('/v1/history', async (req) => {
     await actorOf(req);
     const q = HistoryQuery.parse(req.query);
-    const record = await lease.record(pool, q.workItemId);
+    const [leaseRecord, evidence] = await Promise.all([
+      lease.record(pool, q.workItemId),
+      corroborate(pool, q.workItemId),
+    ]);
     // A null record is the honest answer for an item nobody has ever claimed,
-    // and materially different from one claimed and released.
-    return { workItemId: q.workItemId, record };
+    // and materially different from one claimed and released. `evidence` answers
+    // the other half — not just who attempted this, but whether what the last
+    // attempt claimed ever actually landed.
+    return { workItemId: q.workItemId, record: leaseRecord, evidence };
   });
 
   // ── claim ────────────────────────────────────────────────────────────────
@@ -800,6 +875,25 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       epoch: b.epoch,
       reason: b.outcome,
     });
+
+    // Keep what it cited, so the claim can be checked later instead of only now.
+    // After the lease ends, deliberately: a failure to record must not cost an
+    // agent its completion, and the lease row is the commit point for everything.
+    await record(
+      pool,
+      claimsIn(b.outcome).map((e) => ({
+        workItemId: b.workItemId,
+        projectId: l.projectId,
+        source: 'agent' as const,
+        kind: e.kind as 'commit' | 'url',
+        value: e.value,
+        actor: actor.holder,
+      })),
+    ).catch((err: unknown) => {
+      req.log.warn({ err, workItemId: b.workItemId }, 'recording evidence claims failed');
+      return 0;
+    });
+
     void mirrorComplete(plane.as(actor.planeToken), pool, {
       projectId: l.projectId,
       workItemId: l.workItemId,
@@ -808,10 +902,16 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       close: b.close && deps.allowAgentClose,
       ...(warning ? { unverified: true } : {}),
     });
+    // If the pull request merged before the agent got round to saying so, the
+    // github attestation is already there and this is confirmed on the spot. The
+    // two orderings are the same code path, which is the point of the table.
+    const { verified } = await corroborate(pool, b.workItemId).catch(() => ({ verified: false }));
+
     return {
       lease: l,
       closed: b.close && deps.allowAgentClose,
       evidence,
+      verified,
       ...(warning ? { warning } : {}),
     };
   });

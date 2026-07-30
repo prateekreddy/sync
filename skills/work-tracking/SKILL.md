@@ -48,6 +48,17 @@ held  →  claim  →  …work…  →  heartbeat every ~TTL/3  →  complete
    lease and record the outcome while leaving the item open for someone else's half. Use **`release`**
    with a reason when you are handing work back unfinished — silence is the one unacceptable ending.
 
+   A cited commit or pull request is **kept and checked later**, not just read. When the change
+   lands, GitHub confirms it and `complete` comes back `verified: true`. Cite nothing and the item
+   is labelled `unverified`; cite a pull request that never merges and it is labelled
+   `evidence-missing` a day later. Both are visible on the board, so a vague "done" is not a way to
+   move faster — it is a way to be marked as unverified in public.
+
+   **Write `Fixes SYNC-42` in the pull request itself.** On merge, that closes the item with no
+   assertion from anyone. Use the qualified form — a bare `#42` inside a pull request means a GitHub
+   issue and is deliberately ignored. A bare mention like `Groundwork for SYNC-42` records the link
+   and moves nothing, which is usually what you want for partial work.
+
 ## Capture: write it down before you decide
 
 Call `capture` the moment you notice something, not when you get round to it. It is idempotent

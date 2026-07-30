@@ -248,6 +248,49 @@ point; they share an instance but are separate databases.
 **Running two gateway replicas** reopens an out-of-order display bug in the Plane
 mirror — finished work can show as "In Progress". The lease stays correct either way.
 
+## Verifying completions against GitHub
+
+`complete` takes an agent's word for it. The webhook receiver is what checks that word
+against something that actually happened.
+
+Add a webhook in the repository: **Settings → Webhooks → Add webhook**.
+
+| Field | Value |
+|---|---|
+| Payload URL | `https://<your-gateway>/v1/webhooks/github` |
+| Content type | `application/json` |
+| Secret | the same string as `GITHUB_WEBHOOK_SECRET` in `deploy/.env` |
+| Events | *Pull requests* and *Pushes* |
+
+Restart the gateway after setting the secret. Without it the endpoint answers 503 and
+says so — the signature is its only authentication, so there is no mode where it
+accepts unsigned deliveries.
+
+**What a reference means.** Write the qualified form, `SYNC-42`, not `#42` — inside a
+pull request `#42` is a GitHub issue, and reading it as ours would let an ordinary
+cross-reference close unrelated work.
+
+- `Fixes SYNC-42` / `Closes SYNC-42` / `Resolves SYNC-42` on a **merged** pull request
+  closes the item, with a comment naming the pull request. Nobody has to assert
+  anything.
+- A bare mention (`Groundwork for SYNC-42`) records the evidence and moves nothing.
+- If an agent holds the lease, the item stays open and the holder is told — their own
+  `complete` is corroborated the moment they call it.
+- A pull request closed **without** merging does nothing at all.
+
+**Both orderings work.** If the merge arrives first, the agent's later `complete`
+comes back `verified: true`. If the completion comes first, the merge confirms it and
+lifts the `unverified` label. `history` shows what was claimed and what was observed.
+
+**Completions that never landed.** Hourly, any completion citing a pull request that
+has not appeared after `UNLANDED_AFTER_HOURS` (default 24) is labelled
+`evidence-missing` and commented once. That label means *cited something specific that
+does not exist*; `unverified` means *cited nothing at all*. They are different
+failures and worth telling apart.
+
+Set `GITHUB_AUTOCLOSE=off` to keep the evidence trail without letting a merge
+transition anything.
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -265,6 +308,9 @@ mirror — finished work can show as "In Progress". The lease stays correct eith
 | `next` returns nothing | Call `why` on the item you expected. It reports the gate's own reasons — no description, blocked, leased, unfinished children, label, capability mismatch |
 | Plane shows "In Progress" for finished work | Mirror write failed. `docker compose logs gateway \| grep 'plane mirror failed'` |
 | Gateway crash-loops on `PLANE_API_KEY is not set` | `.env` was read before provisioning filled it in. Re-run `docker compose up -d gateway` |
+| Webhook deliveries show 503 | `GITHUB_WEBHOOK_SECRET` is unset. Set it in `deploy/.env` and restart the gateway |
+| Webhook deliveries show 401 | The repository's secret does not match `GITHUB_WEBHOOK_SECRET`. They must be byte-identical |
+| Webhook 200s but nothing happens | Check the response body's `refs`. `no-such-item` means the identifier is not a project the gateway's token can see; `mentioned` means the text had no closing keyword |
 
 ## Tests
 
@@ -288,8 +334,6 @@ The unit tests need Postgres. `deploy/docker-compose.yml` provides it; point
 
 ## Known gaps
 
-- No GitHub webhook yet, so `complete` records evidence but nothing verifies it.
-  Machine-checked closing (PR merged → close) is the natural next step.
 - No decay or curation of stale captures. Write-first plus agents produces volume;
   dedup-on-write is the only hedge in place so far.
 - The gateway serves work but does not dispatch it — agents poll, nothing launches them.

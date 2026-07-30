@@ -172,6 +172,11 @@ GATEWAY_DB_PASSWORD=$(randb64 32 24)
 GATEWAY_TOKEN_KEY=$(rand 32)
 ALLOW_AGENT_CLOSE=true
 PLANE_MCP=on
+# Shared secret for GitHub webhook deliveries — paste this into the repository's
+# webhook settings (Settings → Webhooks → Secret). It is the only authentication
+# on an endpoint that can close work items, so blank disables the endpoint rather
+# than opening it. Generated here so nobody is tempted to invent a weak one.
+GITHUB_WEBHOOK_SECRET=$(rand 32)
 
 # ── filled in by provision.sh ────────────────────────────────────────────────
 PLANE_API_KEY=

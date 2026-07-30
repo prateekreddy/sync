@@ -480,6 +480,64 @@ MCP built in — conceptually this project, but v0.1 and one developer); *Huly*
 only, no concurrency story); *GitLab* (official MCP, but gated behind Duo);
 *Taiga, Redmine, Tuleap* (community MCP only, no locking).
 
+## Evidence: a claim by someone, not a boolean
+
+`complete` takes free text, extracts citations from it, and used to throw them away.
+So an agent could say "merged in #42" and close the item whether or not #42 existed,
+and nothing downstream could ever ask again. The whole coordination loop rests on
+completions being true, which made this the largest functional gap in the system.
+
+The fix is not "add a webhook". A webhook is a source; the missing primitive was that
+**a citation is a claim, and claims carry the weight of who made them**:
+
+- `agent` — free text, self-reported at completion, unverified by construction.
+- `github` — HMAC-signed, describing something that actually happened.
+
+Both go in one table (`attestation`). Verification then stops being a mechanism and
+becomes a query: is there a `github` row with the same `match_key` as the `agent` row?
+
+### Normalise on write, compare exactly on read
+
+An agent writes `3f7a891`. GitHub sends the full 40-character sha. An agent pastes a
+pull request URL with `?w=1`; GitHub sends it bare. Comparing those fuzzily would be a
+permanent source of silent wrong answers, so both sides are reduced to an artefact
+identity by **one** function (`matchKey`) at write time, and corroboration is `=`.
+`commit:3f7a891`, `pr:acme/app#42`. If that function ever disagreed with itself
+nothing would error — corroboration would simply return false forever — which is why
+it takes the artefact and nothing else: no source, no context, no options.
+
+### The two orderings are one code path
+
+The attestation is written before anything is decided. So a merge that arrives before
+the agent's `complete` corroborates it the instant it lands, and a merge that arrives
+after corroborates it retroactively. Neither is a special case.
+
+### Mention versus closing keyword
+
+GitHub's own convention decides whether a change may transition an item: `Fixes
+SYNC-42` closes it, a bare `SYNC-42` only records evidence. This is the difference
+between "touches" and "finishes", and it means the destructive action requires the
+author to have said the destructive thing — in words they already use.
+
+Two references are deliberately *not* honoured. Bare `#42` in a pull request means a
+GitHub issue, not ours; reading it as ours would let a routine cross-reference close
+unrelated work. And a pull request closed without merging is ignored entirely, because
+it references items exactly as a merged one does while meaning the opposite.
+
+`UTF-8` and `SHA-256` have precisely the shape of a reference, and nothing in the text
+can distinguish them. Rather than guess, the parser returns the identifier half and
+the caller discards anything that does not name a real project — a check that makes
+the whole class of false positives impossible instead of improbable.
+
+### Two failures, deliberately kept apart
+
+- `unverified` — the completion cited **nothing** checkable. Set at completion time.
+- `evidence-missing` — the completion cited something specific that, a day later, has
+  never appeared. Set by an hourly sweep.
+
+Collapsing them into one flag would lose the distinction that matters: the first is an
+agent being terse, the second is an agent being wrong.
+
 ## Settled
 
 - **Agents close their own work**, humans audit afterwards (`ALLOW_AGENT_CLOSE`).
@@ -488,8 +546,5 @@ only, no concurrency story); *GitLab* (official MCP, but gated behind Duo);
 
 ## Still open
 
-- No GitHub webhook, so `complete` records evidence but nothing verifies it.
-  Machine-checked closing is what would make agent self-closing safe rather than
-  trusted.
 - No decay or curation of stale captures; dedup-on-write is the only hedge.
 - The gateway serves work but does not dispatch it.

@@ -246,6 +246,30 @@ export class PlaneClient {
     return this.request<WorkItem>('GET', `/projects/${projectId}/work-items/${id}/`);
   }
 
+  /**
+   * Projects this token can see, by their readable identifier.
+   *
+   * The webhook needs it to decide whether `SYNC-42` in a pull request body names
+   * a project at all — which is what stops `UTF-8` and `SHA-256` from being read
+   * as work item references.
+   */
+  async projects(): Promise<Array<{ id: string; identifier: string; name: string }>> {
+    return this.listAll<{ id: string; identifier: string; name: string }>('/projects/');
+  }
+
+  /**
+   * Resolve `SYNC-42` to the work item.
+   *
+   * Lives directly under the workspace rather than under a project, so the
+   * project is an *output* of this call, not an input. Callers must check that
+   * the returned project's identifier is the one they asked for: nothing in the
+   * URL guarantees it, and a webhook that transitioned whatever came back would
+   * be a silent way to close the wrong item.
+   */
+  byReadableId(readableId: string): Promise<WorkItem> {
+    return this.request<WorkItem>('GET', `/issues/${encodeURIComponent(readableId)}/`);
+  }
+
   createWorkItem(projectId: string, body: Record<string, unknown>): Promise<WorkItem> {
     return this.request<WorkItem>('POST', `/projects/${projectId}/work-items/`, body);
   }

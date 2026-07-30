@@ -91,13 +91,25 @@ services:
       PLANE_MCP: ${PLANE_MCP:-on}
       PLANE_MCP_IDLE_MS: ${PLANE_MCP_IDLE_MS:-600000}
       PLANE_MCP_MAX_SESSIONS: ${PLANE_MCP_MAX_SESSIONS:-24}
+      # off | warn | refuse. warn records a completion citing nothing checkable
+      # and labels the item "unverified"; refuse rejects the call.
+      REQUIRE_EVIDENCE: ${REQUIRE_EVIDENCE:-warn}
+      # Shared secret from the repository's webhook settings. This is the *only*
+      # authentication on /v1/webhooks/github, and that endpoint can transition
+      # work items — so leaving it empty disables the endpoint rather than opening
+      # it. There is no unauthenticated mode.
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      # May a merged pull request saying `Fixes SYNC-42` close an item nobody is
+      # holding? A bare mention never closes anything either way; `off` keeps the
+      # evidence recording and drops only the transition.
+      GITHUB_AUTOCLOSE: ${GITHUB_AUTOCLOSE:-on}
+      # How long a completion's cited pull request may go unmerged before the item
+      # is labelled "evidence-missing".
+      UNLANDED_AFTER_HOURS: ${UNLANDED_AFTER_HOURS:-24}
       # Self-service onboarding: anyone in the workspace exchanges their own Plane
       # personal token for an agent token, so nobody needs a shell here. The
       # exchange only reduces privilege (see server/src/mint.ts), which is why it
       # carries no admin gate. Set to `off` to issue exclusively from the CLI.
-      # off | warn | refuse. warn records a completion citing nothing checkable
-      # and labels the item "unverified"; refuse rejects the call.
-      REQUIRE_EVIDENCE: ${REQUIRE_EVIDENCE:-warn}
       MINT_TOKENS: ${MINT_TOKENS:-on}
       # Per source address. This endpoint takes no gateway credential and calls
       # Plane twice per request, so an unthrottled one lets a stranger burn the
