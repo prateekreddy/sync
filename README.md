@@ -65,15 +65,62 @@ superuser credentials (to create the gateway's own database once), a Plane API t
 and the workspace slug. `provision.sh` does not run in this mode — it works by
 executing inside the `api` container, which belongs to your stack, not this one.
 
+### Behind a reverse proxy you already run
+
+If something else already owns `:80`/`:443` on the host — Caddy, nginx, Traefik —
+give this stack no host bindings at all and let that proxy reach it over the Docker
+network. In a `docker-compose.override.yml`:
+
+```yaml
+services:
+  proxy:                    # would otherwise collide on 80/443 and fail to bind
+    ports: !override []
+  gateway:                  # agent tokens are bearer credentials; keep it unpublished
+    ports: !override []
+```
+
+Then point your proxy at `proxy:80` and `gateway:8787`, attach it to the network
+named by `PLANE_NETWORK`, and in `.env` set `WEB_URL` and `CORS_ALLOWED_ORIGINS` to
+the `https://` address users actually visit — Plane builds absolute URLs and
+sign-in redirects from them, so leaving them `http://` breaks the login round trip.
+Leave `SITE_ADDRESS=:80`: TLS is the outer proxy's job and Plane's own proxy should
+not try to get a certificate.
+
+`provision.sh` needs no host port for this. It asks Docker where each service is
+rather than trusting `LISTEN_HTTP_PORT`, falling back to the container's address on
+the Plane network. Three overrides exist for what it cannot infer:
+
+| Variable | Use when |
+|---|---|
+| `PROVISION_BASE_URL` | Plane is reachable somewhere Docker cannot report |
+| `PROVISION_GATEWAY_URL` | same, for the gateway's `/healthz` poll |
+| `SYNC_GATEWAY_URL` | the agent-facing URL, so the printed install snippet is correct |
+
+```bash
+SYNC_GATEWAY_URL=https://mcp.example.com ./provision.sh
+```
+
+Only `SYNC_GATEWAY_URL` is normally worth setting: nothing in the stack can know
+your proxy's public hostname, so without it the snippet falls back to a
+`http://<this-host>:8787` placeholder that is wrong in this mode.
+
 ### What provisioning actually does
 
 Plane has no supported way to create the first user, the first workspace, or an API
 token without a browser session — an API token is the only credential `/api/v1/`
 accepts, and minting one needs a session you cannot get headlessly. So `provision.py`
-uses Plane's ORM for exactly those three things and stops there. The project is
-created through the public API instead, because that endpoint also creates Plane's
-default workflow states, and the readiness gate reads state *groups* to decide what is
-claimable.
+uses Plane's ORM for exactly those three things — plus a fourth, below — and stops
+there. The project is created through the public API instead, because that endpoint
+also creates Plane's default workflow states, and the readiness gate reads state
+*groups* to decide what is claimable.
+
+The fourth is marking the instance set up. Plane pins every route to its setup wizard
+until `Instance.is_setup_done` is true, and that wizard exists to create the first
+instance admin — which provisioning has just created. Registering the admin without
+flipping the flag therefore yields an instance that is fully provisioned and
+impossible to sign into: the only reachable page is a wizard that can no longer
+complete. The api caches the flag, so `provision.sh` restarts that container on the
+run which flips it.
 
 If a Plane upgrade ever breaks that script, nothing is lost: do the same four things
 in the UI (sign up, workspace, project, API token) and put the token in `deploy/.env`.

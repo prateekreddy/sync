@@ -14,3 +14,10 @@ deploy/plane/
 
 # Local npm tuning (sandbox network workarounds) — not project config
 .npmrc
+
+# Per-host Compose override. The README tells you to write one of these to run
+# behind a reverse proxy you already own, and its contents are specific to that
+# host: which ports are free, which network the outer proxy sits on, what memory
+# the box can spare. Committing one would push a single machine's layout onto
+# every other deployment.
+deploy/docker-compose.override.yml
