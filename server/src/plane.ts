@@ -297,20 +297,27 @@ export class PlaneClient {
   /**
    * Work item ids in a module.
    *
-   * Note this route returns a bare array of full work items rather than Plane's
-   * usual paginated envelope, so it cannot go through `listAll`. Only the ids are
-   * kept — the caller already has the items from the project listing, and Plane
-   * will not filter that listing for us anyway.
+   * Paginated like every other list here, and returning full work items — only
+   * the ids are kept, because the caller already has the items from the project
+   * listing and Plane will not filter that listing for us anyway.
+   *
+   * An earlier version read this as a bare array. It is not, and the failure was
+   * silent: `.map` on the envelope object threw, a caller's catch swallowed it,
+   * and every module reported zero items. Hence `listAll`.
    *
    * Requires `module_view` on the project; without it Plane answers 404, which
    * reads like a wrong URL rather than a disabled feature.
    */
   async moduleIssueIds(projectId: string, moduleId: string): Promise<Set<string>> {
-    const rows = await this.request<Array<{ id: string }>>(
-      'GET',
+    const rows = await this.listAll<{ id: string }>(
       `/projects/${projectId}/modules/${moduleId}/module-issues/`,
     );
-    return new Set((rows ?? []).map((r) => r.id));
+    return new Set(rows.map((r) => r.id));
+  }
+
+  /** A project's modules — the epic layer. Requires `module_view` on the project. */
+  modules(projectId: string): Promise<Array<{ id: string; name: string }>> {
+    return this.listAll<{ id: string; name: string }>(`/projects/${projectId}/modules/`);
   }
 
   /**

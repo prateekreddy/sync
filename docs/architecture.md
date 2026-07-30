@@ -166,7 +166,7 @@ look identical from the inside.
 `readyCandidates` now resolves ids once per browse from a per-project cache, and
 both consumers go through a single helper so they cannot drift apart again.
 
-## Agent surface (10 tools)
+## Agent surface (13 tools)
 
 | Tool | Why it exists |
 |---|---|

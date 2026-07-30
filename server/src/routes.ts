@@ -21,6 +21,7 @@ import {
   redeemCode,
   registerClient,
 } from './oauth.js';
+import { board } from './board.js';
 import { capture } from './capture.js';
 import { decompose } from './decompose.js';
 import { GatewayError, HTTP_STATUS, RECOVERY } from './errors.js';
@@ -35,6 +36,7 @@ import { parseFields } from './view.js';
 import { handleMcpHttp } from './mcphttp.js';
 import { callTool, listTools } from './tools.js';
 import {
+  BoardQuery,
   CaptureBody,
   ClaimBody,
   DecomposeBody,
@@ -576,6 +578,17 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     return tree(plane, pool, {
       ...rest,
       ...(parseFields(rawFields) ? { fields: parseFields(rawFields) } : {}),
+      ...(actor.capabilities.length ? { capabilities: actor.capabilities } : {}),
+    });
+  });
+
+  // ── board (read-only) ────────────────────────────────────────────────────
+  app.get('/v1/board', async (req) => {
+    const actor = await actorOf(req);
+    const b = BoardQuery.parse(req.query);
+    return board(plane, pool, {
+      projectId: b.projectId,
+      ...(b.moduleId ? { moduleId: b.moduleId } : {}),
       ...(actor.capabilities.length ? { capabilities: actor.capabilities } : {}),
     });
   });

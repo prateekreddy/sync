@@ -114,6 +114,11 @@ export const DecomposeBody = z.object({
     .max(50),
 });
 
+export const BoardQuery = z.object({
+  projectId: uuid,
+  moduleId: uuid.optional().describe('Just this module. Omit for the whole project.'),
+});
+
 export const FindQuerySchema = z.object({
   projectId: uuid,
   labels: z
@@ -261,6 +266,19 @@ export const NATIVE_TOOLS: NativeTool[] = [
     schema: TreeQuery,
     method: 'GET',
     request: (a) => ({ path: q('/v1/tree', a) }),
+  },
+  {
+    name: 'board',
+    title: 'Where does this project stand?',
+    description:
+      'Progress per module — the epic layer — plus every live lease, in one call. Each module ' +
+      'reports total, done, held, ready and blocked, which add up: an item is in exactly one ' +
+      'bucket. `ready` is the number Plane cannot produce, because it needs the readiness gate ' +
+      'and the lease table. Use it to decide whether to finish something nearly done rather ' +
+      'than start something new, and to see what the rest of the fleet is holding.',
+    schema: BoardQuery,
+    method: 'GET',
+    request: (a) => ({ path: q('/v1/board', a) }),
   },
   {
     name: 'find',
