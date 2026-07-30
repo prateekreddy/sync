@@ -47,12 +47,25 @@ status, existing = call("GET", "/projects/")
 if status >= 400:
     die("list projects", status, existing)
 
+# Modules are the epic layer, and Plane gates them per project behind
+# `module_view`. Without it every module call fails -- creating one returns
+# "Modules are not enabled for this project" and module-issues answers 404, which
+# reads like a wrong URL rather than a disabled feature. Set at creation, and
+# repaired on re-runs so projects made before this still get it.
+FEATURES = {"module_view": True}
+
 match = [p for p in existing.get("results", []) if p.get("identifier") == IDENT]
 if match:
     project = match[0]
     print(f"project {IDENT} already exists ({project['id']})", file=sys.stderr)
+    missing = {k: v for k, v in FEATURES.items() if project.get(k) != v}
+    if missing:
+        status, body = call("PATCH", f"/projects/{project['id']}/", missing)
+        if status >= 400:
+            die("enable project features", status, body)
+        print(f"enabled {', '.join(missing)} on {IDENT}", file=sys.stderr)
 else:
-    status, project = call("POST", "/projects/", {"name": NAME, "identifier": IDENT})
+    status, project = call("POST", "/projects/", {"name": NAME, "identifier": IDENT, **FEATURES})
     if status >= 400:
         die("create project", status, project)
     print(f"created project {IDENT} ({project['id']})", file=sys.stderr)

@@ -54,6 +54,10 @@ which belongs to your stack. Do the same four things in Plane's UI instead: sign
 up, create the workspace, create the project, create an API token, then put the
 token in `deploy/.env` as `PLANE_API_KEY`.
 
+Also turn **Modules** on in the project's settings. Plane gates them per project,
+and provisioning normally does it for you; without it every module call fails,
+and the 404 reads like a wrong URL rather than a disabled feature.
+
 ### Behind a reverse proxy you already run
 
 If something else already owns `:80`/`:443` on the host — Caddy, nginx, Traefik —
