@@ -228,6 +228,73 @@ silently render every stored agent token undecryptable.
 Decryption failure degrades to the service account rather than taking the agent
 offline — work continues, attributed less precisely.
 
+## Who issues agent tokens
+
+Tokens were originally issued only by a CLI inside the gateway container. That
+makes onboarding an admin bottleneck: one person with a shell has to run a command
+for every agent anyone wants to run, and people without server access cannot
+onboard at all. It also blocks automated project creation, which has to mint over
+the network.
+
+So the authority is Plane's, not the gateway's. `POST /v1/agent-tokens` takes the
+caller's own **Plane personal token** and returns an agent token scoped to them.
+
+**Why no admin gate.** Plane's token endpoint (`plane/app/views/api.py`) carries
+no permission class and sets `user=request.user`, so any member at any role can
+create a personal token from the UI, reaching exactly what its owner reaches. The
+exchange then only ever *reduces* privilege:
+
+| | Presented Plane token | Returned agent token |
+|---|---|---|
+| Reach in Plane | everything that role allows | same, minus the below |
+| Set `assignees` / `state` | yes | only while holding that item's lease |
+| Delete states, labels, cycles | yes | needs the `destructive` capability |
+| Call Plane directly | yes | no — not a Plane credential |
+
+Nobody gains anything by calling the endpoint that they could not already do by
+hand with the token they presented. An admin-only gate would have added a
+bottleneck without adding safety — and it would have been wrong on its own terms,
+since an admin cannot sensibly mint on behalf of every user.
+
+**Why names are namespaced by owner.** `issueToken` upserts on `name`, which is
+right for an operator at a shell and wrong once anyone can mint: asking for a name
+someone else already uses would rotate their token, logging their agent out and
+taking its identity in Plane's activity log. Storing `owner/agent` makes the
+collision impossible rather than merely detected. A second guard applies the
+ownership check inside the `ON CONFLICT DO UPDATE` predicate rather than as a
+prior `SELECT`, so two concurrent mints cannot both pass and then race.
+
+**Rate limiting.** The endpoint takes no gateway credential and calls Plane twice
+per request, so it is limited per source address (`MINT_RATE_LIMIT`, default
+10/min): unthrottled, a stranger could burn the workspace's rate-limit budget and
+take the whole fleet down. The limiter is in-memory and therefore per-process —
+with more than one replica the effective limit multiplies, the same caveat mirror
+ordering carries.
+
+`MINT_TOKENS=off` disables the endpoint and returns issuance to the CLI alone.
+
+## Onboarding channels: MCP, repo file, or skill
+
+The discipline that matters most — *write it down the moment you notice it,
+claim before you work* — has to fire when the agent was **not** thinking about
+tools. Tool descriptions are read while choosing among tools, which is too late:
+by then the model has already decided what it is doing.
+
+So it ships on two always-on channels, because neither is sufficient alone:
+
+1. **The MCP server's `instructions`**, sent in the handshake. Costs nothing to
+   maintain and reaches every agent from the gateway. Surfacing it is the client's
+   choice, and not every client does.
+2. **A few lines in `CLAUDE.md` / `AGENTS.md`.** The only channel guaranteed to be
+   in context.
+
+**Not a skill.** Skills load on demand, when the model judges them relevant — right
+for occasional procedural work, wrong for rules that always apply. A skill holding
+"claim before you work" would be strictly worse than the same words in `AGENTS.md`,
+with an extra failure mode where it is never loaded. The one thing that fits the
+skill shape is a session-start routine (`held` → `next` → claim), which is three
+tool calls a human can just ask for.
+
 ## Settled
 
 - **Agents close their own work**, humans audit afterwards (`ALLOW_AGENT_CLOSE`).

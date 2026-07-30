@@ -170,6 +170,10 @@ cat <<EOF
  token carries it. Use bin/onboard.sh to have the endpoint checked first,
  or for Codex config. See docs/onboarding.md.
 
+ Anyone else can onboard themselves without this script and without a
+ shell here: they create a personal token in Plane's UI and POST it to
+ <gateway-url>/v1/agent-tokens. Set MINT_TOKENS=off to disable that.
+
  <gateway-url> is however this gateway is reachable from the agent, e.g.
  https://mcp.your-host, or http://<this-host>:${GATEWAY_LISTEN_PORT:-8787}
  on a trusted network. Send tokens over TLS: they are bearer credentials.

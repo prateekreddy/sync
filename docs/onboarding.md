@@ -1,86 +1,107 @@
 # Onboarding an agent
 
-## The whole thing
+Done entirely from Plane's web UI and your own terminal. No server access, no
+admin role.
+
+## 1. Get the project uuid
+
+Open (or create) the project in Plane. The uuid is in the URL:
+
+```
+https://<plane-host>/<workspace>/projects/<project-uuid>/issues
+```
+
+## 2. Create a personal token in Plane
+
+Your avatar → **Settings** → **Personal access tokens** → **Add token**.
+
+Copy the `plane_api_…` value — Plane shows it once.
+
+## 3. Exchange it for an agent token
+
+```bash
+curl -sS -X POST https://<gateway-host>/v1/agent-tokens \
+  -H "Authorization: Bearer plane_api_..." \
+  -H 'Content-Type: application/json' \
+  -d '{"agent":"worker-1","projectId":"<project-uuid>"}'
+```
+
+You get back a `sync_agent_…` token and the exact command for step 4.
+
+Options in the body:
+
+| Field | |
+|---|---|
+| `agent` | required. What to call this agent. Namespaced to you, so `worker-1` is yours alone |
+| `projectId` | the project the agent works in by default. Omit it and the agent must name a project on every call |
+| `capabilities` | optional list of labels this agent may pick up. Empty means anything ready |
+
+## 4. Register it with your agent
 
 ```bash
 claude mcp add --transport http sync https://<gateway-host>/mcp \
   --header "Authorization: Bearer sync_agent_..."
 ```
 
-Nothing installed, nothing built, no project id, no Node version to match. The
-token carries the project, and the gateway serves the tool catalogue — so this is
-the last time you touch the agent box. New tools, reworded descriptions and Plane
-upgrades all arrive on the next gateway deploy.
+Nothing to install or build, and no project id on the agent box. New tools and
+Plane upgrades arrive on the next gateway deploy without touching this machine.
 
-Two values are needed and neither is baked into anything:
-
-| | Where it comes from |
-|---|---|
-| **Gateway URL** | your deployment. `https://mcp.<your-plane-host>/mcp` if you followed the naming, but it is only ever a flag or an env var |
-| **Agent token** | `provision.sh` prints one per agent, or `issue-token` makes more |
-
-`bin/onboard.sh` does the same thing with the endpoint checked first, which is
-worth it: registering a broken server means debugging it from inside an agent
-session, where the only symptom is a tool that isn't there.
+## Or run one script for steps 3 and 4
 
 ```bash
-bin/onboard.sh                                   # asks for what it needs
-bin/onboard.sh --url … --token … -y              # non-interactive
+bin/onboard.sh                                          # asks for what it needs
+bin/onboard.sh --url … --plane-token … --agent worker-1 --project … -y
 ```
 
-Order of precedence for every value is flag → environment → prompt, so the same
-script serves a person setting up a laptop and a provisioning system creating a
-project.
+It checks the gateway answers before registering anything, so a wrong URL or a
+rejected token fails here rather than inside an agent session. Every value comes
+from a flag, then an environment variable, then a prompt. `--client codex` prints
+Codex config instead of registering.
 
-## Issuing a token
+## Rules
 
-```bash
-docker compose exec gateway node dist/cli.js issue-token \
-  --name worker-1 --principal human:you \
-  --project <plane-project-uuid> \
-  --plane-token <that agent's Plane API token>
-```
+- **Give the agent only the `sync_agent_…` token.** Never give it your Plane
+  token. A Plane token can set `assignees` directly, which bypasses the lease and
+  puts two agents on one item.
+- **Re-running step 3 with the same agent name replaces that agent's token.** The
+  old one stops working immediately.
+- **Use a long-lived Plane token.** If it expires or you revoke it, the agent
+  keeps working but its Plane writes stop being attributed to you.
+- The mint endpoint allows 10 requests a minute per source address.
 
-`--project` binds the default project to the token. That is what removes project
-configuration from the agent box, and it means re-pointing an agent at a different
-project is a server-side change rather than a visit to every machine. An agent can
-still name any project explicitly on any call; this is a default, not a fence.
+## Troubleshooting
 
-`--plane-token` is what makes Plane's activity log say *worker-1 moved this to In
-Progress* instead of attributing the whole fleet to one service account. Give the
-agent **only** the `sync_agent_…` token that comes back — never the Plane token
-behind it. A Plane Member key sets `assignees` directly, which bypasses the lease.
+| Symptom | Cause | Fix |
+|---|---|---|
+| `served a web page, not a gateway` | Pointed at Plane, not the gateway | Use the gateway host, usually `mcp.<your-plane-host>` |
+| `Plane rejected that personal token` | Sent a `sync_agent_…` token, or the Plane token expired | Create a fresh token under Plane profile → Personal access tokens |
+| `You are not a member of project …` | You cannot see that project | Add yourself to it in Plane, then retry. The reply lists the projects you can see |
+| `already belongs to a different Plane user` | Someone else has that agent name | Pick another name |
+| HTTP 429 | 10 mints/minute per address | Wait a minute |
+| `refusing to send a token unencrypted` | Gateway URL is `http://` on a remote host | Use `https://`, or a localhost address |
+| `claude mcp list` shows `✘ Failed to connect` | Wrong URL, or the gateway is down | `curl https://<gateway-host>/healthz` should return `{"ok":true}` |
+| Connects, but the agent has no `capture`/`claim` tools | Registered against the wrong server name, or an old stdio config is shadowing it | `claude mcp remove sync` then re-add |
+| `UNAUTHENTICATED` on every tool call | Token revoked, or replaced by a later mint with the same agent name | Mint again and re-run `claude mcp add` |
+| `next` returns nothing | Nothing is ready | Items may be blocked, already leased, or parents with unfinished children. Check the project has items in a backlog/unstarted state |
+| Tools work but Plane writes 403 | The Plane user is not a member of that project | Add them to the project in Plane |
+| Plane's activity log says "service account" | The Plane token you minted with expired or was revoked | Mint again with a current token |
+| `Pending approval` after `--scope project` | Project-scoped servers need a one-time approval | Approve the prompt in Claude Code, or use `--scope local` |
 
-## Is the MCP server enough on its own?
+## What the agent token can and cannot do
 
-For *capability*, yes. For *discipline*, no — and the distinction is the whole
-reason this section exists.
+It is your access, reduced:
 
-Tool descriptions are read when the model is choosing among tools. That is the
-wrong moment for the rule that matters most here:
+| | Your Plane token | The agent token |
+|---|---|---|
+| Reach in Plane | everything your role allows | same, minus the below |
+| Set `assignees` / `state` | yes | only while holding that item's lease |
+| Delete states, labels, cycles | yes | no |
+| Call Plane directly | yes | no — it only works against the gateway |
 
-> when you find anything you want to do now or later, write it to the platform
-> first, then pick it
+## Add the rules to CLAUDE.md / AGENTS.md
 
-The point of that rule is to fire when the agent was **not** thinking about tools
-at all — mid-way through editing a file, when it notices something unrelated. A
-description sitting on the `capture` tool cannot reach that moment. Same for
-"claim before you start": by the time the model is choosing a tool, it has usually
-already decided what it is doing.
-
-So the discipline needs a channel that is always in context. There are two, and
-they are worth using together because neither is sufficient alone:
-
-**1. The server's `instructions` (already shipped).** Sent in the MCP handshake,
-so it costs nothing to maintain and reaches every agent from the gateway. Verified
-present in the initialize response. The caveat is that surfacing it is up to the
-client, and not every client does.
-
-**2. A few lines in `CLAUDE.md` / `AGENTS.md` (you have to add).** Guaranteed in
-context, per repo. This is the belt to the server's braces.
-
-Keep it short. This file is in context for every request, so it is the most
-expensive text in the project — it should carry rules, not documentation.
+The gateway sends the working rules to the agent when it connects, but not every
+client surfaces that. Put this in the repo so it is always in context:
 
 ```markdown
 ## Work tracking
@@ -101,36 +122,42 @@ After a restart, call `held` first to see what you were in the middle of.
 Never edit assignees or state in Plane directly to take work.
 ```
 
-## Does it need a skill?
+Keep it short — it is in context for every request.
 
-No, and it is worth being clear about why, because a skill is the tempting answer.
+No skill is needed. These rules apply to every request, and skills only load when
+the model decides they are relevant.
 
-Skills load on demand, when the model judges them relevant. That makes them right
-for *occasional and procedural* work and wrong for *always-applicable rules*. A
-skill holding "claim before you work" would be a rule that applies constantly but
-is only read sometimes — strictly worse than the same words in `CLAUDE.md`, and
-with an extra failure mode where the model doesn't think to load it.
+## Issuing a token from the server
 
-The one thing that genuinely fits the skill shape is a **session-start routine**:
-check `held`, then `next`, then claim and set up. That is procedural and happens
-once per session. It is also three tool calls a human can just ask for, so it is a
-convenience rather than a gap — worth adding when the routine grows, not before.
+For provisioning scripts that already have a shell on the gateway host:
+
+```bash
+docker compose exec gateway node dist/cli.js issue-token \
+  --name worker-1 --principal human:you \
+  --project <plane-project-uuid> \
+  --plane-token <that agent's Plane API token>
+```
+
+This does not namespace the name and will rotate any existing agent with that
+name. Set `MINT_TOKENS=off` in the gateway's environment to make this the only
+way tokens are issued.
 
 ## Wiring this into project creation
 
-For automating onboarding as part of creating a project, the pieces are:
+All three steps are HTTP, so this runs from anywhere:
 
-1. **Create the Plane project** — `POST /api/v1/workspaces/<slug>/projects/`, or
-   `deploy/plane_api.py`. Use the API rather than the ORM: it also creates the
-   default workflow states the readiness gate depends on.
-2. **Issue a token bound to it** — `issue-token --project <uuid>`. One token per
-   agent identity, not one per project; re-issuing rebinds the default and keeps
-   the Plane mapping.
-3. **Register the server** — `bin/onboard.sh --url … --token … -y`, or write the
-   config directly.
+1. **Create the project** — `POST /api/v1/workspaces/<slug>/projects/`, or
+   `deploy/plane_api.py`. Use the API, not the ORM: it also creates the default
+   workflow states the readiness gate needs.
+2. **Mint a token bound to it** — `POST /v1/agent-tokens` with the user's own
+   Plane token. One token per agent identity, not one per project.
+3. **Register the server** — `bin/onboard.sh --url … --plane-token … -y`.
+
+Mint with the user's own Plane token so their agents appear in Plane's activity
+log as theirs rather than as a shared robot.
 
 For a per-repo mapping, `--scope project` writes `.mcp.json`, which is committed —
-so the token must be a **reference**, never a literal:
+so the token must be a reference, never a literal:
 
 ```json
 {
@@ -144,28 +171,19 @@ so the token must be a **reference**, never a literal:
 }
 ```
 
-Each agent then supplies its own `SYNC_AGENT_TOKEN` from the environment, and the
-repo commits the wiring without committing a credential.
+Each agent supplies its own `SYNC_AGENT_TOKEN` from the environment.
 
-Two honest caveats on that path, both verified by trying:
-
-- Project-scoped servers need approving once per machine. The state lives in
-  `~/.claude.json` under `projects.<path>.enabledMcpjsonServers`, not in
-  `.claude/settings.json`.
-- I could not get that pre-approval to take effect non-interactively —
-  `claude mcp list` still reported *Pending approval*. So treat the automated
-  project-scope path as unproven and use `--scope local` or `user` until someone
-  confirms it. Local scope is verified working.
+Project-scoped servers need approving once per machine, and the approval state
+lives in `~/.claude.json` under `projects.<path>.enabledMcpjsonServers`. Setting
+it non-interactively did not take effect in testing, so use `--scope local` or
+`user` unless you are prepared to approve the prompt by hand.
 
 ## Codex
 
-`bin/onboard.sh --client codex` prints the config rather than editing your TOML,
-because clobbering a hand-written config is worse than asking for a paste.
+`bin/onboard.sh --client codex` prints the config rather than editing your TOML.
 
-I could not verify Codex's HTTP MCP support from here — Codex isn't installed on
-this machine. The script prints the HTTP form first and the stdio bridge second;
-if your build rejects the HTTP form, the bridge in `mcp/` is the fallback and is
-tested.
+Codex's HTTP MCP support is untested here. The script prints the HTTP form first;
+if your build rejects it, use the stdio bridge in `mcp/`, which is tested.
 
 ## Verifying it worked
 
@@ -174,4 +192,4 @@ claude mcp list           # sync: … (HTTP) - ✔ Connected
 ```
 
 Then ask the agent to call `next`. If it returns candidates without you supplying
-a project id, the token binding is working and onboarding is complete.
+a project id, the token binding is working.

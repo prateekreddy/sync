@@ -10,22 +10,8 @@ A work tracker your team and your agents share, built by **not** building a trac
 - **Onboarding is one command.** The gateway speaks MCP over HTTPS, so pointing an
   agent at it needs no local install and no configuration beyond a URL and a token.
 
-Read [`docs/architecture.md`](docs/architecture.md) for why it is shaped this way,
+See [`docs/architecture.md`](docs/architecture.md) for why it is shaped this way,
 including the measured evidence that client-side claim protocols cannot work here.
-
-## Why the gateway exists
-
-Plane's API has no optimistic concurrency — no `If-Match`, no ETag, no version
-precondition. We measured what happens when agents coordinate through `assignee`
-alone (`docs/race.py`, `docs/race2.py`):
-
-| Agents arrive | Result |
-|---|---|
-| Simultaneously | Writes merge, everyone backs off. **Livelock — nobody works.** |
-| Staggered (the normal case) | Each write erases the previous assignee. **All three agents proceed** on the same item, and Plane records only the last one — the collision is invisible. |
-
-The gateway replaces that with one atomic SQL statement. Under the same test, exactly
-one agent wins and the losers get an actionable error.
 
 ## Setup
 
@@ -59,53 +45,46 @@ docker compose up -d                                 # bootstraps the gateway's 
 COMPOSE_PROFILES=gateway docker compose up -d
 ```
 
-This turns off the bundled Plane services and points the gateway at yours. It needs
-three things you have to supply, because they belong to your instance: the Postgres
-superuser credentials (to create the gateway's own database once), a Plane API token,
-and the workspace slug. `provision.sh` does not run in this mode — it works by
-executing inside the `api` container, which belongs to your stack, not this one.
+This turns off the bundled Plane services and points the gateway at yours. Fill in
+the three values `.env` asks for at the top: the Postgres superuser credentials (to
+create the gateway's own database once), a Plane API token, and the workspace slug.
 
-### What provisioning actually does
-
-Plane has no supported way to create the first user, the first workspace, or an API
-token without a browser session — an API token is the only credential `/api/v1/`
-accepts, and minting one needs a session you cannot get headlessly. So `provision.py`
-uses Plane's ORM for exactly those three things and stops there. The project is
-created through the public API instead, because that endpoint also creates Plane's
-default workflow states, and the readiness gate reads state *groups* to decide what is
-claimable.
-
-If a Plane upgrade ever breaks that script, nothing is lost: do the same four things
-in the UI (sign up, workspace, project, API token) and put the token in `deploy/.env`.
+`provision.sh` does not run in this mode — it executes inside the `api` container,
+which belongs to your stack. Do the same four things in Plane's UI instead: sign
+up, create the workspace, create the project, create an API token, then put the
+token in `deploy/.env` as `PLANE_API_KEY`.
 
 ### Point an agent at it
 
+No server access and no admin role needed. Create a personal token in Plane's UI
+(your avatar → Settings → Personal access tokens), exchange it for an agent token,
+and register that:
+
 ```bash
+curl -sS -X POST https://<gateway-host>/v1/agent-tokens \
+  -H "Authorization: Bearer plane_api_..." -H 'Content-Type: application/json' \
+  -d '{"agent":"worker-1","projectId":"<project-uuid>"}'
+
 claude mcp add --transport http sync https://<gateway-host>/mcp \
   --header "Authorization: Bearer sync_agent_..."
 ```
 
-That is the whole install: nothing built, nothing cloned, no project id, no Node
-version to match. The token carries the project and the gateway serves the tool
-catalogue, so this is the last time you touch the agent box — new tools and Plane
-upgrades arrive on the next gateway deploy.
+Nothing built, nothing cloned, no project id on the agent box. New tools and Plane
+upgrades arrive on the next gateway deploy without touching this machine.
 
-`bin/onboard.sh` does the same with the endpoint verified first, which saves
-debugging a broken server from inside an agent session. It takes every value as a
-flag, then an environment variable, then a prompt, so it suits both a person and a
-provisioning script. `--client codex` prints Codex config instead.
+`bin/onboard.sh` does both steps and checks the gateway answers first. It takes
+every value as a flag, then an environment variable, then a prompt, so it suits
+both a person and a provisioning script. `--client codex` prints Codex config.
 
-The stdio bridge in `mcp/` still exists for clients that cannot speak HTTP
-transport. Both doors lead to the same catalogue and the same policy.
+The stdio bridge in `mcp/` is there for clients that cannot speak HTTP transport.
+Both doors lead to the same catalogue and the same policy.
 
-See [`docs/onboarding.md`](docs/onboarding.md) for issuing tokens, what belongs in
-`CLAUDE.md`/`AGENTS.md` and why, whether a skill is warranted, and how to wire this
-into project creation.
+[`docs/onboarding.md`](docs/onboarding.md) has the full walkthrough, troubleshooting,
+what belongs in `CLAUDE.md`/`AGENTS.md`, and how to wire this into project creation.
 
-> **Give the agent only the `sync_agent_…` token.** It must never receive a Plane
-> token: a Plane Member key lets it set `assignee` directly and bypass the lease,
-> which silently breaks mutual exclusion. The gateway holds the Plane credential so
-> that identity passes through without possession doing so.
+> **Give the agent only the `sync_agent_…` token**, never a Plane token. A Plane
+> token can set `assignee` directly, which bypasses the lease and puts two agents
+> on one item.
 
 ## The tool surface
 
@@ -128,78 +107,81 @@ held      → what am I holding? (call after a restart)
 `@makeplane/plane-mcp-server` and re-exports its 47 tools: cycles, modules, labels,
 states, work item types, worklogs, comments, members, projects.
 
-It runs *gateway-side* because it authenticates from `PLANE_API_KEY` in its
-environment — putting it on the agent box means handing the agent a Plane write
-credential. One child process per agent identity, so Plane's activity log attributes
-work natively.
+It runs gateway-side, one child process per agent identity, so Plane's activity log
+attributes work natively.
 
-Every proxied call passes a policy check first, and it guards exactly one thing:
+Every proxied call passes a policy check, which refuses two things:
 
-- **`assignees` and `state` on an existing item** require actually holding the lease.
-  These two fields *are* the lease as far as Plane's UI is concerned; without this,
-  the wide surface would walk straight around the narrow one.
-- **Schema-shaped destruction** (`delete_state`, `update_state`, `delete_label`, …)
-  needs the `destructive` capability, which agents do not get by default. Deleting a
-  state strands every item that referenced it.
+- **`assignees` and `state` on an existing item**, unless you hold that item's lease.
+- **Schema-shaped destruction** (`delete_state`, `update_state`, `delete_label`, …),
+  unless the token carries the `destructive` capability. Agents do not get it by
+  default; deleting a state strands every item that referenced it.
 
-Everything else — titles, descriptions, priorities, labels, cycles, comments — is
-Plane's business, and Plane already has a permission model. A policy that tried to
-guard everything would become a second, worse copy of Plane's roles.
+Everything else — titles, descriptions, priorities, labels, cycles, comments — goes
+straight through to Plane, which has its own permission model.
 
 ## Sub-items
 
-Plane models a sub-item as a `parent` uuid on the work item, so `capture(parentId: …)`
-is all decomposition needs. The readiness gate then treats a parent with unfinished
-children as a *container*, not as claimable work — the work lives in the children, and
-handing the parent to a second agent duplicates effort that no lease can detect,
-because the two agents hold different items.
+`capture(parentId: …)` creates a sub-item — Plane models it as a `parent` uuid.
 
-Use `parentId` for real decomposition and `discoveredFrom` for "I noticed this while
-working on that". The second constrains nothing; the first changes what the fleet is
-allowed to pick up.
+A parent with unfinished children is **not claimable**: the work lives in the
+children. Use `parentId` for real decomposition, and `discoveredFrom` for "I noticed
+this while working on that", which constrains nothing.
 
 ## Operating notes
 
-**Lease TTL.** Default 600s. Too short and healthy agents lose work mid-task; too long
-and a dead agent's item sits idle. Tune to your slowest realistic task, and have agents
-heartbeat at roughly TTL/3.
+**Lease TTL.** Default 600s. Set it to your slowest realistic task, and have agents
+heartbeat at roughly TTL/3. Too short and healthy agents lose work mid-task; too long
+and a dead agent's item sits idle.
 
 **Repeated expiry is a signal.** After 3 expiries the sweeper flags the item for human
-attention — a task that keeps killing its agent is usually underspecified rather than
-unlucky.
+attention — a task that keeps killing its agent is usually underspecified.
 
-**Rate limit.** Plane's limit is *per token*, and its default of 60/minute is sized for
-a human clicking around. One claim costs a work item list, a relations read, a state
-write and a comment, so 60/minute caps an agent at roughly a dozen claims a minute and
-starts returning 429 under any burst. `gen-env.sh` sets `API_KEY_RATE_LIMIT=300/minute`.
-Because each agent writes with its own Plane token, the fleet's budget scales with
-agent count rather than sharing one.
+**Plane's rate limit is per token**, default 60/minute, which is sized for a human
+clicking around. One claim costs four API calls, so that caps an agent at roughly a
+dozen claims a minute and returns 429 under any burst. `gen-env.sh` sets
+`API_KEY_RATE_LIMIT=300/minute`. Each agent writes with its own Plane token, so the
+budget scales with fleet size.
 
-**Plane is a mirror, not the source of truth.** `complete` ends the lease synchronously
-and writes Plane asynchronously, so an agent never fails because Plane was slow. The
-cost is that a dependent item can stay blocked for a second or so after its blocker
-finishes. That lag is in the safe direction. Mirror writes for a given item are
-serialised, because without that a fast claim-then-complete can land the two writes out
-of order and leave Plane permanently showing "In Progress" for finished work.
+**Plane lags by a second or so.** `complete` ends the lease immediately and writes
+Plane in the background, so an agent never fails because Plane was slow. A dependent
+item can stay blocked briefly after its blocker finishes.
 
-**Key rotation.** Rotating `GATEWAY_TOKEN_KEY` invalidates every stored Plane token;
-re-run `issue-token --plane-token` for each agent. Decryption failure is not fatal —
-the gateway falls back to the service account, so you get degraded attribution rather
-than an outage.
+**Key rotation.** Rotating `GATEWAY_TOKEN_KEY` invalidates every stored Plane token —
+re-issue each agent's. Not fatal: the gateway falls back to the service account, so
+you get degraded attribution rather than an outage.
 
-**Backup.** Plane and the gateway share a Postgres instance, so one PGDATA backup
-covers both at a consistent restore point. They are separate *databases*: Postgres has
-no cross-database queries, and `agent_gw` has no `CONNECT` on `plane` at all.
+**Backup.** One PGDATA backup covers Plane and the gateway at a consistent restore
+point; they share an instance but are separate databases.
 
-**The network outlives the stack.** It is declared external so one compose file can
-either deploy Plane or attach to yours. `docker compose down` leaves it; remove it with
+**The network outlives the stack.** `docker compose down` leaves it. Remove it with
 `docker network rm sync_plane`.
+
+**Running two gateway replicas** reopens an out-of-order display bug in the Plane
+mirror — finished work can show as "In Progress". The lease stays correct either way.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `served a web page, not a gateway` | You pointed at Plane. Use the gateway host, usually `mcp.<your-plane-host>` |
+| `Plane rejected that personal token` | Wrong token type or expired. Create a new one under your Plane profile → Personal access tokens |
+| `You are not a member of project …` | Add yourself to that project in Plane, then retry |
+| `already belongs to a different Plane user` | Someone else has that agent name. Pick another |
+| HTTP 429 from `/v1/agent-tokens` | Mint limit is 10/min per address. Wait a minute |
+| `UNAUTHENTICATED` from a tool call | The agent token is wrong or was replaced. Mint a new one and re-run `claude mcp add` |
+| Agent connects but has no tools | Gateway is up but Plane is unreachable from it. Check `docker compose logs gateway` |
+| 403 on every Plane write | The agent's Plane user is not a project member |
+| `next` returns nothing | Nothing is ready: items may be blocked, already leased, or parents with unfinished children |
+| Plane shows "In Progress" for finished work | Mirror write failed. `docker compose logs gateway \| grep 'plane mirror failed'` |
+| Gateway crash-loops on `PLANE_API_KEY is not set` | `.env` was read before provisioning filled it in. Re-run `docker compose up -d gateway` |
 
 ## Tests
 
 ```bash
-cd server && npm test          # 35 unit tests: lease semantics (20-way contention),
-                               # readiness screening, sub-item counting, tool policy
+cd server && npm test          # 44 unit tests: lease semantics (20-way contention),
+                               # readiness screening, sub-item counting, tool policy,
+                               # token ownership
 
 # against a running stack
 export GATEWAY=http://localhost:8787 PROJECT=<uuid> T1=… T2=… T3=…
@@ -207,9 +189,12 @@ python3 server/test/e2e.py         # the agent loop, end to end
 python3 server/test/proxy_e2e.py   # the proxied surface cannot bypass the lease
 ```
 
-`proxy_e2e.py` is the one that matters most when changing the tool surface: it proves
-a non-holder cannot set `assignees` or `state` through Plane's own `update_issue`,
-that harmless edits still work, and that attribution survives the proxy.
+Run `proxy_e2e.py` after any change to the tool surface: it checks that a non-holder
+cannot set `assignees` or `state` through Plane's own `update_issue`, that harmless
+edits still work, and that attribution survives the proxy.
+
+The unit tests need Postgres. `deploy/docker-compose.yml` provides it; point
+`GATEWAY_DATABASE_URL` at it if it is not on `localhost:15432`.
 
 ## Known gaps
 

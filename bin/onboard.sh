@@ -3,16 +3,25 @@
 # Point an agent at a sync gateway.
 #
 #   bin/onboard.sh                        # asks for what it needs
-#   bin/onboard.sh --url … --token … -y   # non-interactive, for automation
+#   bin/onboard.sh --url … --plane-token … --agent worker-1 --project … -y
+#
+# Needs no server access. You create a personal token in Plane's UI, and this
+# exchanges it for an agent token — a strictly weaker credential that cannot
+# reach Plane directly and cannot take work without a lease.
 #
 # Nothing is hardcoded. Every value comes from a flag, then the environment, then
 # a prompt — in that order — so the same script works for a person setting up a
 # laptop and for a provisioning system creating a project.
 #
 #   --url URL          gateway base URL          (env: SYNC_GATEWAY_URL)
-#   --token TOKEN      agent token               (env: SYNC_AGENT_TOKEN)
-#   --project UUID     override the project the token is bound to
-#                                                (env: SYNC_PROJECT_ID)
+#   --plane-token TOK  your Plane personal token (env: PLANE_TOKEN)
+#                      Plane → your avatar → Settings → Personal access tokens
+#   --agent NAME       what to call this agent   (env: SYNC_AGENT_NAME)
+#                      namespaced by you server-side, so "worker-1" is yours alone
+#   --project UUID     Plane project to bind     (env: SYNC_PROJECT_ID)
+#                      the uuid in the project's URL; offered as a list if omitted
+#   --token TOKEN      an existing sync_agent_ token — skips minting
+#                                                (env: SYNC_AGENT_TOKEN)
 #   --client claude|codex                        (env: SYNC_CLIENT; default: detected)
 #   --scope local|user|project                   (default: local)
 #   --name NAME        MCP server name           (default: sync)
@@ -21,6 +30,8 @@ set -euo pipefail
 
 URL="${SYNC_GATEWAY_URL:-}"
 TOKEN="${SYNC_AGENT_TOKEN:-}"
+PLANE_TOKEN="${PLANE_TOKEN:-}"
+AGENT="${SYNC_AGENT_NAME:-}"
 PROJECT="${SYNC_PROJECT_ID:-}"
 CLIENT="${SYNC_CLIENT:-}"
 SCOPE=local
@@ -29,14 +40,16 @@ ASSUME_YES=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --url)     URL="$2"; shift 2 ;;
-    --token)   TOKEN="$2"; shift 2 ;;
-    --project) PROJECT="$2"; shift 2 ;;
-    --client)  CLIENT="$2"; shift 2 ;;
-    --scope)   SCOPE="$2"; shift 2 ;;
-    --name)    NAME="$2"; shift 2 ;;
-    -y|--yes)  ASSUME_YES=1; shift ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    --url)         URL="$2"; shift 2 ;;
+    --token)       TOKEN="$2"; shift 2 ;;
+    --plane-token) PLANE_TOKEN="$2"; shift 2 ;;
+    --agent)       AGENT="$2"; shift 2 ;;
+    --project)     PROJECT="$2"; shift 2 ;;
+    --client)      CLIENT="$2"; shift 2 ;;
+    --scope)       SCOPE="$2"; shift 2 ;;
+    --name)        NAME="$2"; shift 2 ;;
+    -y|--yes)      ASSUME_YES=1; shift ;;
+    -h|--help)     sed -n '2,28p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -53,27 +66,87 @@ ask() { # ask <prompt> <current> [silent]
   printf '%s' "$answer"
 }
 
+json() { # json <expression> — reads stdin, prints '' on any failure
+  python3 -c "
+import json,sys
+try: print(json.load(sys.stdin)$1)
+except Exception: print('')
+" 2>/dev/null || echo ''
+}
+
 URL=$(ask "Gateway URL (e.g. https://mcp.example.dev)" "$URL")
 [ -n "$URL" ] || die "no gateway URL"
 URL="${URL%/}"
 case "$URL" in http://*|https://*) ;; *) die "URL must start with http:// or https://" ;; esac
 
-# Refuse to send a bearer token over plaintext to anything but the local machine.
-# An agent token is a credential; over the open internet in the clear it is a
-# credential anyone on the path can copy and use.
+# Refuse to send a credential over plaintext to anything but the local machine.
+# This now matters more than it did: the Plane personal token below is the
+# stronger of the two credentials, and anyone on the path could copy it.
 case "$URL" in
   https://*) ;;
   http://localhost*|http://127.0.0.1*|http://host.docker.internal*|http://[::1]*) ;;
-  *) die "refusing to send an agent token unencrypted to $URL — use https, or a local address" ;;
+  *) die "refusing to send a token unencrypted to $URL — use https, or a local address" ;;
 esac
 
-TOKEN=$(ask "Agent token (sync_agent_…)" "$TOKEN" silent)
-[ -n "$TOKEN" ] || die "no agent token"
+# ── reachable? ───────────────────────────────────────────────────────────────
+# Checked before anything is sent, so a wrong hostname costs one clear error
+# rather than a leaked token and a confusing one.
+echo "checking ${URL} …"
+health=$(curl -sS -m 20 "${URL}/healthz" 2>&1) || die "could not reach ${URL} — $health"
+case "$health" in
+  *'"ok"'*) ;;
+  # Plane and the gateway usually live on sibling hostnames, and pointing at
+  # Plane returns its web app. Say that, rather than printing a page of HTML at
+  # someone who is only trying to set up a tool.
+  *'<html'*|*'<!DOCTYPE'*|*'<!doctype'*)
+    die "$URL served a web page, not a gateway. This wants the gateway host (often mcp.<your-plane-host>), not Plane itself." ;;
+  *) die "unexpected reply from ${URL}/healthz: $(printf '%s' "$health" | tr -d '\n' | head -c 200)" ;;
+esac
 
-# ── verify before registering ────────────────────────────────────────────────
+# ── get an agent token ───────────────────────────────────────────────────────
+if [ -z "$TOKEN" ]; then
+  echo
+  echo "No agent token given, so let's mint one."
+  echo "  In Plane: your avatar → Settings → Personal access tokens → Add token."
+  echo "  Any role works — you do not need to be a workspace admin."
+  echo
+  PLANE_TOKEN=$(ask "Your Plane personal token (plane_api_…)" "$PLANE_TOKEN" silent)
+  [ -n "$PLANE_TOKEN" ] || die "no Plane token, and no --token to use instead"
+
+  AGENT=$(ask "Name for this agent (e.g. worker-1)" "${AGENT:-worker-1}")
+
+  # Offer the projects this person can actually see rather than making them go
+  # and dig a uuid out of a URL. Best-effort: a failure here just means typing it.
+  if [ -z "$PROJECT" ] && [ "$ASSUME_YES" -eq 0 ] && [ -t 0 ]; then
+    listing=$(curl -sS -m 20 -X POST "${URL}/v1/agent-tokens" \
+      -H "Authorization: Bearer ${PLANE_TOKEN}" -H 'Content-Type: application/json' \
+      -d "{\"agent\":\"${AGENT}\",\"projectId\":\"00000000-0000-0000-0000-000000000000\"}" 2>/dev/null || true)
+    ids=$(printf '%s' "$listing" | json "['visibleProjects']" | tr -d "[]'\," )
+    if [ -n "$ids" ]; then
+      echo "  projects you can see: $ids"
+    fi
+  fi
+  PROJECT=$(ask "Plane project uuid to bind this agent to" "$PROJECT")
+
+  body="{\"agent\":$(printf '%s' "$AGENT" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))')"
+  [ -n "$PROJECT" ] && body="${body},\"projectId\":\"${PROJECT}\""
+  body="${body}}"
+
+  minted=$(curl -sS -m 30 -X POST "${URL}/v1/agent-tokens" \
+    -H "Authorization: Bearer ${PLANE_TOKEN}" -H 'Content-Type: application/json' \
+    -d "$body" 2>&1) || die "could not reach ${URL}/v1/agent-tokens — $minted"
+
+  TOKEN=$(printf '%s' "$minted" | json "['token']")
+  if [ -z "$TOKEN" ]; then
+    msg=$(printf '%s' "$minted" | json "['message']")
+    die "${msg:-the gateway would not issue a token: $(printf '%s' "$minted" | head -c 200)}"
+  fi
+  echo "  minted $(printf '%s' "$minted" | json "['agent']") for $(printf '%s' "$minted" | json "['planeUser']['email']")"
+fi
+
+# ── verify the token before registering it ───────────────────────────────────
 # Registering first and discovering the problem later means debugging inside an
 # agent session, where the only symptom is a tool that is not there.
-echo "checking ${URL}/mcp …"
 probe=$(curl -sS -m 20 -X POST "${URL}/mcp" \
   -H "Authorization: Bearer ${TOKEN}" \
   -H 'Content-Type: application/json' \
@@ -83,12 +156,7 @@ probe=$(curl -sS -m 20 -X POST "${URL}/mcp" \
 
 case "$probe" in
   *'"serverInfo"'*) ;;
-  *UNAUTHENTICATED*) die "the gateway rejected that token. Ask your operator to issue a new one." ;;
-  # Easy mistake: Plane and the gateway usually live on sibling hostnames, and
-  # pointing at Plane returns its web app. Say that, rather than printing a page
-  # of HTML at someone who is only trying to set up a tool.
-  *'<html'*|*'<!DOCTYPE'*|*'<!doctype'*)
-    die "$URL served a web page, not a gateway. This wants the gateway host (often mcp.<your-plane-host>), not Plane itself." ;;
+  *UNAUTHENTICATED*) die "the gateway rejected that agent token. Mint a new one, or check --token." ;;
   *) die "unexpected reply from ${URL}/mcp: $(printf '%s' "$probe" | tr -d '\n' | head -c 200)" ;;
 esac
 
@@ -96,10 +164,8 @@ tools=$(curl -sS -m 20 -X POST "${URL}/mcp" \
   -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' 2>/dev/null \
-  | python3 -c 'import json,sys
-try: print(len(json.load(sys.stdin)["result"]["tools"]))
-except Exception: print("?")' 2>/dev/null || echo '?')
-echo "  ok — ${tools} tools available"
+  | json "['result']['tools'].__len__()")
+echo "  ok — ${tools:-?} tools available"
 
 # ── which client ─────────────────────────────────────────────────────────────
 if [ -z "$CLIENT" ]; then
@@ -117,7 +183,7 @@ case "$CLIENT" in
       # token must be a reference, never a literal. It also needs a one-time
       # approval the first time someone opens the repo.
       python3 - "$NAME" "$URL" <<'PY'
-import json, os, pathlib, sys
+import json, pathlib, sys
 name, url = sys.argv[1], sys.argv[2]
 p = pathlib.Path('.mcp.json')
 cfg = json.loads(p.read_text()) if p.exists() else {}
@@ -134,7 +200,7 @@ PY
   .mcp.json holds no secret: it reads SYNC_AGENT_TOKEN from the environment, so
   each agent supplies its own. Export it where your agents run:
 
-    export SYNC_AGENT_TOKEN=<that agent's token>
+    export SYNC_AGENT_TOKEN=${TOKEN}
 
   Project-scoped servers need approving once per machine — Claude Code will ask
   the first time, or pre-approve by adding "$NAME" to enabledMcpjsonServers for
@@ -171,18 +237,6 @@ EOF
     ;;
   *) die "unknown client: $CLIENT (expected claude or codex)" ;;
 esac
-
-# ── project ──────────────────────────────────────────────────────────────────
-if [ -n "$PROJECT" ]; then
-  cat <<EOF
-
-Project override: ${PROJECT}
-  The token already carries a default project, so this is only needed to point
-  this box at a different one. Set it where your agent runs:
-
-    export SYNC_PROJECT_ID=${PROJECT}
-EOF
-fi
 
 cat <<'EOF'
 
