@@ -114,6 +114,11 @@ export const DecomposeBody = z.object({
     .max(50),
 });
 
+export const HistoryQuery = z.object({
+  projectId: uuid,
+  workItemId: uuid,
+});
+
 export const BoardQuery = z.object({
   projectId: uuid,
   moduleId: uuid.optional().describe('Just this module. Omit for the whole project.'),
@@ -301,6 +306,19 @@ export const NATIVE_TOOLS: NativeTool[] = [
     schema: FindQuerySchema,
     method: 'GET',
     request: (a) => ({ path: q('/v1/find', a) }),
+  },
+  {
+    name: 'history',
+    title: 'Has this item been attempted before?',
+    description:
+      'What the lease knows about an item: how many times it has been claimed, how many of ' +
+      'those lapsed rather than finishing, who holds or last held it, and how the last attempt ' +
+      'ended. Check this before claiming something that looks harder than it reads — two agents ' +
+      'having already timed out on it is the context that should change whether you take it or ' +
+      'refine it first. Returns null if nobody has ever claimed it.',
+    schema: HistoryQuery,
+    method: 'GET',
+    request: (a) => ({ path: q('/v1/history', a) }),
   },
   {
     name: 'claim',

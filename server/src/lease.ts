@@ -255,6 +255,77 @@ export async function heldBy(pool: Pool, holder: string): Promise<Lease[]> {
  * lease as available. This exists so a dead agent's item does not sit in Plane
  * showing "In Progress" with an assignee that is never coming back.
  */
+export interface LeaseRecord {
+  workItemId: string;
+  /** Claims ever made on this item. Monotonic, never reset, survives release. */
+  claims: number;
+  /** How many of those ended by lapsing rather than by an agent finishing. */
+  expiries: number;
+  state: string;
+  holder: string | null;
+  holderChain: string[];
+  claimedAt: string | null;
+  heartbeatAt: string | null;
+  expiresAt: string | null;
+  endedAt: string | null;
+  endReason: string | null;
+}
+
+/**
+ * What the lease knows about this item's past.
+ *
+ * A fold, not an event log. `lease` is one row per work item, upserted in place,
+ * so prior holders and per-claim timings do not exist anywhere — `epoch` and
+ * `expiry_count` are counters that survived the overwrites. That is enough for
+ * the question worth asking before claiming ("has this killed agents before, and
+ * how did the last attempt end?") and not enough for a timeline.
+ *
+ * Recording real events would mean writing on the claim path, and claim is
+ * deliberately one atomic statement with no transaction — the foundation the
+ * whole system rests on. Adding a second write there is a decision worth taking
+ * on its own, not a side effect of wanting a report.
+ */
+export async function record(pool: Pool, workItemId: string): Promise<LeaseRecord | null> {
+  const { rows } = await pool.query<{
+    work_item_id: string;
+    epoch: string;
+    expiry_count: number;
+    state: string;
+    holder: string;
+    holder_chain: string[];
+    claimed_at: Date;
+    heartbeat_at: Date;
+    expires_at: Date;
+    ended_at: Date | null;
+    end_reason: string | null;
+  }>(
+    `select work_item_id, epoch, expiry_count, state, holder, holder_chain,
+            claimed_at, heartbeat_at, expires_at, ended_at, end_reason
+       from lease where work_item_id = $1`,
+    [workItemId],
+  );
+
+  const r = rows[0];
+  // No row means nobody has ever claimed it — a fact, not an error, and a
+  // different answer from "claimed once and released".
+  if (!r) return null;
+
+  const iso = (d: Date | null) => (d ? d.toISOString() : null);
+  return {
+    workItemId: r.work_item_id,
+    claims: Number(r.epoch),
+    expiries: r.expiry_count,
+    state: r.state,
+    holder: r.holder,
+    holderChain: r.holder_chain,
+    claimedAt: iso(r.claimed_at),
+    heartbeatAt: iso(r.heartbeat_at),
+    expiresAt: iso(r.expires_at),
+    endedAt: iso(r.ended_at),
+    endReason: r.end_reason,
+  };
+}
+
 export async function sweepExpired(pool: Pool): Promise<Lease[]> {
   const { rows } = await pool.query<Row>(
     `update lease

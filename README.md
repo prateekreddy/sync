@@ -169,7 +169,7 @@ when an agent is actually working an item.
 
 ## The tool surface
 
-One MCP server, 60 tools, two halves.
+One MCP server, 62 tools, two halves.
 
 **Ours — coordination.** Plane has no equivalent for any of these.
 
@@ -187,6 +187,7 @@ complete  → finish, with evidence   (epoch required)
 release   → hand it back
 link      → blocked_by / duplicate / relates_to
 held      → what am I holding? (call after a restart)
+history   → has this been attempted? (claims, expiries, how it ended)
 ```
 
 **Plane's — everything else.** The gateway runs Plane's official

@@ -43,6 +43,7 @@ import {
   DecomposeBody,
   CompleteBody,
   HeartbeatBody,
+  HistoryQuery,
   LinkBody,
   FindQuerySchema,
   NextQuery,
@@ -618,6 +619,16 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       limit: f.limit,
       ...(parseFields(f.fields) ? { fields: parseFields(f.fields) } : {}),
     });
+  });
+
+  // ── history (read-only) ──────────────────────────────────────────────────
+  app.get('/v1/history', async (req) => {
+    await actorOf(req);
+    const q = HistoryQuery.parse(req.query);
+    const record = await lease.record(pool, q.workItemId);
+    // A null record is the honest answer for an item nobody has ever claimed,
+    // and materially different from one claimed and released.
+    return { workItemId: q.workItemId, record };
   });
 
   // ── claim ────────────────────────────────────────────────────────────────

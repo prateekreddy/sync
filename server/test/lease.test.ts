@@ -8,6 +8,7 @@ import {
   complete,
   heartbeat,
   heldBy,
+  record,
   release,
   sweepExpired,
 } from '../src/lease.js';
@@ -193,5 +194,51 @@ describe('sweeper', () => {
     await sleep(300);
     // No sweep call at all.
     expect(await claim(pool, { workItemId, projectId: PROJECT, holder: 'b', ttlSeconds: 60 })).not.toBeNull();
+  });
+});
+
+/**
+ * `history` is a fold, not an event log: `lease` is one row per work item,
+ * upserted, so prior holders do not exist anywhere. `epoch` and `expiry_count`
+ * are the counters that survive the overwrites, and they answer the question
+ * worth asking before a claim — has this killed agents before?
+ */
+describe('lease record', () => {
+  it('says nothing for an item nobody has claimed, rather than inventing a zero', async () => {
+    // Distinct from "claimed once and released", which a zeroed record would hide.
+    expect(await record(pool, randomUUID())).toBeNull();
+  });
+
+  it('counts every claim, including the ones that lapsed', async () => {
+    const workItemId = randomUUID();
+    await claim(pool, { workItemId, projectId: PROJECT, holder: 'agent:a', ttlSeconds: 30 });
+    await pool.query("update lease set expires_at = now() - interval '1 second'");
+    await sweepExpired(pool);
+    await claim(pool, { workItemId, projectId: PROJECT, holder: 'agent:b', ttlSeconds: 30 });
+
+    const r = await record(pool, workItemId);
+    expect(r?.claims).toBe(2);
+    expect(r?.expiries).toBe(1);
+    expect(r?.holder).toBe('agent:b');
+  });
+
+  it('remembers how the last attempt ended', async () => {
+    const workItemId = randomUUID();
+    const l = await claim(pool, {
+      workItemId,
+      projectId: PROJECT,
+      holder: 'agent:a',
+      ttlSeconds: 30,
+    });
+    await release(pool, {
+      workItemId,
+      holder: 'agent:a',
+      epoch: l!.epoch,
+      reason: 'handing back, needs a decision',
+    });
+
+    const r = await record(pool, workItemId);
+    expect(r?.endReason).toContain('needs a decision');
+    expect(r?.endedAt).toMatch(/^20/);
   });
 });
