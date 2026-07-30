@@ -65,9 +65,10 @@ function withVerbose(schema: unknown): unknown {
         items: { type: 'string' },
         description:
           'Return exactly these keys per row, e.g. ["id","name"]. Cheaper than verbose when you ' +
-          'know what you want. This can only NARROW what the tool already returns — naming a ' +
-          'key the tool does not send yields nothing, so for a field a listing omits entirely ' +
-          '(descriptions, for instance) fetch the single item instead.',
+          'know what you want. This can only NARROW what the tool already returns; if you name ' +
+          'a key it does not send, the response says so rather than coming back quietly short. ' +
+          'For a field a listing omits entirely (descriptions, for instance) fetch the single ' +
+          'item instead.',
       },
       verbose: {
         type: 'boolean',

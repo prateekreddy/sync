@@ -135,14 +135,61 @@ export function projectPayload(value: unknown, fields?: string[]): unknown {
 }
 
 /**
+ * Every key the payload actually carried.
+ *
+ * A field list can only narrow what upstream sent, so a name that appears in
+ * neither this set nor the response is a name the caller will never receive —
+ * and until now that was silent. Asking for `descrition_html` returned a clean
+ * object missing the field, indistinguishable from Plane not having it.
+ *
+ * A separate walk rather than a second return value or an out-parameter from
+ * `projectPayload`: each function then means exactly one thing, and the extra
+ * pass over an array we are about to JSON-stringify anyway costs nothing worth
+ * measuring.
+ */
+export function keysIn(value: unknown): Set<string> {
+  const keys = new Set<string>();
+  const add = (v: unknown) => {
+    if (isRecord(v)) for (const k of Object.keys(v)) keys.add(k);
+  };
+
+  if (Array.isArray(value)) value.forEach(add);
+  else if (isRecord(value) && Array.isArray(value['results'])) value['results'].forEach(add);
+  else add(value);
+
+  return keys;
+}
+
+/**
+ * Requested names this response could never satisfy.
+ *
+ * Empty when nothing was asked for, and — deliberately — empty when the response
+ * carried no items at all: a zero-result listing tells us nothing about which
+ * fields the tool sends, and reporting every requested name there would be noise
+ * that trains agents to ignore the warning.
+ */
+export function unmatchedFields(value: unknown, fields?: string[]): string[] {
+  if (!fields?.length) return [];
+  const present = keysIn(value);
+  if (present.size === 0) return [];
+  return fields.filter((f) => !present.has(f));
+}
+
+/**
  * Project an upstream MCP tool result in place.
  *
  * Plane's MCP server returns JSON as text inside a content block. Anything that
  * does not parse is passed through untouched — a human-readable message must not
  * be mangled by a transformation meant for data.
+ *
+ * A field the response cannot supply is reported alongside the data rather than
+ * swallowed. It is a note, not an error: a caller listing fields across mixed row
+ * types is being reasonable, and failing the call would punish that.
  */
 export function projectToolResult(result: unknown, fields?: string[]): unknown {
   if (!isRecord(result) || !Array.isArray(result['content'])) return result;
+
+  const unmatched = new Set<string>();
 
   const content = (result['content'] as unknown[]).map((block) => {
     if (!isRecord(block) || block['type'] !== 'text' || typeof block['text'] !== 'string') {
@@ -154,10 +201,20 @@ export function projectToolResult(result: unknown, fields?: string[]): unknown {
     } catch {
       return block;
     }
+    for (const f of unmatchedFields(parsed, fields)) unmatched.add(f);
     // Compact, not pretty-printed. Indenting a 34-item array adds back much of
     // what the trimming saved, and whitespace is tokens like anything else.
     return { ...block, text: JSON.stringify(projectPayload(parsed, fields)) };
   });
+
+  if (unmatched.size > 0) {
+    content.push({
+      type: 'text',
+      text:
+        `Note: this tool does not return ${[...unmatched].join(', ')}, so ${unmatched.size === 1 ? 'that field was' : 'those fields were'} not included. ` +
+        'A field list narrows what the tool already sends and cannot add to it — for something a listing omits entirely, such as a description, fetch the single item instead.',
+    });
+  }
 
   return { ...result, content } as ToolResult;
 }
