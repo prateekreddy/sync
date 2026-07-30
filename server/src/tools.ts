@@ -4,6 +4,7 @@ import type { Pool } from './db.js';
 import type { Actor } from './auth.js';
 import { GatewayError, HTTP_STATUS, RECOVERY } from './errors.js';
 import type { PlaneMcp, ToolSpec } from './planemcp.js';
+import { projectToolResult } from './projection.js';
 import { checkToolCall } from './toolpolicy.js';
 import { NATIVE_TOOLS } from './toolspec.js';
 
@@ -45,6 +46,31 @@ const nativeCatalogue = (): ToolCatalogue[] =>
     source: 'gateway' as const,
   }));
 
+/**
+ * Advertise the projection escape hatch on every proxied tool.
+ *
+ * Built as a new object rather than mutated: the upstream catalogue is cached for
+ * an hour and shared by every caller, so writing into it would accumulate.
+ */
+function withVerbose(schema: unknown): unknown {
+  if (typeof schema !== 'object' || schema === null || Array.isArray(schema)) return schema;
+  const s = schema as { properties?: Record<string, unknown>; [k: string]: unknown };
+  if (!s.properties || 'verbose' in s.properties) return schema;
+  return {
+    ...s,
+    properties: {
+      ...s.properties,
+      verbose: {
+        type: 'boolean',
+        description:
+          "Return Plane's full response. Off by default: list results are trimmed to the " +
+          'fields agents act on, which is roughly a third of the bytes. Ask for it when you ' +
+          'need a field the summary does not carry.',
+      },
+    },
+  };
+}
+
 export async function listTools(deps: ToolDeps): Promise<ToolCatalogue[]> {
   const native = nativeCatalogue();
   if (!deps.plane) return native;
@@ -71,7 +97,7 @@ export async function listTools(deps: ToolDeps): Promise<ToolCatalogue[]> {
     proxied.push({
       name: t.name,
       description: t.description ?? t.name,
-      inputSchema: t.inputSchema,
+      inputSchema: withVerbose(t.inputSchema),
       source: 'plane',
     });
   }
@@ -169,9 +195,13 @@ export async function callTool(
     );
   }
 
-  const checked = await checkToolCall({ pool: deps.pool, actor }, name, args);
+  // `verbose` is ours, not Plane's. Strip it before forwarding or the upstream
+  // schema rejects the call for an unknown property.
+  const { verbose, ...forwarded } = args;
+
+  const checked = await checkToolCall({ pool: deps.pool, actor }, name, forwarded);
   const out = await deps.plane.call(actor.planeToken, name, checked);
-  return out as ToolResult;
+  return (verbose === true ? out : projectToolResult(out)) as ToolResult;
 }
 
 /** Shared shape for the HTTP error body, so tool errors read like every other one. */
