@@ -254,9 +254,15 @@ cat <<EOF
  token carries it. Use bin/onboard.sh to have the endpoint checked first,
  or for Codex config. See docs/onboarding.md.
 
- Anyone else can onboard themselves without this script and without a
- shell here: they create a personal token in Plane's UI and POST it to
- <gateway-url>/v1/agent-tokens. Set MINT_TOKENS=off to disable that.
+ Anyone else can onboard themselves, without this script and without a
+ shell here, using no token on the command line at all:
+
+   claude mcp add --transport http sync <gateway-url>/mcp
+   claude mcp login sync
+
+ They sign in with their own Plane personal token and get an agent scoped
+ to them. Set GATEWAY_PUBLIC_URL in .env so sign-in advertises the right
+ address; MINT_TOKENS=off disables self-service entirely.
 
  <gateway-url> is however this gateway is reachable from the agent, e.g.
  https://mcp.your-host, or http://<this-host>:${GATEWAY_LISTEN_PORT:-8787}

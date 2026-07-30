@@ -1,9 +1,31 @@
 # Onboarding an agent
 
-Done entirely from Plane's web UI and your own terminal. No server access, no
-admin role.
+## The short way
 
-## 1. Get the project uuid
+```bash
+claude mcp add --transport http sync https://<gateway-host>/mcp
+claude mcp login sync
+```
+
+No token on the command line. `login` opens a browser, you paste a Plane personal
+token once, pick the agent name and project, and Claude Code stores the result in
+your system keychain. `/mcp` inside a session does the same thing.
+
+You need a Plane personal token to complete the sign-in: **Plane → your avatar →
+Settings → Personal access tokens → Add token.** Any role works.
+
+If you skip `login`, Claude Code shows the server as `! Needs authentication` and
+offers the flow when you next open `/mcp`.
+
+**Headless agents cannot do this.** `claude -p` and Agent SDK runs have no browser,
+so either run `claude mcp login` once on that machine first, or use the token flow
+below.
+
+## The token way
+
+Use this for headless boxes, CI, and provisioning scripts.
+
+### 1. Get the project uuid
 
 Open (or create) the project in Plane. The uuid is in the URL:
 
@@ -11,13 +33,13 @@ Open (or create) the project in Plane. The uuid is in the URL:
 https://<plane-host>/<workspace>/projects/<project-uuid>/issues
 ```
 
-## 2. Create a personal token in Plane
+### 2. Create a personal token in Plane
 
 Your avatar → **Settings** → **Personal access tokens** → **Add token**.
 
 Copy the `plane_api_…` value — Plane shows it once.
 
-## 3. Exchange it for an agent token
+### 3. Exchange it for an agent token
 
 ```bash
 curl -sS -X POST https://<gateway-host>/v1/agent-tokens \
@@ -36,7 +58,7 @@ Options in the body:
 | `projectId` | the project the agent works in by default. Omit it and the agent must name a project on every call |
 | `capabilities` | optional list of labels this agent may pick up. Empty means anything ready |
 
-## 4. Register it with your agent
+### 4. Register it with your agent
 
 ```bash
 claude mcp add --transport http sync https://<gateway-host>/mcp \
@@ -46,7 +68,7 @@ claude mcp add --transport http sync https://<gateway-host>/mcp \
 Nothing to install or build, and no project id on the agent box. New tools and
 Plane upgrades arrive on the next gateway deploy without touching this machine.
 
-## Or run one script for steps 3 and 4
+### Or run one script for steps 3 and 4
 
 ```bash
 bin/onboard.sh                                          # asks for what it needs
@@ -74,6 +96,11 @@ Codex config instead of registering.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `served a web page, not a gateway` | Pointed at Plane, not the gateway | Use the gateway host, usually `mcp.<your-plane-host>` |
+| `! Needs authentication` | Registered without a token and not signed in yet | `claude mcp login sync`, or open `/mcp` in a session |
+| Sign-in opens a URL on the wrong host, or hangs | The gateway does not know its public address | Set `GATEWAY_PUBLIC_URL` in `deploy/.env` to the URL agents use, and restart the gateway |
+| `stdin isn't a terminal, so authentication can't be completed` | Ran `claude mcp login` non-interactively | Run it in a real terminal, or use the token flow |
+| `Incompatible auth server: does not support dynamic client registration` | Reached something that is not this gateway | Check the URL; `curl <gateway>/.well-known/oauth-authorization-server` should return JSON |
+| Sign-in succeeds, connection still fails | An `Authorization` header is also configured, and it wins over OAuth | `claude mcp remove sync` and re-add without `--header` |
 | `Plane rejected that personal token` | Sent a `sync_agent_…` token, or the Plane token expired | Create a fresh token under Plane profile → Personal access tokens |
 | `You are not a member of project …` | You cannot see that project | Add yourself to it in Plane, then retry. The reply lists the projects you can see |
 | `already belongs to a different Plane user` | Someone else has that agent name | Pick another name |

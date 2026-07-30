@@ -298,6 +298,55 @@ ordering carries.
 
 `MINT_TOKENS=off` disables the endpoint and returns issuance to the CLI alone.
 
+### Why the gateway is also an OAuth authorization server
+
+`POST /v1/agent-tokens` still puts a bearer token on a command line, where it
+lands in shell history and in `~/.claude.json` in plaintext. Claude Code supports
+OAuth for HTTP MCP servers, which removes that entirely: the credential goes to
+the OS keychain and the install command carries no secret.
+
+The gateway has to be the authorization server itself. Plane is an OAuth *client*
+for social sign-in and exposes no authorize or token endpoint, so there is nothing
+to delegate to.
+
+Shape:
+
+- **Discovery** — RFC 9728 `/.well-known/oauth-protected-resource` and RFC 8414
+  `/.well-known/oauth-authorization-server`. A `WWW-Authenticate` header on every
+  401 names the first, which is what makes an unauthenticated `claude mcp add`
+  turn into an offer to sign in rather than a failure to diagnose.
+- **Registration** — RFC 7591, open. A `client_id` is not a credential and grants
+  nothing on its own; every code still requires a human to complete the browser
+  flow and prove they hold a Plane token.
+- **Public clients with PKCE S256 only.** `plain` is not offered: it protects
+  nothing against an attacker who can see the authorization request.
+- **The access token is an ordinary agent token**, so `authenticate`, the tool
+  policy and revocation are unchanged and there is no second credential type.
+- **No refresh token and no expiry**, because agent tokens live until revoked. An
+  `expires_in` would promise a rotation that does not happen.
+
+The consent screen asks for a Plane personal token rather than a Plane password.
+Handling passwords would put the gateway in the credential-interception business
+for no gain, and the token path is the one the CLI and the mint endpoint already
+use.
+
+Codes are single-use, live 60 seconds, and are held in memory rather than
+Postgres — a restart inside that window costs one retry of a flow the user is
+watching, and a leaked backup then contains no live codes. Registered clients
+*are* persisted: Claude Code stores its `client_id` and reuses it, so a gateway
+that forgot would reject a client that can never re-register under that id.
+
+`GATEWAY_PUBLIC_URL` exists because the issuer must be stable and must match what
+the client was told. Behind a proxy that rewrites Host it cannot be inferred, and
+the scheme falls back to the one the request arrived on rather than to `https` —
+advertising `https` to a gateway reached over HTTP sends the client to a port
+nothing is listening on.
+
+Headless runs cannot complete a browser flow, so the `Authorization` header path
+remains supported rather than deprecated. Claude Code treats a configured header
+as authoritative and will not fall back to OAuth if it is rejected, so the two are
+alternatives rather than a chain.
+
 ## Onboarding channels: MCP, repo file, or skill
 
 The discipline that matters most — *write it down the moment you notice it,

@@ -101,9 +101,20 @@ project, API token) and put the token in `deploy/.env`.
 
 ### Point an agent at it
 
-No server access and no admin role needed. Create a personal token in Plane's UI
-(your avatar → Settings → Personal access tokens), exchange it for an agent token,
-and register that:
+No server access and no admin role needed.
+
+```bash
+claude mcp add --transport http sync https://<gateway-host>/mcp
+claude mcp login sync
+```
+
+`login` opens a browser, you paste a Plane personal token once (avatar → Settings
+→ Personal access tokens, any role), pick the agent name and project, and Claude
+Code keeps the result in your system keychain — nothing in a config file or shell
+history. `/mcp` inside a session does the same.
+
+**For headless agents** — `claude -p`, the Agent SDK, CI — there is no browser, so
+exchange the Plane token for an agent token and pass it as a header:
 
 ```bash
 curl -sS -X POST https://<gateway-host>/v1/agent-tokens \
@@ -114,12 +125,17 @@ claude mcp add --transport http sync https://<gateway-host>/mcp \
   --header "Authorization: Bearer sync_agent_..."
 ```
 
-Nothing built, nothing cloned, no project id on the agent box. New tools and Plane
-upgrades arrive on the next gateway deploy without touching this machine.
+Either way: nothing built, nothing cloned, no project id on the agent box. New
+tools and Plane upgrades arrive on the next gateway deploy without touching this
+machine.
 
-`bin/onboard.sh` does both steps and checks the gateway answers first. It takes
-every value as a flag, then an environment variable, then a prompt, so it suits
-both a person and a provisioning script. `--client codex` prints Codex config.
+`bin/onboard.sh` does the token flow with the gateway checked first. It takes every
+value as a flag, then an environment variable, then a prompt, so it suits both a
+person and a provisioning script. `--client codex` prints Codex config.
+
+Set `GATEWAY_PUBLIC_URL` in `deploy/.env` to the URL agents use. Sign-in builds
+every address from it, and behind a proxy that does not forward the original host
+it cannot be inferred.
 
 The stdio bridge in `mcp/` is there for clients that cannot speak HTTP transport.
 Both doors lead to the same catalogue and the same policy.
@@ -210,6 +226,8 @@ mirror — finished work can show as "In Progress". The lease stays correct eith
 | Symptom | Fix |
 |---|---|
 | `served a web page, not a gateway` | You pointed at Plane. Use the gateway host, usually `mcp.<your-plane-host>` |
+| `! Needs authentication` | Not signed in yet. `claude mcp login sync`, or open `/mcp` in a session |
+| Sign-in opens the wrong host, or hangs | Set `GATEWAY_PUBLIC_URL` in `deploy/.env` and restart the gateway |
 | `Plane rejected that personal token` | Wrong token type or expired. Create a new one under your Plane profile → Personal access tokens |
 | `You are not a member of project …` | Add yourself to that project in Plane, then retry |
 | `already belongs to a different Plane user` | Someone else has that agent name. Pick another |
