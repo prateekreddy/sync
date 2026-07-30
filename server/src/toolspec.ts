@@ -50,7 +50,14 @@ export const CaptureBody = z.object({
         'make an item unclaimable — so a name one character away from those is refused ' +
         'rather than created.',
     ),
-  discoveredFrom: uuid.optional().describe('Work item you were on when you noticed this.'),
+  discoveredFrom: uuid
+    .optional()
+    .describe(
+      'Work item you were on when you noticed this. Usually leave it out: if you hold exactly ' +
+        'one item in this project, the gateway links it for you and says it inferred that. ' +
+        'Pass it explicitly when you noticed this while working something you no longer hold, ' +
+        'or when you hold several things and only one is the real source.',
+    ),
   parentId: uuid
     .optional()
     .describe(
@@ -225,8 +232,9 @@ export const NATIVE_TOOLS: NativeTool[] = [
       'worth doing — before deciding whether to do it now. Safe to call freely: near-duplicates ' +
       'are merged into the existing item rather than creating a second one, and passing the same ' +
       'idempotencyKey twice returns the original instead of duplicating. If you noticed this ' +
-      'while working another item, pass that item as discoveredFrom. To break a large item into ' +
-      'sub-items, call capture once per child with parentId set to the large item.',
+      'while working another item, the link back to it is made automatically from your lease. ' +
+      'To break a large item into sub-items, call capture once per child with parentId set to ' +
+      'the large item.',
     schema: CaptureBody,
     method: 'POST',
     request: (a) => ({ path: '/v1/capture', body: a }),

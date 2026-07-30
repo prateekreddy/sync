@@ -79,8 +79,15 @@ from `claim` when it:
 - is blocked by unfinished work (checked at claim time, not while browsing).
 
 So: always give `body` enough for someone else to act without you — what, where, and how anyone
-would know it is done. Set `priority` honestly. Use `discoveredFrom` to record the item you were on
-when you noticed it; that is history and constrains nothing.
+would know it is done. Set `priority` honestly.
+
+**Provenance is automatic now.** If you hold exactly one item in the project, whatever you capture
+is linked back to it and the reply says `discoveredFromInferred: true`. You do not have to remember
+`discoveredFrom`, and you should not pass it just to be safe. Pass it only when the gateway cannot
+know: you noticed this while working something you have since released, or you are holding several
+items and only one is the real source. Holding two, it refuses to guess — a confidently wrong
+provenance edge is worse than none, because nobody reading the graph later can tell a guess from a
+fact.
 
 **Deliberately unclaimable is a feature.** Label a capture `needs-human` when it needs a decision
 you should not make alone — that is how you ask a question the fleet will not accidentally answer.
@@ -131,8 +138,10 @@ at once is the mistake — that is what labels are for.
 - **`capture(parentId: …)`** makes a sub-item. Use it for real decomposition. A parent with
   unfinished children stops being claimable, which is what you want: it is a container, not a task.
   This composes up the tree — a grandparent stays unclaimable while any leaf under it is open.
-- **`discoveredFrom`** is provenance, not structure. If you use it where you meant `parentId`, the
-  fleet will happily claim the parent as well as the child.
+- **`discoveredFrom`** is provenance, not structure — usually derived from your lease rather than
+  passed. If you pass it where you meant `parentId`, the fleet will happily claim the parent as
+  well as the child. Giving `parentId` suppresses the provenance edge, because a parent already
+  places the item and says something stronger.
 - **`link`** records `blocking`, `blocked_by`, `duplicate`, `relates_to`. Plane's vocabulary is
   `blocking`, not "blocks" — anything else is accepted and then silently ignored. Link a blocker the
   moment you find one; the readiness gate reads it and will stop another agent burning a run on it.
