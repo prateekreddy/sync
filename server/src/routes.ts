@@ -9,6 +9,7 @@ import { mirrorClaim, mirrorComplete, mirrorReturn } from './mirror.js';
 import type { PlaneClient } from './plane.js';
 import type { PlaneMcp } from './planemcp.js';
 import { readyCandidates, verifyClaimable } from './readiness.js';
+import { handleMcpHttp } from './mcphttp.js';
 import { callTool, listTools } from './tools.js';
 import {
   CaptureBody,
@@ -248,6 +249,30 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     await actorOf(req); // authenticated: the catalogue names internal tooling
     return { tools: await listTools(toolDeps) };
   });
+
+  // MCP over HTTPS. This is the onboarding path: an agent needs a URL and a
+  // bearer token and nothing installed locally.
+  //
+  // The transport owns the response, so these handlers return nothing — see
+  // reply.hijack() in handleMcpHttp.
+  app.post('/mcp', async (req, reply) => {
+    const actor = await actorOf(req);
+    await handleMcpHttp(toolDeps, actor, req.headers['authorization'] as string, req, reply);
+  });
+
+  // The spec lets a client open a GET stream or DELETE a session. We run
+  // stateless, so both are answered by the transport rather than 404ing — a
+  // client that probes them should get a protocol-level answer, not an HTML page.
+  for (const method of ['GET', 'DELETE'] as const) {
+    app.route({
+      method,
+      url: '/mcp',
+      handler: async (req, reply) => {
+        const actor = await actorOf(req);
+        await handleMcpHttp(toolDeps, actor, req.headers['authorization'] as string, req, reply);
+      },
+    });
+  }
 
   app.post('/v1/tools/call', async (req) => {
     const actor = await actorOf(req);

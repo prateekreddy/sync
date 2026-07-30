@@ -7,8 +7,8 @@ A work tracker your team and your agents share, built by **not** building a trac
 - **The gateway** adds the one thing Plane cannot do: atomic claim, so two agents
   never work the same item. It also hosts Plane's own MCP server, so agents get
   Plane's full tool surface without ever holding a Plane credential.
-- **`sync-mcp`** is a stdio MCP server installed into Claude Code / Codex. It defines
-  no tools at all — it fetches the catalogue from the gateway and forwards calls.
+- **Onboarding is one command.** The gateway speaks MCP over HTTPS, so pointing an
+  agent at it needs no local install and no configuration beyond a URL and a token.
 
 Read [`docs/architecture.md`](docs/architecture.md) for why it is shaped this way,
 including the measured evidence that client-side claim protocols cannot work here.
@@ -42,7 +42,7 @@ docker compose up -d                        # first boot pulls ~2GB
 ```
 
 `provision.sh` prints the Plane sign-in, the project id, and one gateway token per
-agent. That is the whole install.
+agent. That is the whole server install.
 
 Do not skip `gen-env.sh`. Plane's published compose file ships *working defaults* for
 `SECRET_KEY`, the MinIO credentials and the RabbitMQ password — they are in a public
@@ -78,34 +78,29 @@ claimable.
 If a Plane upgrade ever breaks that script, nothing is lost: do the same four things
 in the UI (sign up, workspace, project, API token) and put the token in `deploy/.env`.
 
-### Install the MCP server on each agent box
+### Point an agent at it
 
 ```bash
-cd mcp && npm ci && npm run build
+claude mcp add --transport http sync https://<gateway-host>/mcp \
+  --header "Authorization: Bearer sync_agent_..."
 ```
 
-**Claude Code:**
+That is the whole install: nothing built, nothing cloned, no project id, no Node
+version to match. The token carries the project and the gateway serves the tool
+catalogue, so this is the last time you touch the agent box — new tools and Plane
+upgrades arrive on the next gateway deploy.
 
-```bash
-claude mcp add sync \
-  --env SYNC_GATEWAY_URL=http://your-host:8787 \
-  --env SYNC_AGENT_TOKEN=sync_agent_... \
-  --env SYNC_PROJECT_ID=<project-uuid> \
-  -- node /abs/path/to/mcp/dist/index.js
-```
+`bin/onboard.sh` does the same with the endpoint verified first, which saves
+debugging a broken server from inside an agent session. It takes every value as a
+flag, then an environment variable, then a prompt, so it suits both a person and a
+provisioning script. `--client codex` prints Codex config instead.
 
-**Codex** — in `~/.codex/config.toml`:
+The stdio bridge in `mcp/` still exists for clients that cannot speak HTTP
+transport. Both doors lead to the same catalogue and the same policy.
 
-```toml
-[mcp_servers.sync]
-command = "node"
-args = ["/abs/path/to/mcp/dist/index.js"]
-env = { SYNC_GATEWAY_URL = "http://your-host:8787", SYNC_AGENT_TOKEN = "sync_agent_...", SYNC_PROJECT_ID = "<project-uuid>" }
-```
-
-That is the only thing agents install, and it is the last time you touch an agent box:
-the tool catalogue is served by the gateway, so new tools — ours or Plane's — arrive on
-the next gateway deploy.
+See [`docs/onboarding.md`](docs/onboarding.md) for issuing tokens, what belongs in
+`CLAUDE.md`/`AGENTS.md` and why, whether a skill is warranted, and how to wire this
+into project creation.
 
 > **Give the agent only the `sync_agent_…` token.** It must never receive a Plane
 > token: a Plane Member key lets it set `assignee` directly and bypass the lease,

@@ -8,6 +8,8 @@ export interface Actor {
   holder: string;               // 'agent:sync-worker-3'
   capabilities: string[];
   planeUserId: string | null;
+  /** Project used when a tool wants one and the caller omitted it. */
+  defaultProjectId: string | null;
   principal: string;            // the human this agent ultimately acts for
   /**
    * This agent's own Plane API token, decrypted for the life of the request.
@@ -39,13 +41,20 @@ export async function issueToken(
     principal: string;
     /** The agent's own Plane API token, so its writes are attributed to it. */
     planeToken?: string;
+    /**
+     * Project the agent works in by default. Carried on the token so an install
+     * is a URL and a token with nothing else to configure — and so a re-scoped
+     * agent is a server-side change rather than a visit to every box.
+     */
+    defaultProjectId?: string;
   },
 ): Promise<{ token: string; name: string }> {
   const token = generateToken();
   await pool.query(
     `insert into agent_token
-       (name, token_sha256, capabilities, plane_user_id, principal, plane_token_enc)
-     values ($1, $2, $3, $4, $5, $6)
+       (name, token_sha256, capabilities, plane_user_id, principal, plane_token_enc,
+        default_project_id)
+     values ($1, $2, $3, $4, $5, $6, $7)
      on conflict (name) do update
         set token_sha256    = excluded.token_sha256,
             capabilities    = excluded.capabilities,
@@ -54,6 +63,10 @@ export async function issueToken(
             -- Keep any existing Plane mapping when rotating only the gateway
             -- token, so rotation does not silently drop attribution.
             plane_token_enc = coalesce(excluded.plane_token_enc, agent_token.plane_token_enc),
+            -- Same reasoning: rotating a gateway token must not silently unbind
+            -- the agent from its project.
+            default_project_id = coalesce(excluded.default_project_id,
+                                          agent_token.default_project_id),
             active          = true`,
     [
       args.name,
@@ -62,6 +75,7 @@ export async function issueToken(
       args.planeUserId ?? null,
       args.principal,
       args.planeToken ? encrypt(args.planeToken) : null,
+      args.defaultProjectId ?? null,
     ],
   );
   return { token, name: args.name };
@@ -77,10 +91,12 @@ export async function authenticate(pool: Pool, bearer: string | undefined): Prom
     plane_user_id: string | null;
     principal: string;
     plane_token_enc: string | null;
+    default_project_id: string | null;
   }>(
     `update agent_token set last_seen_at = now()
       where token_sha256 = $1 and active
-     returning name, capabilities, plane_user_id, principal, plane_token_enc`,
+     returning name, capabilities, plane_user_id, principal, plane_token_enc,
+               default_project_id`,
     [sha256(token)],
   );
 
@@ -103,6 +119,7 @@ export async function authenticate(pool: Pool, bearer: string | undefined): Prom
     holder: `agent:${row.name}`,
     capabilities: row.capabilities,
     planeUserId: row.plane_user_id,
+    defaultProjectId: row.default_project_id,
     principal: row.principal,
     planeToken,
   };
