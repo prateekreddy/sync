@@ -22,6 +22,7 @@ import {
   registerClient,
 } from './oauth.js';
 import { capture } from './capture.js';
+import { decompose } from './decompose.js';
 import { GatewayError, HTTP_STATUS, RECOVERY } from './errors.js';
 import * as lease from './lease.js';
 import { mirrorClaim, mirrorComplete, mirrorReturn } from './mirror.js';
@@ -35,6 +36,7 @@ import { callTool, listTools } from './tools.js';
 import {
   CaptureBody,
   ClaimBody,
+  DecomposeBody,
   CompleteBody,
   HeartbeatBody,
   LinkBody,
@@ -530,6 +532,13 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     const input = CaptureBody.parse(req.body);
     // Created as the agent, so Plane's own activity log names the real author.
     return capture(plane.as(actor.planeToken), pool, actor, input);
+  });
+
+  // ── decompose ────────────────────────────────────────────────────────────
+  app.post('/v1/decompose', async (req) => {
+    const actor = await actorOf(req);
+    const b = DecomposeBody.parse(req.body);
+    return decompose(plane.as(actor.planeToken), pool, actor, b);
   });
 
   // ── next (read-only) ─────────────────────────────────────────────────────

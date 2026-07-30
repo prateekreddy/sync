@@ -61,6 +61,26 @@ export const TreeQuery = z.object({
   depth: z.coerce.number().int().min(1).max(10).default(5),
 });
 
+export const DecomposeBody = z.object({
+  projectId: uuid,
+  parentId: uuid.describe('The item being broken up. It becomes a container and stops being claimable.'),
+  children: z
+    .array(
+      z.object({
+        title: z.string().min(3).max(255),
+        body: z
+          .string()
+          .min(1)
+          .describe('Enough for another agent to act without you. A child with no body is unclaimable.'),
+        priority: z.enum(['urgent', 'high', 'medium', 'low', 'none']).optional(),
+        labels: z.array(z.string()).optional(),
+        idempotencyKey: z.string().max(200).optional(),
+      }),
+    )
+    .min(1)
+    .max(50),
+});
+
 export const FindQuerySchema = z.object({
   projectId: uuid,
   labels: z
@@ -153,6 +173,20 @@ export const NATIVE_TOOLS: NativeTool[] = [
     schema: CaptureBody,
     method: 'POST',
     request: (a) => ({ path: '/v1/capture', body: a }),
+  },
+  {
+    name: 'decompose',
+    title: 'Break an item into sub-items',
+    description:
+      'Create several sub-items under one parent in a single call. Prefer this over calling ' +
+      'capture repeatedly: a parent stops being claimable the moment its FIRST child appears, so ' +
+      'a decomposition built one call at a time looks finished while it is still half written, ' +
+      'and another agent can start work under it. Each child gets the same dedup and idempotency ' +
+      'handling as capture. Not a transaction — if some children fail the rest still land and ' +
+      'the reply names exactly which did not, so check `complete`.',
+    schema: DecomposeBody,
+    method: 'POST',
+    request: (a) => ({ path: '/v1/decompose', body: a }),
   },
   {
     name: 'next',
