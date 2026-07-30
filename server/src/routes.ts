@@ -849,6 +849,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       projectId: l.projectId,
       fromId: b.workItemId,
       text: b.outcome,
+      ...(b.refs?.length ? { refs: b.refs } : {}),
     }).catch((err: unknown) => {
       req.log.warn({ err, workItemId: b.workItemId }, 'linking references failed');
       return [];

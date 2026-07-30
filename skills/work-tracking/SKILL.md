@@ -54,6 +54,25 @@ held  →  claim  →  …work…  →  heartbeat every ~TTL/3  →  complete
    `#1` is left alone on purpose, because it usually means a GitHub pull request. A reference to an
    item that does not exist is reported back to you rather than dropped.
 
+   **Harvest the rest from your commits.** Your commit messages already cross-reference more than
+   your outcome will — you are in the repository and the gateway is not, so gather them yourself
+   before completing:
+
+   ```bash
+   git log <base>..HEAD --format='%s%n%b' | grep -oE '\bSYNC-[0-9]+\b' | sort -u
+   ```
+
+   Use your own project's identifier in that pattern, not a generic one: matching any
+   `WORD-123` shape also catches `UTF-8` and `SHA-256`, which the gateway then rejects one by one
+   and reports back at you.
+
+   Pass what it finds as `refs: ["SYNC-32", ...]` rather than pasting them into `outcome`. Same
+   result — real relations — but the prose stays the part a human wants to read. A ref naming
+   nothing is reported back; refs and prose are merged, so naming an item in both is harmless.
+
+   This links everything your commits *mention*, which is usually right. Drop any item you only
+   named as an example — the relation is symmetric and shows up on that item too.
+
    A cited commit or pull request is **checked against GitHub before the call returns**, so the
    response tells you what it found: `landed`, `pending` (real, not merged yet — normal for a PR you
    just opened), `absent`, or `unchecked`. Cite nothing and the item is labelled `unverified`; cite

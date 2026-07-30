@@ -86,7 +86,21 @@ export interface LinkedReference {
  */
 export async function linkReferences(
   plane: PlaneClient,
-  args: { projectId: string; fromId: string; text: string },
+  args: {
+    projectId: string;
+    fromId: string;
+    text: string;
+    /**
+     * Work items named as data rather than prose.
+     *
+     * Parsing the outcome is the fallback for an agent that just writes the
+     * sentence; this is the interface for one that already knows. It matters most
+     * for references harvested from commit messages, where a completion spanning
+     * five commits might touch four items and pasting all four into the outcome
+     * would clutter the only part a human reads.
+     */
+    refs?: string[] | undefined;
+  },
 ): Promise<LinkedReference[]> {
   let identifier: string;
   try {
@@ -97,7 +111,33 @@ export async function linkReferences(
   }
 
   const refs = referencesIn(args.text, identifier);
-  if (refs.length === 0) return [];
+  const seen = new Set(refs.map((r) => r.sequence));
+
+  // An explicit ref that names nothing is *reported*, where the same string
+  // buried in prose is simply not a reference. The caller stated an intention
+  // here, and silently discarding a stated intention is the failure this whole
+  // file exists to stop.
+  const rejected: LinkedReference[] = [];
+  for (const raw of args.refs ?? []) {
+    // Uppercased first. Prose has to stay case-strict or `utf-8` becomes a
+    // reference; a ref the caller passed deliberately carries no such risk, and
+    // rejecting "sync-32" on capitalisation would be pedantry.
+    const one = referencesIn(raw.trim().toUpperCase(), identifier)[0];
+    if (!one) {
+      rejected.push({
+        readableId: raw,
+        linked: false,
+        reason: `not a work item reference for this project — expected the form ${identifier}-123`,
+      });
+      continue;
+    }
+    if (!seen.has(one.sequence)) {
+      seen.add(one.sequence);
+      refs.push(one);
+    }
+  }
+
+  if (refs.length === 0) return rejected;
 
   // One listing resolves every reference, however many there are, and avoids
   // asking Plane to look up a readable id whose project we would then have to
@@ -108,14 +148,17 @@ export async function linkReferences(
     for (const i of await plane.listWorkItems(args.projectId)) bySequence.set(i.sequence_id, i.id);
   } catch (err) {
     log.warn({ err, projectId: args.projectId }, 'could not resolve references');
-    return refs.map((r) => ({
-      readableId: r.readableId,
-      linked: false,
-      reason: 'could not reach Plane to resolve this reference',
-    }));
+    return [
+      ...rejected,
+      ...refs.map((r) => ({
+        readableId: r.readableId,
+        linked: false,
+        reason: 'could not reach Plane to resolve this reference',
+      })),
+    ];
   }
 
-  const out: LinkedReference[] = [];
+  const out: LinkedReference[] = [...rejected];
   for (const ref of refs) {
     const target = bySequence.get(ref.sequence);
     // An outcome naming its own item is the common case, not a mistake. An edge

@@ -186,6 +186,16 @@ export const CompleteBody = Held.extend({
         'id belongs here — a completion citing none of those is recorded but labelled ' +
         '"unverified", because nobody downstream can tell it apart from one backed by nothing.',
     ),
+  refs: z
+    .array(z.string().min(2).max(32))
+    .max(50)
+    .optional()
+    .describe(
+      'Other work items this touched, e.g. ["SYNC-32"] — they become real relations. Work items ' +
+        'named in `outcome` are picked up automatically; use this when the list would clutter ' +
+        'the prose a human reads, which is the usual case if you harvested them from commit ' +
+        'messages. A ref naming nothing in this project is reported back, not dropped.',
+    ),
   close: z.boolean().default(true),
 });
 

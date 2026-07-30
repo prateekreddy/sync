@@ -172,3 +172,83 @@ describe('turning references into edges', () => {
     expect(out[0]?.reason).toContain('could not reach Plane');
   });
 });
+
+/**
+ * Prose parsing is the fallback for an agent that just writes the sentence.
+ * `refs` is the interface for one that already knows — which is the normal case
+ * when the references were harvested from commit messages, where a completion
+ * spanning five commits might touch four items and pasting all four into the
+ * outcome would clutter the only part a human reads.
+ */
+describe('references passed as data', () => {
+  it('links what the caller named, alongside anything in the prose', async () => {
+    const plane = fakePlane();
+    const out = await linkReferences(plane, {
+      projectId: PROJECT,
+      fromId: randomUUID(),
+      text: 'Supersedes SYNC-32.',
+      refs: ['SYNC-7', 'SYNC-40'],
+    });
+
+    expect(out.filter((r) => r.linked).map((r) => r.readableId).sort()).toEqual([
+      'SYNC-32',
+      'SYNC-40',
+      'SYNC-7',
+    ]);
+  });
+
+  it('does not link the same item twice when prose and refs agree', async () => {
+    const plane = fakePlane();
+    const out = await linkReferences(plane, {
+      projectId: PROJECT,
+      fromId: randomUUID(),
+      text: 'Supersedes SYNC-32.',
+      refs: ['SYNC-32'],
+    });
+    expect(out).toHaveLength(1);
+    expect(plane.rec.related).toHaveLength(1);
+  });
+
+  it('accepts a ref that was not shouted', async () => {
+    // Prose must stay case-strict or `utf-8` becomes a reference. A ref passed
+    // deliberately carries no such risk.
+    const plane = fakePlane();
+    const out = await linkReferences(plane, {
+      projectId: PROJECT,
+      fromId: randomUUID(),
+      text: '',
+      refs: ['sync-7', ' SYNC-32 '],
+    });
+    expect(out.every((r) => r.linked)).toBe(true);
+  });
+
+  it('reports a ref that names nothing, where prose would just ignore it', async () => {
+    // The asymmetry is deliberate: a stated intention discarded in silence is
+    // the exact failure this file exists to stop.
+    const plane = fakePlane();
+    const out = await linkReferences(plane, {
+      projectId: PROJECT,
+      fromId: randomUUID(),
+      text: '',
+      refs: ['OTHER-3', 'nonsense', 'SYNC-7'],
+    });
+
+    expect(out.filter((r) => !r.linked).map((r) => r.readableId).sort()).toEqual([
+      'OTHER-3',
+      'nonsense',
+    ]);
+    expect(out.find((r) => r.readableId === 'SYNC-7')?.linked).toBe(true);
+  });
+
+  it('reports bad refs even when there is nothing else to link', async () => {
+    const plane = fakePlane();
+    const out = await linkReferences(plane, {
+      projectId: PROJECT,
+      fromId: randomUUID(),
+      text: 'no references here',
+      refs: ['garbage'],
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0]?.reason).toContain('SYNC-123');
+  });
+});
