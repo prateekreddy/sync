@@ -237,6 +237,23 @@ export class PlaneClient {
     });
   }
 
+  /**
+   * The Plane account this client authenticates as.
+   *
+   * Lives outside `/workspaces/`, so it cannot go through `request()`. Used to
+   * find out whether an agent is writing as its own principal, which decides
+   * whether provenance is worth printing at all.
+   */
+  async me(): Promise<{ id: string; email: string }> {
+    const res = await fetch(`${this.baseUrl.replace(/\/$/, '')}/api/v1/users/me/`, {
+      headers: { 'X-API-Key': this.apiKey },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) throw new GatewayError('UPSTREAM', `Plane ${res.status} on GET /users/me/`);
+    const me = (await res.json()) as { id?: string; email?: string };
+    return { id: me.id ?? '', email: me.email ?? '' };
+  }
+
   /** Workspace-wide search. Backs capture's dedup-on-write. */
   async search(query: string): Promise<Array<{ id: string; name: string; sequence_id: number; project_id: string; project__identifier: string }>> {
     const res = await this.request<{ issues?: Array<Record<string, unknown>> }>(

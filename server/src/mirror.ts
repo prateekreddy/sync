@@ -50,14 +50,59 @@ function serial(workItemId: string, fn: () => Promise<void>): Promise<void> {
   return next;
 }
 
-function actorNote(actor: Actor, body: string): string {
-  // When the agent has its own Plane token, Plane already attributes the comment
-  // to it natively — repeating "by agent:x" would be noise. What Plane still does
-  // not know is the principal chain: which human this agent ultimately acts for.
-  const provenance = actor.planeToken
-    ? `<p><em>for ${actor.principal}</em></p>`
-    : `<p><em>by ${actor.holder} — for ${actor.principal}</em></p>`;
-  return `<p>${body}</p>${provenance}`;
+/**
+ * Which Plane account each agent writes as, by the agent's Plane user id.
+ *
+ * Cached for the process: it cannot change without the token being re-minted, and
+ * the alternative is a `/users/me/` request on every mirror write.
+ */
+const writerEmail = new Map<string, string>();
+
+/**
+ * Is the account Plane will show as the author already the human this agent acts
+ * for?
+ *
+ * Self-service minting hands an agent its owner's own Plane token, so Plane's
+ * byline and the principal are the same person — the case this exists to detect.
+ * A provisioned agent with its own Plane account is the opposite: Plane shows
+ * `sync-worker-3` and only the gateway knows who that is working for.
+ */
+async function writerIsPrincipal(plane: PlaneClient, actor: Actor): Promise<boolean> {
+  if (!actor.planeToken || !actor.planeUserId) return false;
+
+  const principal = actor.principal.startsWith('human:')
+    ? actor.principal.slice('human:'.length).trim().toLowerCase()
+    : '';
+  // A principal recorded as a bare name ('human:prateek') is not something we can
+  // match against a Plane account, so it stays printed.
+  if (!principal.includes('@')) return false;
+
+  let mine = writerEmail.get(actor.planeUserId);
+  if (mine === undefined) {
+    try {
+      mine = (await plane.as(actor.planeToken).me()).email.trim().toLowerCase();
+    } catch {
+      // Unresolvable: keep printing it. Redundant provenance is noise; missing
+      // provenance loses the only record of who a machine write was made for.
+      return false;
+    }
+    writerEmail.set(actor.planeUserId, mine);
+  }
+  return mine !== '' && mine === principal;
+}
+
+/**
+ * Plane renders the author of every comment itself, so the only provenance worth
+ * adding is what Plane cannot know: which human an agent account acts for.
+ */
+export async function actorNote(plane: PlaneClient, actor: Actor, body: string): Promise<string> {
+  // No token of its own: the comment lands as the service account, so both halves
+  // are invisible to Plane and both have to be said.
+  if (!actor.planeToken) {
+    return `<p>${body}</p><p><em>by ${actor.holder} — for ${actor.principal}</em></p>`;
+  }
+  if (await writerIsPrincipal(plane, actor)) return `<p>${body}</p>`;
+  return `<p>${body}</p><p><em>for ${actor.principal}</em></p>`;
 }
 
 export async function mirrorClaim(
@@ -75,7 +120,8 @@ export async function mirrorClaim(
       await plane.comment(
         args.projectId,
         args.workItemId,
-        actorNote(
+        await actorNote(
+          plane,
           args.actor,
           `Claimed (epoch ${args.epoch}). Lease expires ${args.expiresAt.toISOString()}.`,
         ),
@@ -101,7 +147,11 @@ export async function mirrorComplete(
         const done = await plane.stateByGroup(args.projectId, 'completed');
         if (done) await plane.updateWorkItem(args.projectId, args.workItemId, { state: done.id });
       }
-      await plane.comment(args.projectId, args.workItemId, actorNote(args.actor, args.outcome));
+      await plane.comment(
+        args.projectId,
+        args.workItemId,
+        await actorNote(plane, args.actor, args.outcome),
+      );
       await pool.query('update lease set mirrored = true where work_item_id = $1', [args.workItemId]);
     } catch (err) {
       log.warn({ err, workItemId: args.workItemId, op: 'complete' }, 'plane mirror failed');

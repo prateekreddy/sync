@@ -202,6 +202,24 @@ created_by: agent1's Plane user
 This reuses Plane's existing concepts — users, roles, activity log — rather than
 building a second attribution system beside them.
 
+### Print provenance only where Plane's byline runs out
+
+Mirrored comments used to end with `for human:<email>` unconditionally. Once
+self-service minting arrived that became noise on the majority of writes: an agent
+minted through OAuth carries its *owner's* Plane token, so Plane's byline already
+names the very person the line named again, two lines apart.
+
+The rule is now that the note says only what Plane cannot: nothing when the author
+Plane shows *is* the principal; `for <human>` when a provisioned agent account
+writes on someone's behalf; `by <agent> — for <human>` when the write lands as the
+shared service account and Plane's byline identifies neither.
+
+Deciding this needs the email behind the agent's token, so it costs one
+`/users/me/` call, cached per agent for the process — it cannot change without the
+token being re-minted. When that lookup fails the note is printed: redundant
+provenance is noise, but missing provenance destroys the only record of who a
+machine write was made for, and only one of those is recoverable afterwards.
+
 ### The constraint that shapes it
 
 Pass-through needs the agent's Plane user to hold **Member** role, because Guest
