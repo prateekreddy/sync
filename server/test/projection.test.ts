@@ -89,6 +89,45 @@ describe('projecting a list', () => {
   });
 });
 
+describe('an explicit field list', () => {
+  it('returns exactly the named keys, and nothing else', () => {
+    const [got] = projectPayload([workItem()], ['id', 'name']) as Array<Record<string, unknown>>;
+    expect(Object.keys(got ?? {}).sort()).toEqual(['id', 'name']);
+  });
+
+  it('returns a field the default would have dropped', () => {
+    // The whole point: needing one omitted field should not cost all 29.
+    const [got] = projectPayload([workItem()], ['id', 'description_html', 'created_at']) as Array<
+      Record<string, unknown>
+    >;
+    expect(got).toHaveProperty('description_html');
+    expect(got).toHaveProperty('created_at');
+  });
+
+  it('keeps the envelope so a filtered answer is not mistaken for an empty one', () => {
+    const got = projectPayload(
+      { results: [workItem()], total_count: 1, count: 1, next_cursor: 'c2' },
+      ['id'],
+    ) as Record<string, unknown>;
+    expect(got['total_count']).toBe(1);
+    expect(got['next_cursor']).toBe('c2');
+    expect(Object.keys((got['results'] as Array<Record<string, unknown>>)[0] ?? {})).toEqual(['id']);
+  });
+
+  it('silently omits a name Plane never sent, rather than inventing a key', () => {
+    const [got] = projectPayload([workItem()], ['id', 'no_such_field']) as Array<
+      Record<string, unknown>
+    >;
+    expect(Object.keys(got ?? {})).toEqual(['id']);
+  });
+
+  it('falls back to the default when the list is empty', () => {
+    const [got] = projectPayload([workItem()], []) as Array<Record<string, unknown>>;
+    expect(got).not.toHaveProperty('created_at');
+    expect(got).toHaveProperty('priority');
+  });
+});
+
 describe('projecting an MCP tool result', () => {
   const wrap = (body: unknown) => ({
     content: [{ type: 'text', text: JSON.stringify(body) }],
@@ -108,6 +147,14 @@ describe('projecting an MCP tool result', () => {
     // transformation meant for data would turn a clear failure into a confusing one.
     const msg = { content: [{ type: 'text', text: 'Project not found' }] };
     expect(projectToolResult(msg)).toEqual(msg);
+  });
+
+  it('threads a field list into the text block', () => {
+    const out = projectToolResult(wrap({ results: [workItem()] }), ['id', 'description_html']) as {
+      content: Array<{ text: string }>;
+    };
+    const parsed = JSON.parse(out.content[0]?.text ?? '{}');
+    expect(Object.keys(parsed.results[0]).sort()).toEqual(['description_html', 'id']);
   });
 
   it('passes through anything that is not a tool result', () => {

@@ -60,12 +60,22 @@ function withVerbose(schema: unknown): unknown {
     ...s,
     properties: {
       ...s.properties,
+      fields: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Return exactly these keys per row, e.g. ["id","name"]. Cheaper than verbose when you ' +
+          'know what you want. This can only NARROW what the tool already returns — naming a ' +
+          'key the tool does not send yields nothing, so for a field a listing omits entirely ' +
+          '(descriptions, for instance) fetch the single item instead.',
+      },
       verbose: {
         type: 'boolean',
         description:
-          "Return Plane's full response. Off by default: list results are trimmed to the " +
-          'fields agents act on, which is roughly a third of the bytes. Ask for it when you ' +
-          'need a field the summary does not carry.',
+          "Return the tool's full response untrimmed. Off by default: audit metadata " +
+          '(created_at, updated_at, created_by, workspace, sort_order and similar) is removed, ' +
+          'and descriptions are removed from lists. Prefer `fields` when you know what you ' +
+          'want; reach for this when exploring what a tool returns at all.',
       },
     },
   };
@@ -195,12 +205,17 @@ export async function callTool(
     );
   }
 
-  // `verbose` is ours, not Plane's. Strip it before forwarding or the upstream
-  // schema rejects the call for an unknown property.
-  const { verbose, ...forwarded } = args;
+  // `verbose` and `fields` are ours, not Plane's. Strip them before forwarding or
+  // the upstream schema rejects the call for an unknown property.
+  const { verbose, fields, ...forwarded } = args;
 
   const checked = await checkToolCall({ pool: deps.pool, actor }, name, forwarded);
   const out = await deps.plane.call(actor.planeToken, name, checked);
+  // An explicit field list wins over verbose: a caller who named fields has said
+  // precisely what they want, and honouring the broader flag instead would ignore
+  // the more specific request.
+  const wanted = Array.isArray(fields) ? (fields as string[]).filter((f) => typeof f === 'string') : [];
+  if (wanted.length) return projectToolResult(out, wanted) as ToolResult;
   return (verbose === true ? out : projectToolResult(out)) as ToolResult;
 }
 
