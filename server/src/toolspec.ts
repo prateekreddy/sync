@@ -25,7 +25,15 @@ export const CaptureBody = z.object({
       'Enough for another agent to act without you: what, where, and how anyone would know it is done.',
     ),
   priority: z.enum(['urgent', 'high', 'medium', 'low', 'none']).optional(),
-  labels: z.array(z.string()).optional(),
+  labels: z
+    .array(z.string())
+    .optional()
+    .describe(
+      'Label names, e.g. ["backend"]. Created in the project if they do not exist yet. ' +
+        'Four names are load-bearing — needs-human, needs-refinement, blocked, wontfix ' +
+        'make an item unclaimable — so a name one character away from those is refused ' +
+        'rather than created.',
+    ),
   discoveredFrom: uuid.optional().describe('Work item you were on when you noticed this.'),
   parentId: uuid
     .optional()

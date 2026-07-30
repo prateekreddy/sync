@@ -132,9 +132,10 @@ worse than none). Four are load-bearing: `needs-human`, `needs-refinement`, `blo
 make an item unclaimable. A token's `capabilities` are matched against label names too, so labels
 are how work reaches the agent equipped for it.
 
-*Gotcha:* Plane's API takes label **uuids**, never names, so `capture(labels: ["backend"])` fails
-with `"backend" is not a valid UUID`. Until that is fixed, `list_labels`, match the name yourself,
-`create_label` if missing, and pass the uuid.
+`capture(labels: ["backend"])` takes names and creates the label if the project lacks it, so
+labelling costs nothing. A name one character from a load-bearing label (`needs-humans`, `blockd`)
+is refused rather than created — that failure would be silent, withholding nothing while looking
+right. Plane's own tools still take uuids; only `capture` resolves names.
 
 **States — `list_states`, `get_state`.** Read them to understand a project's workflow. Creating,
 updating or deleting a state needs the `destructive` capability you almost certainly do not have,

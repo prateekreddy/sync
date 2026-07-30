@@ -287,6 +287,23 @@ export class PlaneClient {
   }
 
   /**
+   * Create a label and keep the cache truthful.
+   *
+   * Without the cache write, a capture that creates `backend` and a capture a few
+   * seconds later would both miss and create it twice — near-duplicate labels being
+   * exactly what makes label routing useless.
+   */
+  async createLabel(projectId: string, name: string, color = '#6B7280'): Promise<Label> {
+    const label = await this.request<Label>('POST', `/projects/${projectId}/labels/`, {
+      name,
+      color,
+    });
+    const hit = this.labelCache.get(projectId);
+    if (hit) hit.labels = [...hit.labels, label];
+    return label;
+  }
+
+  /**
    * id -> lowercased name, for matching a work item's `labels` against anything
    * written by a human. Lowercased here rather than at each call site so the two
    * consumers cannot drift on casing.

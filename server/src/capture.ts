@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { Pool } from './db.js';
 import type { Actor } from './auth.js';
 import { GatewayError } from './errors.js';
+import { resolveLabels } from './labels.js';
 import type { PlaneClient } from './plane.js';
 
 /**
@@ -125,11 +126,18 @@ export async function capture(
       ...(parent ? { parentId: parent } : {}),
     };
   } else {
+    // Names in, ids out — Plane's API takes only uuids, and every caller writes
+    // words. Resolved before the create so a bad label fails the call outright
+    // rather than leaving a work item with silently missing routing.
+    const labelIds = input.labels?.length
+      ? await resolveLabels(plane, input.projectId, input.labels)
+      : [];
+
     const created = await plane.createWorkItem(input.projectId, {
       name: input.title,
       description_html: `<p>${escapeHtml(input.body)}</p>`,
       priority: input.priority ?? 'none',
-      ...(input.labels?.length ? { labels: input.labels } : {}),
+      ...(labelIds.length ? { labels: labelIds } : {}),
       // Plane models a sub-item as a plain `parent` uuid on the work item — there
       // is no separate sub-issue resource — so decomposition costs nothing extra.
       ...(input.parentId ? { parent: input.parentId } : {}),
