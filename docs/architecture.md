@@ -451,6 +451,35 @@ always fire, and everything else is one load away. Putting the surface in
 `AGENTS.md` would cost every request; putting the rules in the skill would cost the
 requests that matter.
 
+## Considered and rejected: moving to OpenProject
+
+The lease exists because Plane has no atomic test-and-set. OpenProject does — it
+enforces optimistic locking via `lockVersion`, and this was measured rather than
+read: booting `openproject/openproject:16` and racing five concurrent PATCHes
+carrying the same `lockVersion`, three rounds running, gave **exactly one 200 and
+four 409 `UpdateConflict`** every time. It also filters properly (`assignee is
+empty` returns just the unassigned items — literally the claim-loop query, where
+Plane ignores the filter and returns everything) and supports field selection that
+cut a listing 111x against our post-hoc 2.8x.
+
+On OpenProject the lease would stop being load-bearing for mutual exclusion. What
+would remain is smaller but real: TTL and expiry for agents that die mid-task,
+since `lockVersion` gives conflict detection and not liveness, plus fencing, the
+tool policy and attribution.
+
+**Staying on Plane anyway, for now.** It is a migration of the system of record;
+the Plane client, the mirror and the readiness gate are all written to Plane's
+shapes; and OpenProject's UI is heavier and more waterfall-flavoured, which is
+worse for the non-dev intake case Plane handles well. The lease works and is
+tested. Revisit if concurrency, filtering or payload size start costing more than
+the migration would.
+
+Others surveyed July 2026 and why they lost: *It's a Plan* (AGPL, agent-native,
+MCP built in — conceptually this project, but v0.1 and one developer); *Huly*
+(no public REST API, a Node SDK over WebSocket); *Vikunja* (community MCP servers
+only, no concurrency story); *GitLab* (official MCP, but gated behind Duo);
+*Taiga, Redmine, Tuleap* (community MCP only, no locking).
+
 ## Settled
 
 - **Agents close their own work**, humans audit afterwards (`ALLOW_AGENT_CLOSE`).
