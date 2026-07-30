@@ -24,6 +24,7 @@ import {
 import { board } from './board.js';
 import { capture } from './capture.js';
 import { citationsFor, recordCitations } from './citation.js';
+import { linkReferences } from './references.js';
 import {
   evidenceWarning,
   findEvidence,
@@ -838,6 +839,21 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       reason: b.outcome,
     });
 
+    // Work items the outcome names become edges. "Superseded by SYNC-32" was
+    // already being parsed out of this text and thrown away; the relationship is
+    // the whole reason the sentence was written.
+    //
+    // After the lease ends and best-effort, like the audit trail below: the lease
+    // row is the commit point, and Plane being slow must not cost a completion.
+    const references = await linkReferences(plane.as(actor.planeToken), {
+      projectId: l.projectId,
+      fromId: b.workItemId,
+      text: b.outcome,
+    }).catch((err: unknown) => {
+      req.log.warn({ err, workItemId: b.workItemId }, 'linking references failed');
+      return [];
+    });
+
     // After the lease ends, deliberately: the lease row is the commit point, and
     // a failure to write the audit trail must not cost an agent its completion.
     await recordCitations(pool, {
@@ -877,6 +893,10 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       closed: b.close && deps.allowAgentClose,
       evidence: checks.length ? checks : evidence,
       verified: checks.some((c) => c.status === 'landed'),
+      // Only when the outcome named something. Reported rather than silent
+      // because a reference that resolved to nothing is exactly the kind of
+      // mistake this feature exists to stop being invisible.
+      ...(references.length ? { references } : {}),
       ...(notice ? { warning: notice } : {}),
     };
   });

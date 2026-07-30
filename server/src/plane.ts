@@ -81,6 +81,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export class PlaneClient {
   private stateCache = new Map<string, { at: number; states: State[] }>();
   private labelCache = new Map<string, { at: number; labels: Label[] }>();
+  /** Never expires: a project identifier is fixed at creation. */
+  private identifierCache = new Map<string, string>();
 
   constructor(
     private readonly baseUrl: string,
@@ -103,6 +105,7 @@ export class PlaneClient {
     const scoped = new PlaneClient(this.baseUrl, token, this.workspaceSlug, this.maxRetries);
     scoped.stateCache = this.stateCache;
     scoped.labelCache = this.labelCache;
+    scoped.identifierCache = this.identifierCache;
     return scoped;
   }
 
@@ -244,6 +247,21 @@ export class PlaneClient {
 
   getWorkItem(projectId: string, id: string): Promise<WorkItem> {
     return this.request<WorkItem>('GET', `/projects/${projectId}/work-items/${id}/`);
+  }
+
+  /**
+   * A project's readable identifier — the `SYNC` in `SYNC-42`.
+   *
+   * Cached for the process: it is chosen when the project is created and Plane
+   * gives no way to change it afterwards, so re-reading it per completion would
+   * be a request that can only ever return the same answer.
+   */
+  async projectIdentifier(projectId: string): Promise<string | undefined> {
+    const hit = this.identifierCache.get(projectId);
+    if (hit !== undefined) return hit;
+    const p = await this.request<{ identifier?: string }>('GET', `/projects/${projectId}/`);
+    if (p.identifier) this.identifierCache.set(projectId, p.identifier);
+    return p.identifier;
   }
 
 

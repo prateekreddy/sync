@@ -48,6 +48,12 @@ held  →  claim  →  …work…  →  heartbeat every ~TTL/3  →  complete
    lease and record the outcome while leaving the item open for someone else's half. Use **`release`**
    with a reason when you are handing work back unfinished — silence is the one unacceptable ending.
 
+   **Name the work items you touched.** `Supersedes SYNC-32`, `follow-up captured as SYNC-40`,
+   `caused by SYNC-12` — a qualified reference in the outcome becomes a real relation in Plane, so
+   the reasoning survives as something navigable rather than prose. Use the `SYNC-NN` form; a bare
+   `#1` is left alone on purpose, because it usually means a GitHub pull request. A reference to an
+   item that does not exist is reported back to you rather than dropped.
+
    A cited commit or pull request is **checked against GitHub before the call returns**, so the
    response tells you what it found: `landed`, `pending` (real, not merged yet — normal for a PR you
    just opened), `absent`, or `unchecked`. Cite nothing and the item is labelled `unverified`; cite

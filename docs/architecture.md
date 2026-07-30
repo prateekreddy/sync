@@ -545,6 +545,52 @@ the webhook's strongest argument, and it sits in tension with this system's own
 discipline — claim, then complete — so losing it costs less than the machinery it
 required.
 
+## Structure has to be a default, not a discipline
+
+Measured on the production board, 2026-07-30: **35 work items, zero with a parent**,
+25 of 35 in no module. Not "little structure" — none.
+
+Nothing was missing. `capture` took `parentId`, `moduleId` and `discoveredFrom`;
+`decompose` and `link` existed; `complete` did not check children, so decomposing
+mid-work stranded nobody; `parent` was never lease-gated, so reparenting was
+always allowed; and the work-tracking skill had a section instructing agents to do
+all of it. Capability, tooling and instruction were all present and the result was
+still zero.
+
+The cause is that a flat item was free and every form of structure cost an extra
+argument the agent had to remember while its context was full of the actual work.
+An instruction that the author of the instruction does not follow is not an
+instruction problem. **Defaults beat prose**, and anything that depends on an
+agent choosing to be tidy will read as absent at scale.
+
+So placement is derived rather than requested:
+
+- **Provenance comes from the lease.** The gateway already knows what an agent
+  holds; asking it to repeat that in `discoveredFrom` meant provenance was
+  recorded only when someone remembered. Now a capture made while holding exactly
+  one item links itself back to it.
+- **References in a completion become edges.** "Superseded by SYNC-32" was already
+  being parsed out of the outcome text by `findEvidence` and discarded one line
+  later. The information was never missing, only unreachable.
+
+Both refuse to guess rather than guessing well. Holding two items infers no
+provenance; a bare `#42` is never read as a work item. A wrong edge is permanent
+and, to anyone reading the graph later, indistinguishable from a real one — which
+makes it strictly worse than a missing one. The rule that falls out: **cheap
+detection may guess, durable structure may not.** `evidence.ts` reads `#42` as a
+citation because a false positive there costs nothing; `references.ts` refuses to,
+because the board already contains "Merge PR #1 (work-tracking skill)", where `#1`
+is a GitHub pull request and SYNC-1 is an unrelated redeploy.
+
+### What Plane cannot express
+
+Its relation vocabulary is `blocking`, `blocked_by`, `duplicate`, `relates_to` and
+four scheduling types. There is no *supersedes* and no *caused by*, so "X replaced
+Y" flattens to "X relates to Y". The edge keeps the pair navigable and the
+completion text beside it keeps the meaning; the causality is not queryable. And
+modules do not nest — `parent` is silently dropped — so the epic layer is exactly
+one level deep, with the work-item parent chain below it.
+
 ## Settled
 
 - **Agents close their own work**, humans audit afterwards (`ALLOW_AGENT_CLOSE`).
