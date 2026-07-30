@@ -37,19 +37,76 @@ done
 set -a; . ./.env; set +a
 
 PORT="${LISTEN_HTTP_PORT:-80}"
-BASE="http://localhost:${PORT}"
 dc() { docker compose "$@"; }
+
+# ── how this script reaches the services ─────────────────────────────────────
+#
+# Not via http://localhost:$LISTEN_HTTP_PORT. That variable says what Compose was
+# *asked* to publish, which is not the same as what is reachable — and when Plane
+# runs behind an external reverse proxy the right deployment gives its proxy no
+# host binding at all and reaches it container-to-container.
+#
+# Assuming the port silently does the wrong thing in exactly that setup: :80 is
+# then the *other* reverse proxy. If it 404s, the readiness poll below burns its
+# full ten minutes and blames Plane; if it happens to answer 200 on
+# /api/instances/, provisioning proceeds against a server that is not this one.
+#
+# So ask Docker where the service actually is, in decreasing order of authority:
+#
+#   1. An explicit override from the caller (PROVISION_BASE_URL /
+#      PROVISION_GATEWAY_URL) — the escape hatch for anything unguessable.
+#   2. Whatever Compose actually published, if it published anything.
+#   3. The container's own address on the Plane network, which the host can reach
+#      directly under the bridge driver — so no host port needs to exist at all.
+#
+# `docker compose port` prints "invalid IP:0" rather than an empty string for a
+# service with no published port, so this matches a real host:port shape instead
+# of testing for emptiness.
+service_base() {
+  local svc=$1 cport=$2 mapped hp pp cid cip
+
+  mapped=$(dc port "$svc" "$cport" 2>/dev/null | tail -1)
+  case "$mapped" in
+    *:[1-9]*)
+      hp=${mapped%:*}; pp=${mapped##*:}
+      # A wildcard bind is not an address to connect to.
+      case "$hp" in 0.0.0.0 | '[::]' | '::' | '') hp=127.0.0.1 ;; esac
+      printf 'http://%s:%s' "$hp" "$pp"; return 0 ;;
+  esac
+
+  cid=$(dc ps -q "$svc" 2>/dev/null | head -1)
+  [ -n "$cid" ] || return 1
+  cip=$(docker inspect \
+    -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$cid" \
+    2>/dev/null | awk '{print $1}')
+  [ -n "$cip" ] || return 1
+  printf 'http://%s:%s' "$cip" "$cport"
+}
 
 # ── 1. wait for Plane ────────────────────────────────────────────────────────
 # First boot runs Django migrations against an empty database, which takes a
 # while. Poll the API rather than the container: "running" is not "ready".
-printf 'waiting for Plane to answer on %s ' "$BASE"
+#
+# Resolution is retried inside the loop, not done once up front: on a cold
+# `up -d` the proxy container may not exist yet when this line is reached, and
+# failing then would be a race rather than a real error.
+BASE="${PROVISION_BASE_URL:-}"; BASE="${BASE%/}"
+printf 'waiting for Plane '
 for i in $(seq 1 120); do
-  if curl -fsS -o /dev/null "${BASE}/api/instances/" 2>/dev/null; then ok=1; break; fi
+  [ -n "$BASE" ] || BASE=$(service_base proxy 80 || true)
+  if [ -n "$BASE" ] && curl -fsS -o /dev/null "${BASE}/api/instances/" 2>/dev/null; then
+    ok=1; break
+  fi
   printf '.'; sleep 5
 done
 echo
-[ "${ok:-0}" = 1 ] || { echo "Plane did not become ready. Try: docker compose logs api" >&2; exit 1; }
+[ "${ok:-0}" = 1 ] || {
+  echo "Plane did not become ready${BASE:+ at $BASE}." >&2
+  echo "Try: docker compose logs api" >&2
+  echo "If Plane is reachable somewhere this could not infer, set PROVISION_BASE_URL." >&2
+  exit 1
+}
+echo "reaching Plane at ${BASE}"
 
 # ── 2. users, workspace, tokens ──────────────────────────────────────────────
 echo "provisioning workspace '${WS_SLUG}' and agents: ${AGENTS}"
@@ -77,6 +134,20 @@ WS_CREATED=$(jq_ "['workspace_created']")
 # generated one above was never applied, so it must not be shown as if it were.
 if [ "$(jq_ "['admin_password_set']")" != "True" ]; then
   ADMIN_PASSWORD="(unchanged — set when the account was created)"
+fi
+
+# provision.py marked the instance set up, which the api caches — so until it is
+# restarted it keeps serving is_setup_done=false and the whole UI stays pinned to
+# the setup wizard, which cannot complete now that an instance admin exists. The
+# database is right and the browser is stuck: the confusing failure this avoids.
+# Only on the run that actually flipped it, so re-runs cost nothing.
+if [ "$(jq_ "['setup_done_flipped']")" = "True" ]; then
+  echo "instance marked set up; restarting api to drop its cached config"
+  dc restart api >/dev/null 2>&1 || true
+  for i in $(seq 1 60); do
+    curl -fsS -o /dev/null "${BASE}/api/instances/" 2>/dev/null && break
+    sleep 5
+  done
 fi
 
 # ── 3. project and project members, through the public API ───────────────────
@@ -129,10 +200,23 @@ set -a; . ./.env; set +a
 echo "starting the gateway"
 dc up -d --build gateway
 
+# Same reasoning as the Plane poll above: GATEWAY_LISTEN_PORT is what Compose was
+# asked to publish, and behind a reverse proxy the gateway deliberately publishes
+# nothing — it is reached only through that proxy, because agent tokens are bearer
+# credentials and should not be answering on a public port.
+GW="${PROVISION_GATEWAY_URL:-}"; GW="${GW%/}"
+gw_ok=0
 for i in $(seq 1 60); do
-  curl -fsS -o /dev/null "http://localhost:${GATEWAY_LISTEN_PORT:-8787}/healthz" 2>/dev/null && break
+  [ -n "$GW" ] || GW=$(service_base gateway 8787 || true)
+  if [ -n "$GW" ] && curl -fsS -o /dev/null "${GW}/healthz" 2>/dev/null; then
+    gw_ok=1; break
+  fi
   sleep 2
 done
+# Not fatal — token issuance below goes through `docker compose exec`, not HTTP,
+# so it can still succeed. But say so, because the previous version of this loop
+# fell through silently and left a dead gateway looking like a clean install.
+[ "$gw_ok" = 1 ] || echo "warning: gateway did not answer /healthz${GW:+ at $GW}; check: docker compose logs gateway" >&2
 
 # ── 5. agent credentials ─────────────────────────────────────────────────────
 # The agent gets ONLY the gateway token below. It must never receive the Plane

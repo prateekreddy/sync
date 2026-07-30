@@ -76,9 +76,23 @@ admin = ensure_user(ADMIN_EMAIL, ADMIN_EMAIL.split("@")[0], ADMIN_PASSWORD, role
 # Instance admin unlocks Plane's God-mode console at /god-mode/. Instance is
 # created by the api container at startup; if it is missing the instance simply
 # has no admin yet, which is recoverable and not worth failing the whole run for.
+setup_done_flipped = False
 instance = Instance.objects.last()
 if instance:
     InstanceAdmin.objects.get_or_create(user=admin, instance=instance, defaults={"role": ROLE_ADMIN})
+    # Plane gates its entire UI on is_setup_done: while it is false, every route
+    # redirects to the instance-setup wizard. Registering the admin above without
+    # also flipping this produces the worst possible state — the wizard is the
+    # only reachable page, and its job is to create the first instance admin,
+    # which now exists, so it cannot complete. The instance is fully provisioned
+    # and simultaneously impossible to sign into through a browser.
+    #
+    # The API caches this flag, so a running api container keeps serving the old
+    # value; provision.sh restarts it afterwards.
+    if not instance.is_setup_done:
+        instance.is_setup_done = True
+        instance.save(update_fields=["is_setup_done"])
+        setup_done_flipped = True
 
 workspace, ws_created = Workspace.objects.get_or_create(
     slug=WS_SLUG, defaults={"name": WS_NAME, "owner": admin, "organization_size": "1-10"}
@@ -115,5 +129,9 @@ out["workspace_slug"] = workspace.slug
 out["workspace_created"] = ws_created
 out["admin_user_id"] = str(admin.id)
 out["admin_token"] = admin_token
+# Tells provision.sh whether the api's cached instance config is now stale and
+# needs a restart. Only true on the run that actually flipped it, so re-runs do
+# not pay for a restart they do not need.
+out["setup_done_flipped"] = setup_done_flipped
 
 print("PROVISION_JSON:" + json.dumps(out))

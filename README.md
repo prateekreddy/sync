@@ -54,6 +54,51 @@ which belongs to your stack. Do the same four things in Plane's UI instead: sign
 up, create the workspace, create the project, create an API token, then put the
 token in `deploy/.env` as `PLANE_API_KEY`.
 
+### Behind a reverse proxy you already run
+
+If something else already owns `:80`/`:443` on the host — Caddy, nginx, Traefik —
+give this stack no host bindings at all and let that proxy reach it over the Docker
+network. In a `docker-compose.override.yml`:
+
+```yaml
+services:
+  proxy:                    # would otherwise collide on 80/443 and fail to bind
+    ports: !override []
+  gateway:                  # agent tokens are bearer credentials; keep it unpublished
+    ports: !override []
+```
+
+Then point your proxy at `proxy:80` and `gateway:8787`, attach it to the network
+named by `PLANE_NETWORK`, and in `.env` set `WEB_URL` and `CORS_ALLOWED_ORIGINS` to
+the `https://` address users actually visit — Plane builds absolute URLs and
+sign-in redirects from them, so leaving them `http://` breaks the login round trip.
+Leave `SITE_ADDRESS=:80`: TLS is the outer proxy's job and Plane's own proxy should
+not try to get a certificate.
+
+`provision.sh` needs no host port for this — it asks Docker where each service is.
+Two overrides exist for what it cannot infer, neither normally needed:
+
+| Variable | Use when |
+|---|---|
+| `PROVISION_BASE_URL` | Plane is reachable somewhere Docker cannot report |
+| `PROVISION_GATEWAY_URL` | same, for the gateway's `/healthz` poll |
+
+Nothing in the stack can know your proxy's public hostname, so the summary prints
+`<gateway-url>` for you to substitute. Set `SYNC_GATEWAY_URL` in `.env` to have it
+printed for real.
+
+### What provisioning does
+
+`provision.sh` creates the admin account, the workspace, one Plane user per agent,
+an API token for each, the project with Plane's default workflow states, and the
+gateway tokens. It marks the instance set up and restarts the `api` container on the
+run that does so, because that container caches the flag.
+
+It is idempotent — re-run it to add agents or repair a half-finished setup.
+
+If a Plane upgrade breaks it, do the same four things in the UI (sign up, workspace,
+project, API token) and put the token in `deploy/.env`.
+
 ### Point an agent at it
 
 No server access and no admin role needed. Create a personal token in Plane's UI

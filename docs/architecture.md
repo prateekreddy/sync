@@ -228,6 +228,31 @@ silently render every stored agent token undecryptable.
 Decryption failure degrades to the service account rather than taking the agent
 offline — work continues, attributed less precisely.
 
+## Why provisioning touches Plane's ORM at all
+
+Plane has no supported way to create the first user, the first workspace, or an API
+token without a browser session — an API token is the only credential `/api/v1/`
+accepts, and minting one needs a session you cannot get headlessly. So
+`provision.py` uses Plane's ORM for exactly those things and stops there. The
+project is created through the public API instead, because that endpoint also
+creates Plane's default workflow states, and the readiness gate reads state
+*groups* to decide what is claimable.
+
+It also marks the instance set up. Plane pins every route to its setup wizard until
+`Instance.is_setup_done` is true, and that wizard exists to create the first
+instance admin — which provisioning has just created. Registering the admin without
+flipping the flag yields an instance that is fully provisioned and impossible to
+sign into: the only reachable page is a wizard that can no longer complete. The api
+caches the flag, so `provision.sh` restarts that container on the run which flips it.
+
+`provision.sh` resolves service addresses from Docker rather than assuming
+`http://localhost:$LISTEN_HTTP_PORT`. That variable says what Compose was *asked* to
+publish, which is not what is reachable — and behind an external reverse proxy the
+right deployment gives Plane's own proxy no host binding at all. Assuming the port
+there means `:80` is the *other* proxy: if it 404s the readiness poll burns ten
+minutes and blames Plane, and if it answers 200 on `/api/instances/` provisioning
+proceeds against a server that is not this one.
+
 ## Who issues agent tokens
 
 Tokens were originally issued only by a CLI inside the gateway container. That
