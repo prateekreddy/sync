@@ -5,6 +5,7 @@ import { sweepExpired } from './lease.js';
 import { mirrorReturn } from './mirror.js';
 import { PlaneClient } from './plane.js';
 import { PlaneMcp } from './planemcp.js';
+import type { EvidencePolicy } from './evidence.js';
 import { registerRoutes } from './routes.js';
 
 function required(name: string): string {
@@ -63,6 +64,7 @@ registerRoutes(app, {
   planeWebUrl: process.env['WEB_URL'],
   // Agents close their own work and humans audit afterwards. Flip this to run a
   // stricter policy without touching the lease logic.
+  evidencePolicy: (process.env['REQUIRE_EVIDENCE'] as EvidencePolicy | undefined) ?? 'warn',
   allowAgentClose: (process.env.ALLOW_AGENT_CLOSE ?? 'true') === 'true',
 });
 

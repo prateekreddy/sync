@@ -95,6 +95,9 @@ services:
       # personal token for an agent token, so nobody needs a shell here. The
       # exchange only reduces privilege (see server/src/mint.ts), which is why it
       # carries no admin gate. Set to `off` to issue exclusively from the CLI.
+      # off | warn | refuse. warn records a completion citing nothing checkable
+      # and labels the item "unverified"; refuse rejects the call.
+      REQUIRE_EVIDENCE: ${REQUIRE_EVIDENCE:-warn}
       MINT_TOKENS: ${MINT_TOKENS:-on}
       # Per source address. This endpoint takes no gateway credential and calls
       # Plane twice per request, so an unthrottled one lets a stranger burn the

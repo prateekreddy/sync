@@ -1,5 +1,7 @@
 import type { Pool } from './db.js';
 import type { Actor } from './auth.js';
+import { UNVERIFIED_LABEL } from './evidence.js';
+import { resolveLabels } from './labels.js';
 import { log } from './log.js';
 import type { PlaneClient } from './plane.js';
 
@@ -139,7 +141,15 @@ export async function mirrorClaim(
 export async function mirrorComplete(
   plane: PlaneClient,
   pool: Pool,
-  args: { projectId: string; workItemId: string; actor: Actor; outcome: string; close: boolean },
+  args: {
+    projectId: string;
+    workItemId: string;
+    actor: Actor;
+    outcome: string;
+    close: boolean;
+    /** Completion cited nothing checkable — mark it so the board shows the difference. */
+    unverified?: boolean;
+  },
 ): Promise<void> {
   return serial(args.workItemId, async () => {
     try {
@@ -152,6 +162,27 @@ export async function mirrorComplete(
         args.workItemId,
         await actorNote(plane, args.actor, args.outcome),
       );
+
+      // Labelled rather than refused: the completion is real, it simply cites
+      // nothing anyone can check, and a board that shows which is which is worth
+      // more than one that blocks the agent. Best-effort like every mirror write.
+      if (args.unverified) {
+        try {
+          // Read-modify-write, because Plane's `labels` is a replacement, not an
+          // append: writing [unverified] alone would silently strip every label
+          // the item already carried, including the load-bearing ones.
+          const [ids, current] = await Promise.all([
+            resolveLabels(plane, args.projectId, [UNVERIFIED_LABEL]),
+            plane.getWorkItem(args.projectId, args.workItemId),
+          ]);
+          const merged = [...new Set([...(current.labels ?? []), ...ids])];
+          if (merged.length !== (current.labels ?? []).length) {
+            await plane.updateWorkItem(args.projectId, args.workItemId, { labels: merged });
+          }
+        } catch (err) {
+          log.warn({ err, workItemId: args.workItemId }, 'unverified label failed');
+        }
+      }
       await pool.query('update lease set mirrored = true where work_item_id = $1', [args.workItemId]);
     } catch (err) {
       log.warn({ err, workItemId: args.workItemId, op: 'complete' }, 'plane mirror failed');

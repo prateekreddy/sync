@@ -159,7 +159,15 @@ export const ReleaseBody = Held.extend({
 });
 
 export const CompleteBody = Held.extend({
-  outcome: z.string().min(1).max(2000).describe('What you did, and the evidence. Links to a PR or commit belong here.'),
+  outcome: z
+    .string()
+    .min(1)
+    .max(2000)
+    .describe(
+      'What you did, and the evidence. A commit sha, PR or issue URL, file path or work item ' +
+        'id belongs here — a completion citing none of those is recorded but labelled ' +
+        '"unverified", because nobody downstream can tell it apart from one backed by nothing.',
+    ),
   close: z.boolean().default(true),
 });
 

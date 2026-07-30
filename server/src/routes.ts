@@ -23,6 +23,7 @@ import {
 } from './oauth.js';
 import { board } from './board.js';
 import { capture } from './capture.js';
+import { evidenceWarning, findEvidence, type EvidencePolicy } from './evidence.js';
 import { decompose } from './decompose.js';
 import { GatewayError, HTTP_STATUS, RECOVERY } from './errors.js';
 import * as lease from './lease.js';
@@ -55,6 +56,11 @@ export interface Deps {
   plane: PlaneClient;
   /** Agents may close their own work; humans audit afterwards. */
   allowAgentClose: boolean;
+  /**
+   * What to do about a completion citing nothing checkable.
+   * 'warn' records it and labels the item; 'refuse' rejects the call.
+   */
+  evidencePolicy: EvidencePolicy;
   /**
    * Plane's own MCP server, hosted here. Null disables the proxied half of the
    * tool surface; the coordination half keeps working.
@@ -730,6 +736,16 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     const actor = await actorOf(req);
     const b = CompleteBody.parse(req.body);
 
+    const evidence = findEvidence(b.outcome);
+    const warning = deps.evidencePolicy === 'off' ? null : evidenceWarning(b.outcome);
+
+    // Refuse *before* ending the lease, or the agent is left holding nothing
+    // while the item stays open — the one outcome worse than an unverified
+    // completion. Off by default; see evidence.ts for why warn is the default.
+    if (warning && deps.evidencePolicy === 'refuse') {
+      throw new GatewayError('INVALID', warning, { workItemId: b.workItemId });
+    }
+
     const l = await lease.complete(pool, {
       workItemId: b.workItemId,
       holder: actor.holder,
@@ -742,8 +758,14 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       actor,
       outcome: b.outcome,
       close: b.close && deps.allowAgentClose,
+      ...(warning ? { unverified: true } : {}),
     });
-    return { lease: l, closed: b.close && deps.allowAgentClose };
+    return {
+      lease: l,
+      closed: b.close && deps.allowAgentClose,
+      evidence,
+      ...(warning ? { warning } : {}),
+    };
   });
 
   // ── link ─────────────────────────────────────────────────────────────────
