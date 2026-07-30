@@ -187,8 +187,27 @@ Never edit assignees or state in Plane directly to take work.
 
 Keep it short — it is in context for every request.
 
-No skill is needed. These rules apply to every request, and skills only load when
-the model decides they are relevant.
+**No skill for the rules.** They apply to every request, and a skill loads only
+when the model decides it is relevant — which, for "claim before you work", is
+after the decision it was meant to change.
+
+## Add the skill for everything else
+
+The rules are three lines because they have to be. What they leave out is the rest
+of the surface: fifty-five tools, and which one answers which question. That does
+belong in a skill — it is reference, wanted occasionally, and far too long to sit
+in context for every request.
+
+```bash
+mkdir -p ~/.claude/skills                       # or <project>/.claude/skills
+cp -r skills/work-tracking ~/.claude/skills/
+```
+
+`skills/work-tracking/SKILL.md` covers the claim loop and its failure modes, what
+the readiness gate withholds, how capture's dedup interacts with decomposition,
+and what cycles, modules, labels, worklogs and comments are for once an agent
+holds an item. Codex has no skill mechanism — the file is plain Markdown, so point
+it at the path instead.
 
 ## Issuing a token from the server
 
