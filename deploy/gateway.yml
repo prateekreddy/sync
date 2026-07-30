@@ -100,6 +100,13 @@ services:
       # Plane twice per request, so an unthrottled one lets a stranger burn the
       # workspace's rate-limit budget and take the whole fleet down with it.
       MINT_RATE_LIMIT: ${MINT_RATE_LIMIT:-10}
+      # How agents reach this gateway from outside, e.g. https://mcp.example.dev.
+      # Required behind a reverse proxy that does not send X-Forwarded-Proto and
+      # X-Forwarded-Host: the OAuth issuer and every advertised endpoint are built
+      # from it, and a wrong value sends clients somewhere nothing is listening.
+      GATEWAY_PUBLIC_URL: ${GATEWAY_PUBLIC_URL:-}
+      # Only used to link to Plane's token page from the sign-in screen.
+      WEB_URL: ${WEB_URL:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       PORT: 8787
     ports:

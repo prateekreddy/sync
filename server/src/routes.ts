@@ -3,6 +3,17 @@ import { z } from 'zod';
 import type { Pool } from './db.js';
 import { authenticate, chainFor, issueToken, type Actor } from './auth.js';
 import { agentName, createRateLimiter, identify, visibleProjects } from './mint.js';
+import {
+  assertSafeRedirect,
+  authServerMetadata,
+  consentPage,
+  findClient,
+  issueCode,
+  protectedResourceMetadata,
+  publicBase,
+  redeemCode,
+  registerClient,
+} from './oauth.js';
 import { capture } from './capture.js';
 import { GatewayError, HTTP_STATUS, RECOVERY } from './errors.js';
 import * as lease from './lease.js';
@@ -38,16 +49,51 @@ export interface Deps {
   /** Whether agents can be onboarded without a shell on this host. */
   allowMinting: boolean;
   mintRatePerMinute: number;
+  /**
+   * How this gateway is reached from outside, e.g. https://mcp.example.dev.
+   * The OAuth issuer must be stable and must match what the client was told, so
+   * behind a proxy that rewrites Host this has to be configured rather than
+   * inferred.
+   */
+  publicUrl?: string | undefined;
+  /** Plane's own address, used only to link to its token page from the consent screen. */
+  planeWebUrl?: string | undefined;
 }
 
 export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   const { pool, plane } = deps;
 
+  // OAuth speaks form encoding, not JSON — both the consent form and RFC 6749's
+  // token endpoint. Fastify parses only JSON out of the box, so without this the
+  // token exchange fails at the content type before any of our code runs.
+  app.addContentTypeParser(
+    'application/x-www-form-urlencoded',
+    { parseAs: 'string' },
+    (_req, body, done) => {
+      try {
+        done(null, Object.fromEntries(new URLSearchParams(body as string)));
+      } catch (err) {
+        done(err as Error, undefined);
+      }
+    },
+  );
+
   const actorOf = (req: { headers: Record<string, unknown> }): Promise<Actor> =>
     authenticate(pool, req.headers['authorization'] as string | undefined);
 
-  app.setErrorHandler((err: unknown, _req, reply) => {
+  app.setErrorHandler((err: unknown, req, reply) => {
     if (err instanceof GatewayError) {
+      // RFC 9728 §5.1. This header is what turns a 401 into an offer to sign in:
+      // Claude Code reads it, fetches the metadata it names, registers itself and
+      // runs the browser flow. Without it, a token-less connection is just a
+      // failure the user has to diagnose.
+      if (err.code === 'UNAUTHENTICATED') {
+        const meta = `${publicBase(deps.publicUrl, req.headers, req.protocol)}/.well-known/oauth-protected-resource`;
+        reply.header(
+          'WWW-Authenticate',
+          `Bearer realm="sync", resource_metadata="${meta}"`,
+        );
+      }
       // Every failure carries what to do about it, so the agent does not have to
       // infer recovery from prose.
       return reply.status(HTTP_STATUS[err.code]).send({
@@ -93,6 +139,237 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   // with their own credential, and gets exactly their own reach.
   const mintAllowed = createRateLimiter(deps.mintRatePerMinute);
 
+  /**
+   * Shared by the JSON endpoint and the OAuth consent form, so the two doors
+   * cannot drift on who is allowed to mint what.
+   */
+  async function mintFor(args: {
+    planeToken: string;
+    agent: string;
+    projectId?: string | undefined;
+    capabilities?: string[];
+  }): Promise<{ token: string; name: string; email: string }> {
+    const identity = await identify(deps.planeBaseUrl, args.planeToken);
+
+    if (args.projectId) {
+      const visible = await visibleProjects(deps.planeBaseUrl, deps.workspaceSlug, args.planeToken);
+      if (!visible.has(args.projectId)) {
+        throw new GatewayError(
+          'FORBIDDEN',
+          `You are not a member of project ${args.projectId}, so an agent bound to it could not write. Add yourself to it in Plane first.`,
+          { visibleProjects: [...visible] },
+        );
+      }
+    }
+
+    const name = agentName(identity, args.agent);
+    const { token } = await issueToken(pool, {
+      name,
+      principal: `human:${identity.email || identity.displayName}`,
+      capabilities: args.capabilities ?? [],
+      planeUserId: identity.id,
+      // The caller's own token, so Plane's activity log attributes the agent's
+      // writes to them rather than to a shared service account.
+      planeToken: args.planeToken,
+      ...(args.projectId ? { defaultProjectId: args.projectId } : {}),
+      onlyIfOwnedBy: identity.id,
+    });
+
+    // Minting is a credential-issuing event: it belongs in the log whether or not
+    // anyone is watching, because afterwards it is unreconstructable — only the
+    // hash is kept.
+    app.log.info(
+      { agent: name, planeUser: identity.id, email: identity.email, project: args.projectId },
+      'issued agent token',
+    );
+    return { token, name, email: identity.email };
+  }
+
+  // ── OAuth ────────────────────────────────────────────────────────────────
+  //
+  // So `claude mcp add --transport http sync <url>/mcp` is the entire command,
+  // with no credential on it: the client discovers these endpoints from the 401
+  // below, registers itself, and runs the browser flow. The token it receives is
+  // an ordinary agent token, and it lands in the OS keychain rather than in a
+  // config file or shell history.
+  //
+  // Headless runs (`claude -p`, the Agent SDK) cannot open a browser, so the
+  // Authorization header path stays supported for them.
+  const base = (req: { headers: Record<string, unknown>; protocol: string }) =>
+    publicBase(deps.publicUrl, req.headers, req.protocol);
+
+  app.get('/.well-known/oauth-protected-resource', async (req) =>
+    protectedResourceMetadata(base(req)),
+  );
+  // Some clients probe the resource-suffixed form of the same document.
+  app.get('/.well-known/oauth-protected-resource/mcp', async (req) =>
+    protectedResourceMetadata(base(req)),
+  );
+  app.get('/.well-known/oauth-authorization-server', async (req) => authServerMetadata(base(req)));
+
+  app.post('/oauth/register', async (req, reply) => {
+    if (!deps.allowMinting) {
+      throw new GatewayError('FORBIDDEN', 'Self-service tokens are disabled on this gateway.');
+    }
+    if (!mintAllowed(req.ip, Date.now())) {
+      return reply.status(429).send({ error: 'too_many_requests' });
+    }
+    const c = await registerClient(pool, (req.body ?? {}) as Record<string, unknown>);
+    return reply.status(201).send({
+      client_id: c.clientId,
+      client_name: c.client_name,
+      redirect_uris: c.redirectUris,
+      token_endpoint_auth_method: 'none',
+      grant_types: ['authorization_code'],
+      response_types: ['code'],
+    });
+  });
+
+  const AuthorizeQuery = z.object({
+    client_id: z.string().min(1),
+    redirect_uri: z.string().min(1),
+    response_type: z.literal('code'),
+    code_challenge: z.string().min(20),
+    code_challenge_method: z.literal('S256'),
+    state: z.string().optional(),
+    scope: z.string().optional(),
+  });
+
+  /**
+   * Validated before anything is rendered, and errors are shown rather than
+   * redirected: until the redirect_uri is confirmed to belong to the client, it
+   * is attacker-controlled and must not be used as a sink.
+   */
+  async function checkAuthorize(q: z.infer<typeof AuthorizeQuery>) {
+    const client = await findClient(pool, q.client_id);
+    if (!client) throw new GatewayError('INVALID', 'unknown client_id — register first');
+    assertSafeRedirect(q.redirect_uri);
+    if (!client.redirectUris.includes(q.redirect_uri)) {
+      throw new GatewayError('INVALID', 'redirect_uri is not registered for this client');
+    }
+    return client;
+  }
+
+  app.get('/oauth/authorize', async (req, reply) => {
+    const q = AuthorizeQuery.parse(req.query);
+    await checkAuthorize(q);
+    return reply.type('text/html').header('X-Frame-Options', 'DENY').send(
+      consentPage({
+        action: '/oauth/authorize',
+        hidden: {
+          client_id: q.client_id,
+          redirect_uri: q.redirect_uri,
+          code_challenge: q.code_challenge,
+          ...(q.state ? { state: q.state } : {}),
+        },
+        ...(deps.planeWebUrl ? { planeUrl: deps.planeWebUrl } : {}),
+      }),
+    );
+  });
+
+  app.post('/oauth/authorize', async (req, reply) => {
+    const form = z
+      .object({
+        client_id: z.string().min(1),
+        redirect_uri: z.string().min(1),
+        code_challenge: z.string().min(20),
+        state: z.string().optional(),
+        planeToken: z.string().min(1),
+        agent: z.string().min(1).max(40),
+        projectId: z.string().optional(),
+      })
+      .parse(req.body);
+
+    if (!mintAllowed(req.ip, Date.now())) {
+      return reply.status(429).type('text/html').send(
+        consentPage({
+          action: '/oauth/authorize',
+          hidden: form as unknown as Record<string, string>,
+          error: 'Too many attempts from this address. Wait a minute and try again.',
+        }),
+      );
+    }
+
+    await checkAuthorize({ ...form, response_type: 'code', code_challenge_method: 'S256' });
+
+    let minted: { token: string; name: string };
+    try {
+      minted = await mintFor({
+        planeToken: form.planeToken,
+        agent: form.agent,
+        ...(form.projectId ? { projectId: form.projectId } : {}),
+      });
+    } catch (err) {
+      // Re-render with the reason instead of redirecting: a bad token or an
+      // unreachable project is the user's to fix, here, not the client's.
+      return reply.status(400).type('text/html').send(
+        consentPage({
+          action: '/oauth/authorize',
+          hidden: {
+            client_id: form.client_id,
+            redirect_uri: form.redirect_uri,
+            code_challenge: form.code_challenge,
+            ...(form.state ? { state: form.state } : {}),
+          },
+          error: err instanceof GatewayError ? err.message : 'Could not issue a token.',
+          ...(deps.planeWebUrl ? { planeUrl: deps.planeWebUrl } : {}),
+        }),
+      );
+    }
+
+    const code = issueCode(
+      {
+        clientId: form.client_id,
+        redirectUri: form.redirect_uri,
+        codeChallenge: form.code_challenge,
+        accessToken: minted.token,
+      },
+      Date.now(),
+    );
+
+    const to = new URL(form.redirect_uri);
+    to.searchParams.set('code', code);
+    if (form.state) to.searchParams.set('state', form.state);
+    return reply.redirect(to.toString(), 302);
+  });
+
+  app.post('/oauth/token', async (req, reply) => {
+    const form = z
+      .object({
+        grant_type: z.literal('authorization_code'),
+        code: z.string().min(1),
+        redirect_uri: z.string().min(1),
+        client_id: z.string().min(1),
+        code_verifier: z.string().min(20),
+      })
+      .parse(req.body);
+
+    let accessToken: string;
+    try {
+      accessToken = redeemCode(
+        form.code,
+        {
+          clientId: form.client_id,
+          redirectUri: form.redirect_uri,
+          codeVerifier: form.code_verifier,
+        },
+        Date.now(),
+      );
+    } catch (err) {
+      // The token endpoint speaks RFC 6749 error codes, not ours.
+      return reply.status(400).send({
+        error: 'invalid_grant',
+        error_description: err instanceof Error ? err.message : 'code could not be redeemed',
+      });
+    }
+
+    // No expiry and no refresh token: agent tokens live until revoked, so an
+    // expiry here would promise a rotation that does not happen.
+    return reply
+      .header('Cache-Control', 'no-store')
+      .send({ access_token: accessToken, token_type: 'Bearer', scope: 'agent' });
+  });
+
   app.post('/v1/agent-tokens', async (req, reply) => {
     if (!deps.allowMinting) {
       throw new GatewayError(
@@ -128,50 +405,21 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       );
     }
 
-    const identity = await identify(deps.planeBaseUrl, planeToken);
-
-    if (body.projectId) {
-      const visible = await visibleProjects(deps.planeBaseUrl, deps.workspaceSlug, planeToken);
-      if (!visible.has(body.projectId)) {
-        throw new GatewayError(
-          'FORBIDDEN',
-          `You are not a member of project ${body.projectId}, so an agent bound to it could not write. Add yourself to it in Plane first.`,
-          { visibleProjects: [...visible] },
-        );
-      }
-    }
-
-    const name = agentName(identity, body.agent);
-    const { token } = await issueToken(pool, {
-      name,
-      principal: `human:${identity.email || identity.displayName}`,
-      capabilities: body.capabilities,
-      planeUserId: identity.id,
-      // The caller's own token, so Plane's activity log attributes the agent's
-      // writes to them rather than to a shared service account.
+    const minted = await mintFor({
       planeToken,
-      ...(body.projectId ? { defaultProjectId: body.projectId } : {}),
-      onlyIfOwnedBy: identity.id,
+      agent: body.agent,
+      capabilities: body.capabilities,
+      ...(body.projectId ? { projectId: body.projectId } : {}),
     });
 
-    // Minting is a credential-issuing event: it belongs in the log whether or not
-    // anyone is watching, because afterwards it is unreconstructable — only the
-    // hash is kept.
-    app.log.info(
-      { agent: name, planeUser: identity.id, email: identity.email, project: body.projectId },
-      'issued agent token (self-service)',
-    );
-
-    const proto = (req.headers['x-forwarded-proto'] as string) ?? req.protocol;
-    const base = `${proto}://${req.headers['host'] ?? 'your-gateway'}`;
     return {
-      token,
-      agent: name,
-      planeUser: { id: identity.id, email: identity.email },
+      token: minted.token,
+      agent: minted.name,
+      planeUser: { email: minted.email },
       defaultProjectId: body.projectId ?? null,
       // Handing back the exact next command removes the step where someone
       // assembles it by hand from three places and gets the URL wrong.
-      install: `claude mcp add --transport http sync ${base}/mcp --header "Authorization: Bearer ${token}"`,
+      install: `claude mcp add --transport http sync ${base(req)}/mcp --header "Authorization: Bearer ${minted.token}"`,
       note: 'Shown once — only a hash is stored. Give this to the agent; never give it your Plane token.',
     };
   });

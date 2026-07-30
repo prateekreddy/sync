@@ -57,6 +57,10 @@ registerRoutes(app, {
   // this host. Set MINT_TOKENS=off to keep issuing exclusively from the CLI.
   allowMinting: (process.env['MINT_TOKENS'] ?? 'on') !== 'off',
   mintRatePerMinute: Number(process.env['MINT_RATE_LIMIT'] ?? 10),
+  // The OAuth issuer must match what the client was told and must not change, so
+  // behind a proxy that rewrites Host it has to be set rather than inferred.
+  publicUrl: process.env['GATEWAY_PUBLIC_URL'],
+  planeWebUrl: process.env['WEB_URL'],
   // Agents close their own work and humans audit afterwards. Flip this to run a
   // stricter policy without touching the lease logic.
   allowAgentClose: (process.env.ALLOW_AGENT_CLOSE ?? 'true') === 'true',
