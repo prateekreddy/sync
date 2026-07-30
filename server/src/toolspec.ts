@@ -302,7 +302,10 @@ export const NATIVE_TOOLS: NativeTool[] = [
       'reports total, done, held, ready and blocked, which add up: an item is in exactly one ' +
       'bucket. `ready` is the number Plane cannot produce, because it needs the readiness gate ' +
       'and the lease table. Use it to decide whether to finish something nearly done rather ' +
-      'than start something new, and to see what the rest of the fleet is holding.',
+      'than start something new, and to see what the rest of the fleet is holding. ' +
+      '`structure` says whether the board has any shape at all: how many items are filed in a ' +
+      'module, have a parent, or are containers, how deep the hierarchy goes, and how many are ' +
+      'unplaced. A depth of 1 with a high `unplacedOpen` means a flat inbox rather than a plan.',
     schema: BoardQuery,
     method: 'GET',
     request: (a) => ({ path: q('/v1/board', a) }),

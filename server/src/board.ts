@@ -36,12 +36,48 @@ export interface ModuleProgress extends Progress {
   name: string;
 }
 
+/**
+ * How much shape the board has.
+ *
+ * Progress answers "how much is left"; this answers "does any of it hang
+ * together". They are different questions and a board that reports only the
+ * first looks healthy while being an inbox — which is exactly what happened here:
+ * 35 items, zero parents, 25 in no module, discovered only because a human asked
+ * directly. A number nobody can see is a number nobody fixes.
+ *
+ * Deliberately computed from placement alone — parent, children, module — and
+ * not from relations. A `relates_to` edge is provenance, not placement: it says
+ * where an item came from, not what rolls it up. It would also cost one Plane
+ * request per item, since relations live behind their own endpoint, and this must
+ * add no calls to a board that is already several.
+ */
+export interface Structure {
+  items: number;
+  /** In a module. The epic layer, one level deep — Plane's modules do not nest. */
+  filed: number;
+  /** Has a parent. */
+  parented: number;
+  /** Has at least one child, so it is a container rather than a task. */
+  containers: number;
+  /** Neither filed, nor parented, nor a container. Nothing rolls these up. */
+  unplaced: number;
+  /** The actionable half of `unplaced`: placing finished work changes nothing. */
+  unplacedOpen: number;
+  /** Longest parent chain. 1 means flat — every item is top level. */
+  depth: number;
+}
+
 export interface Board {
   projectId: string;
   modules: ModuleProgress[];
   /** Items in no module at all — the work the epic layer does not account for. */
   unfiled: Progress;
   project: Progress;
+  /**
+   * Whether the board has any shape. Omitted for a single-module query, which
+   * cannot see enough of the project to say.
+   */
+  structure?: Structure;
   /** Live leases, so "what is the fleet doing" is answered in the same call. */
   fleet: Array<{
     holder: string;
@@ -53,6 +89,57 @@ export interface Board {
 }
 
 const DONE = new Set<State['group']>(['completed', 'cancelled']);
+
+function structureOf(
+  all: WorkItem[],
+  filed: Set<string>,
+  groupOf: Map<string, State['group']>,
+): Structure {
+  const byId = new Map(all.map((i) => [i.id, i]));
+  const childCount = new Map<string, number>();
+  for (const i of all) {
+    if (i.parent) childCount.set(i.parent, (childCount.get(i.parent) ?? 0) + 1);
+  }
+
+  // Longest parent chain. Memoised, and guarded against a cycle Plane should
+  // never produce but which would otherwise hang the board rather than misreport
+  // it — the worse of the two failures.
+  const depthOf = new Map<string, number>();
+  const chain = (id: string, seen: Set<string>): number => {
+    const memo = depthOf.get(id);
+    if (memo !== undefined) return memo;
+    if (seen.has(id)) return 1;
+    const parent = byId.get(id)?.parent;
+    seen.add(id);
+    const d = parent && byId.has(parent) ? chain(parent, seen) + 1 : 1;
+    depthOf.set(id, d);
+    return d;
+  };
+
+  const s: Structure = {
+    items: all.length,
+    filed: 0,
+    parented: 0,
+    containers: 0,
+    unplaced: 0,
+    unplacedOpen: 0,
+    depth: 0,
+  };
+
+  for (const i of all) {
+    const inModule = filed.has(i.id);
+    const hasChildren = (childCount.get(i.id) ?? 0) > 0;
+    if (inModule) s.filed++;
+    if (i.parent) s.parented++;
+    if (hasChildren) s.containers++;
+    if (!inModule && !i.parent && !hasChildren) {
+      s.unplaced++;
+      if (!DONE.has(groupOf.get(i.state) as State['group'])) s.unplacedOpen++;
+    }
+    s.depth = Math.max(s.depth, chain(i.id, new Set()));
+  }
+  return s;
+}
 
 const tally = (
   items: WorkItem[],
@@ -124,6 +211,10 @@ export async function board(
       ? { total: 0, done: 0, held: 0, ready: 0, blocked: 0 }
       : tally(all.filter((i) => !filed.has(i.id)), groupOf, held, reasons),
     project: tally(all, groupOf, held, reasons),
+    // Only project-wide. Scoped to one module, `filed` holds that module's members
+    // alone, so every item outside it would be reported unplaced — a number that
+    // is not merely incomplete but wrong.
+    ...(opts.moduleId ? {} : { structure: structureOf(all, filed, groupOf) }),
     fleet: [...ctx.leases.entries()]
       .map(([id, l]) => {
         const item = byId.get(id);

@@ -157,3 +157,79 @@ describe('board', () => {
     expect(got.project.total).toBe(BOARD.length);
   });
 });
+
+/**
+ * Progress answers "how much is left". It says nothing about whether any of it
+ * hangs together, so a board can report healthy numbers while being an inbox —
+ * which is what happened here: 35 items, zero parents, 25 unfiled, noticed only
+ * because a human asked. A number nobody can see is a number nobody fixes.
+ */
+describe('structure', () => {
+  const flat = [wi('a'), wi('b'), wi('c')];
+  const shaped = [
+    wi('epic'),
+    wi('story', { parent: id('epic') }),
+    wi('task', { parent: id('story') }),
+    wi('loose'),
+  ];
+
+  const planeWith = (items: WorkItem[], members: string[] = []): PlaneClient =>
+    Object.assign(new PlaneClient('http://plane.invalid', 'k', 'ws'), {
+      listWorkItems: async () => items,
+      states: async () => STATES,
+      labels: async () => [],
+      relations: async () => ({}) as Relations,
+      modules: async () => MODULES,
+      moduleIssueIds: async () => new Set(members),
+    });
+
+  it('reports a flat board as flat', async () => {
+    const got = await board(planeWith(flat), pool, { projectId: PROJECT });
+    expect(got.structure).toMatchObject({
+      items: 3,
+      parented: 0,
+      containers: 0,
+      filed: 0,
+      unplaced: 3,
+      depth: 1,
+    });
+  });
+
+  it('measures how deep the hierarchy actually goes', async () => {
+    const got = await board(planeWith(shaped), pool, { projectId: PROJECT });
+    expect(got.structure).toMatchObject({
+      parented: 2,
+      containers: 2, // epic and story
+      depth: 3,
+      unplaced: 1, // only `loose`
+    });
+  });
+
+  it('counts an item in a module as placed even with no parent', async () => {
+    const got = await board(planeWith(flat, [id('a')]), pool, { projectId: PROJECT });
+    expect(got.structure).toMatchObject({ filed: 1, unplaced: 2 });
+  });
+
+  it('separates the unplaced work you can still act on', async () => {
+    // Placing a finished item changes nothing; the actionable number is the open
+    // half, and reporting only the total would overstate the problem.
+    const mixed = [wi('open-1'), wi('open-2'), wi('shipped', { state: 'done' })];
+    const got = await board(planeWith(mixed), pool, { projectId: PROJECT });
+    expect(got.structure).toMatchObject({ unplaced: 3, unplacedOpen: 2 });
+  });
+
+  it('says nothing about structure when asked about one module', async () => {
+    // Scoped that way, `filed` holds one module's members, so everything outside
+    // it would be reported unplaced — wrong, not merely partial.
+    const got = await board(planeWith(flat), pool, { projectId: PROJECT, moduleId: 'mod-a' });
+    expect(got.structure).toBeUndefined();
+  });
+
+  it('does not hang on a parent cycle', async () => {
+    // Plane should never produce one. Misreporting depth is survivable; hanging
+    // the board is not.
+    const cyclic = [wi('x', { parent: id('y') }), wi('y', { parent: id('x') })];
+    const got = await board(planeWith(cyclic), pool, { projectId: PROJECT });
+    expect(got.structure?.items).toBe(2);
+  });
+});
