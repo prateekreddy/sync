@@ -50,6 +50,11 @@ export const NextQuery = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(10),
 });
 
+export const WhyQuery = z.object({
+  projectId: uuid,
+  workItemId: uuid,
+});
+
 export const ClaimBody = z.object({
   projectId: uuid,
   workItemId: uuid.optional().describe('Omit to let the gateway pick the best ready item.'),
@@ -136,6 +141,19 @@ export const NATIVE_TOOLS: NativeTool[] = [
     schema: NextQuery,
     method: 'GET',
     request: (a) => ({ path: q('/v1/next', a) }),
+  },
+  {
+    name: 'why',
+    title: 'Why can I not have this item?',
+    description:
+      'Explain why a work item is not claimable — missing description, draft, wrong state, ' +
+      'unfinished sub-items, a blocking label, an unfinished blocker, a live lease held by ' +
+      'someone else, or a capability mismatch with your token. Call this when next returns ' +
+      'nothing useful or claim refuses, instead of guessing. Read-only; it answers with the ' +
+      'same reasons the gate itself used.',
+    schema: WhyQuery,
+    method: 'GET',
+    request: (a) => ({ path: q('/v1/why', a) }),
   },
   {
     name: 'claim',

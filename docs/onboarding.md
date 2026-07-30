@@ -145,7 +145,7 @@ need to be certain.
 | `claude mcp list` shows `✘ Failed to connect` | Wrong URL, or the gateway is down | `curl https://<gateway-host>/healthz` should return `{"ok":true}` |
 | Connects, but the agent has no `capture`/`claim` tools | Registered against the wrong server name, or an old stdio config is shadowing it | `claude mcp remove sync` then re-add |
 | `UNAUTHENTICATED` on every tool call | Token revoked, or replaced by a later mint with the same agent name | Mint again and re-run `claude mcp add` |
-| `next` returns nothing | Nothing is ready | Items may be blocked, already leased, or parents with unfinished children. Check the project has items in a backlog/unstarted state |
+| `next` returns nothing | Nothing is ready | Call `why` on the item you expected to see. It answers with the reasons the gate itself used, rather than leaving you to guess |
 | Tools work but Plane writes 403 | The Plane user is not a member of that project | Add them to the project in Plane |
 | Plane's activity log says "service account" | The Plane token you minted with expired or was revoked | Mint again with a current token |
 | `Pending approval` after `--scope project` | Project-scoped servers need a one-time approval | Approve the prompt in Claude Code, or use `--scope local` |

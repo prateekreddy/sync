@@ -1,4 +1,5 @@
 import type { Pool } from './db.js';
+import { GatewayError } from './errors.js';
 import type { PlaneClient, State, WorkItem } from './plane.js';
 
 /**
@@ -156,6 +157,86 @@ export async function readyCandidates(
       labels: i.labels,
       updatedAt: i.updated_at,
     }));
+}
+
+export interface Explanation {
+  workItemId: string;
+  readableId: string;
+  title: string;
+  claimable: boolean;
+  reasons: string[];
+  heldBy?: { holder: string; expiresAt: string };
+}
+
+/**
+ * Why this item is not claimable.
+ *
+ * The gate already computes every reason and then discards all but the count, so
+ * "`next` returned nothing" has been the top entry in both troubleshooting tables
+ * with no way for an agent to answer it. This returns what the gate knows.
+ *
+ * Deliberately calls the same `screen` and `verifyClaimable` the gate calls rather
+ * than restating the rules: an explanation that can disagree with the decision is
+ * worse than none, because it sends someone off fixing the wrong thing.
+ */
+export async function explain(
+  plane: PlaneClient,
+  pool: Pool,
+  opts: { projectId: string; workItemId: string; capabilities?: string[] },
+): Promise<Explanation> {
+  const [items, states, labelNames, held] = await Promise.all([
+    plane.listWorkItems(opts.projectId),
+    plane.states(opts.projectId),
+    plane.labelNames(opts.projectId),
+    pool
+      .query<{ holder: string; expires_at: Date }>(
+        `select holder, expires_at from lease
+          where work_item_id = $1 and state = 'held' and expires_at > now()`,
+        [opts.workItemId],
+      )
+      .then((r) => r.rows[0]),
+  ]);
+
+  const item = items.find((i) => i.id === opts.workItemId);
+  if (!item) {
+    throw new GatewayError('NOT_FOUND', 'No such work item in this project', {
+      workItemId: opts.workItemId,
+    });
+  }
+
+  const groupOf = new Map(states.map((s) => [s.id, s.group]));
+  const openChildren = countOpenChildren(items, groupOf).get(item.id) ?? 0;
+  const reasons = screen(item, groupOf.get(item.state), labelNames, openChildren);
+
+  // A live lease is not a defect in the item, so the gate filters it separately
+  // from screening. To someone asking why they cannot have it, it is the answer.
+  if (held) {
+    reasons.push(`held by ${held.holder} until ${held.expires_at.toISOString()}`);
+  }
+
+  const wanted = (opts.capabilities ?? []).map((c) => c.toLowerCase());
+  if (wanted.length) {
+    const names = item.labels.map((id) => (labelNames.get(id) ?? id).toLowerCase());
+    if (!wanted.some((w) => names.includes(w))) {
+      // Worth stating plainly: this item is fine, it is simply not yours. Without
+      // it, a capability-scoped agent sees an empty queue and no cause.
+      reasons.push(
+        `does not match your capabilities (${wanted.join(', ')}) — its labels are ` +
+          (names.length ? names.join(', ') : 'none'),
+      );
+    }
+  }
+
+  reasons.push(...(await verifyClaimable(plane, opts.projectId, opts.workItemId)));
+
+  return {
+    workItemId: item.id,
+    readableId: `#${item.sequence_id}`,
+    title: item.name,
+    claimable: reasons.length === 0,
+    reasons,
+    ...(held ? { heldBy: { holder: held.holder, expiresAt: held.expires_at.toISOString() } } : {}),
+  };
 }
 
 /** Unfinished sub-items, keyed by parent. Derived from a list already in hand. */

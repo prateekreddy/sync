@@ -27,7 +27,7 @@ import * as lease from './lease.js';
 import { mirrorClaim, mirrorComplete, mirrorReturn } from './mirror.js';
 import type { PlaneClient } from './plane.js';
 import type { PlaneMcp } from './planemcp.js';
-import { readyCandidates, verifyClaimable } from './readiness.js';
+import { explain, readyCandidates, verifyClaimable } from './readiness.js';
 import { handleMcpHttp } from './mcphttp.js';
 import { callTool, listTools } from './tools.js';
 import {
@@ -37,6 +37,7 @@ import {
   HeartbeatBody,
   LinkBody,
   NextQuery,
+  WhyQuery,
   ReleaseBody,
 } from './toolspec.js';
 
@@ -538,6 +539,17 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       limit: q.limit,
     });
     return { candidates };
+  });
+
+  // ── why (read-only diagnostic) ───────────────────────────────────────────
+  app.get('/v1/why', async (req) => {
+    const actor = await actorOf(req);
+    const q = WhyQuery.parse(req.query);
+    return explain(plane, pool, {
+      projectId: q.projectId,
+      workItemId: q.workItemId,
+      ...(actor.capabilities.length ? { capabilities: actor.capabilities } : {}),
+    });
   });
 
   // ── claim ────────────────────────────────────────────────────────────────

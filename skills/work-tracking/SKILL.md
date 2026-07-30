@@ -8,8 +8,8 @@ user-invocable: true
 
 Two halves live on one MCP server. Do not confuse them:
 
-- **Coordination tools** (`capture`, `next`, `claim`, `heartbeat`, `complete`, `release`, `link`,
-  `held`) exist because Plane has no equivalent. They are the only safe way to take work.
+- **Coordination tools** (`capture`, `next`, `why`, `claim`, `heartbeat`, `complete`, `release`,
+  `link`, `held`) exist because Plane has no equivalent. They are the only safe way to take work.
 - **Plane's own tools** (47 of them) are a faithful wrapper over Plane's API and have **no notion of
   a lease**. Everything below the coordination loop is theirs.
 
@@ -20,6 +20,8 @@ token's binding. Pass one explicitly only when working outside your default proj
 
 ```
 held  →  claim  →  …work…  →  heartbeat every ~TTL/3  →  complete
+                 ↑
+        why(id) — when claim refuses or `next` looks empty
 ```
 
 1. **`held`** — call it first after any restart, compaction, or when you are unsure. It tells you
@@ -176,8 +178,8 @@ Every refusal carries a code and a recovery line. The ones that change what you 
 
 | Code | What it means | Do |
 |---|---|---|
-| `NO_WORK` | nothing ready matched | back off, poll later — not an error |
-| `NOT_CLAIMABLE` | someone holds it, or it is not ready | pick a different item |
+| `NO_WORK` | nothing ready matched | call `why` on an item you expected, then back off — not an error |
+| `NOT_CLAIMABLE` | someone holds it, or it is not ready | call `why` to find out which, then pick another item |
 | `NOT_HOLDER` | you do not hold this lease | stop working the item; retrying cannot help |
 | `STALE_EPOCH` | **your lease lapsed and someone else reclaimed it** | **discard the work — do not submit it** — and claim fresh |
 | `LEASE_EXPIRED` | lapsed, nobody took it | claim it again before continuing |

@@ -159,13 +159,14 @@ what belongs in `CLAUDE.md`/`AGENTS.md`, and how to wire this into project creat
 
 ## The tool surface
 
-One MCP server, 55 tools, two halves.
+One MCP server, 56 tools, two halves.
 
 **Ours — coordination.** Plane has no equivalent for any of these.
 
 ```
 capture   → write it down the moment you notice it (dedups, idempotent)
 next      → see what's ready        (read-only, reserves nothing)
+why       → why can't I have that?  (the gate's own reasons)
 claim     → take it atomically      (returns an epoch — keep it)
 heartbeat → keep the claim alive    (or it returns to the pool)
 complete  → finish, with evidence   (epoch required)
@@ -245,7 +246,7 @@ mirror — finished work can show as "In Progress". The lease stays correct eith
 | `UNAUTHENTICATED` from a tool call | The agent token is wrong or was replaced. Mint a new one and re-run `claude mcp add` |
 | Agent connects but has no tools | Gateway is up but Plane is unreachable from it. Check `docker compose logs gateway` |
 | 403 on every Plane write | The agent's Plane user is not a project member |
-| `next` returns nothing | Nothing is ready: items may be blocked, already leased, or parents with unfinished children |
+| `next` returns nothing | Call `why` on the item you expected. It reports the gate's own reasons — no description, blocked, leased, unfinished children, label, capability mismatch |
 | Plane shows "In Progress" for finished work | Mirror write failed. `docker compose logs gateway \| grep 'plane mirror failed'` |
 | Gateway crash-loops on `PLANE_API_KEY is not set` | `.env` was read before provisioning filled it in. Re-run `docker compose up -d gateway` |
 
