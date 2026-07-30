@@ -232,15 +232,10 @@ for name in $(printf '%s' "$AGENTS" | tr ',' ' '); do
   gtok=$(dc exec -T gateway node dist/cli.js issue-token \
       --name "$name" --principal "human:$(whoami)" \
       --plane-user "$uid" --plane-token "$ptok" \
+      --project "$PROJECT_ID" \
     | grep -oE 'sync_agent_[a-f0-9]+' | head -1)
   printf '  %-12s %s\n' "$name" "$gtok"
 done
-
-# What to tell agents to dial. GATEWAY_LISTEN_PORT is only the answer when the
-# gateway actually publishes it; behind a reverse proxy the agent-facing URL is
-# that proxy's hostname, which nothing here can infer. So let the operator say,
-# and otherwise keep the old placeholder rather than print a confident wrong URL.
-AGENT_URL="${SYNC_GATEWAY_URL:-http://<this-host>:${GATEWAY_LISTEN_PORT:-8787}}"
 
 cat <<EOF
 
@@ -250,17 +245,18 @@ cat <<EOF
  password   ${ADMIN_PASSWORD}
  project    ${PROJECT_ID}
 
- Install on each agent box, using that agent's token from above:
+ Point each agent at it, with that agent's token from above:
 
-   claude mcp add sync \\
-     -e SYNC_GATEWAY_URL=${AGENT_URL} \\
-     -e SYNC_AGENT_TOKEN=<token> \\
-     -e SYNC_PROJECT_ID=${PROJECT_ID} \\
-     -- node /path/to/mcp/dist/index.js
+   claude mcp add --transport http sync <gateway-url>/mcp \\
+     --header "Authorization: Bearer <token>"
 
- That one server carries the whole surface: the coordination tools plus
- Plane's own. Nothing else to install, and new tools arrive on the next
- gateway deploy without touching the agent.
+ Nothing to install on the agent box, and no project to configure — the
+ token carries it. Use bin/onboard.sh to have the endpoint checked first,
+ or for Codex config. See docs/onboarding.md.
+
+ <gateway-url> is however this gateway is reachable from the agent, e.g.
+ https://mcp.your-host, or http://<this-host>:${GATEWAY_LISTEN_PORT:-8787}
+ on a trusted network. Send tokens over TLS: they are bearer credentials.
 ───────────────────────────────────────────────────────────────────────
 EOF
 

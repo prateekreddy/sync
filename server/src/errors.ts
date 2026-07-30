@@ -24,6 +24,13 @@ export type ErrorCode =
   | 'IDEMPOTENCY_MISMATCH'
   /** The agent's token lacks a capability this tool requires. Not retryable. */
   | 'FORBIDDEN'
+  /**
+   * No usable gateway token. Distinct from FORBIDDEN (recognised but not allowed)
+   * and from NOT_HOLDER (allowed, but does not hold this lease) — the recovery is
+   * completely different, and conflating them sends an agent hunting a lease
+   * problem when its credential is simply wrong.
+   */
+  | 'UNAUTHENTICATED'
   | 'NOT_FOUND'
   | 'INVALID'
   | 'UPSTREAM';
@@ -49,6 +56,7 @@ export const HTTP_STATUS: Record<ErrorCode, number> = {
   LEASE_ENDED: 409,
   IDEMPOTENCY_MISMATCH: 422,
   FORBIDDEN: 403,
+  UNAUTHENTICATED: 401,
   NOT_FOUND: 404,
   INVALID: 400,
   UPSTREAM: 502,
@@ -67,6 +75,8 @@ export const RECOVERY: Record<ErrorCode, string> = {
   IDEMPOTENCY_MISMATCH: 'That idempotency key was used with a different body. Use a new key.',
   FORBIDDEN:
     'Your token does not carry the capability this tool needs. Do not retry — ask your operator to grant it, or use a tool that does not need it.',
+  UNAUTHENTICATED:
+    'Your gateway token is missing, revoked, or not recognised. Retrying cannot fix this and no other tool will work either — stop and ask your operator to issue a new token.',
   NOT_FOUND: 'No such work item.',
   INVALID: 'Request was malformed.',
   UPSTREAM: 'Plane was unreachable or errored. Retry with backoff.',

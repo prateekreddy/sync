@@ -78,6 +78,30 @@ export async function listTools(deps: ToolDeps): Promise<ToolCatalogue[]> {
   return [...native, ...proxied];
 }
 
+/**
+ * Fill in the agent's project when a tool wants one and the model did not supply
+ * it.
+ *
+ * Server-side deliberately. Over HTTP there is no client-side config to read, and
+ * putting it here means an agent's install is a URL and a token with nothing else
+ * to get wrong. Both spellings are handled because our tools take `projectId` and
+ * Plane's take `project_id`.
+ */
+function withDefaultProject(
+  tool: { inputSchema?: unknown } | undefined,
+  args: Record<string, unknown>,
+  defaultProjectId: string | null,
+): Record<string, unknown> {
+  if (!defaultProjectId || !tool) return args;
+  const props =
+    (tool.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties ?? {};
+  const out = { ...args };
+  for (const key of ['projectId', 'project_id']) {
+    if (key in props && out[key] === undefined) out[key] = defaultProjectId;
+  }
+  return out;
+}
+
 export interface ToolResult {
   content: Array<{ type: 'text'; text: string }>;
   isError?: boolean;
@@ -106,8 +130,11 @@ export async function callTool(
   actor: Actor,
   authorization: string,
   name: string,
-  args: Record<string, unknown>,
+  rawArgs: Record<string, unknown>,
 ): Promise<ToolResult> {
+  const spec = (await listTools(deps)).find((t) => t.name === name);
+  const args = withDefaultProject(spec, rawArgs, actor.defaultProjectId);
+
   const native = NATIVE_TOOLS.find((t) => t.name === name);
 
   if (native) {

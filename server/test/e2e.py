@@ -75,6 +75,15 @@ st, dupe = call(TOKENS[1], "POST", "/v1/capture", {
 check("near-duplicate title dedupes to the existing item",
       dupe.get("deduped") and dupe.get("workItemId") == a.get("workItemId"))
 
+# An agent whose credential is wrong must be told *that*, not something about
+# leases. Conflating the two sends it hunting a lease problem it does not have,
+# and no amount of retrying or re-claiming will ever fix it.
+st, noauth = call("sync_agent_not_a_real_token", "GET", f"/v1/next?projectId={PROJECT}")
+check("a bad token reports an auth failure, not a lease failure",
+      st == 401 and noauth.get("error") == "UNAUTHENTICATED", noauth.get("error", ""))
+check("and says the retry will not help", "not retry" in noauth.get("recovery", "").lower()
+      or "retrying cannot" in noauth.get("recovery", "").lower(), noauth.get("recovery", "")[:60])
+
 print("\n2. readiness gate")
 st, nxt = call(TOKENS[0], "GET", f"/v1/next?projectId={PROJECT}&limit=50")
 ids = [c["workItemId"] for c in nxt.get("candidates", [])]

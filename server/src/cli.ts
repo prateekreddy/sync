@@ -31,6 +31,8 @@ try {
       const caps = flag('capabilities')?.split(',').filter(Boolean) ?? [];
       const planeUser = flag('plane-user');
       const planeToken = flag('plane-token');
+      // Bound to the token so the agent's install needs no project configured.
+      const project = flag('project');
 
       const { token } = await issueToken(pool, {
         name,
@@ -38,11 +40,13 @@ try {
         capabilities: caps,
         ...(planeUser ? { planeUserId: planeUser } : {}),
         ...(planeToken ? { planeToken } : {}),
+        ...(project ? { defaultProjectId: project } : {}),
       });
 
       console.log(`\n  agent:    ${name}`);
       console.log(`  for:      ${principal}`);
       console.log(`  can pick: ${caps.length ? caps.join(', ') : 'anything ready'}`);
+      console.log(`  project:  ${project ?? 'none — the agent must name one on every call'}`);
       console.log(
         `  writes as: ${
           planeToken
