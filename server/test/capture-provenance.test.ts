@@ -69,6 +69,10 @@ function fakePlane(): PlaneClient & { rec: Recorder } {
       rec.comments.push(html);
       return {};
     },
+    // Stubbed, or the real lookup dials http://plane.invalid and every test pays
+    // PlaneClient's retry ladder. That is exactly the cost the deadline in
+    // inheritModule exists to bound.
+    moduleOf: async () => undefined,
     addToModule: async () => ({}),
   }) as PlaneClient & { rec: Recorder };
 }
@@ -198,5 +202,102 @@ describe('idempotency is unaffected by inference', () => {
     expect(second.replayed).toBe(true);
     expect(second.workItemId).toBe(first.workItemId);
     await pool.query('delete from idempotency where key = $1', [key]);
+  });
+});
+
+/**
+ * 25 of 35 items sat in no module, so the rollup described under a third of the
+ * work. The original argument — a rollup that quietly includes things is worse
+ * than one that visibly misses them — lost to the measurement: "visibly misses"
+ * meant "misses almost everything".
+ *
+ * Plane has no way to ask an item which module it is in (verified: no module
+ * field on the payload, `?expand=modules` ignored), so this costs a request per
+ * module on a cold cache and must never fail a capture.
+ */
+describe('module inheritance', () => {
+  const MODULE = randomUUID();
+
+  const planeWithModules = (opts: { members?: string[]; modulesFail?: boolean } = {}) => {
+    const added: Array<{ moduleId: string; issues: string[] }> = [];
+    const base = fakePlane();
+    return Object.assign(base, {
+      added,
+      moduleOf: async (_p: string, itemId: string) => {
+        if (opts.modulesFail) throw new Error('modules disabled');
+        return (opts.members ?? []).includes(itemId) ? MODULE : undefined;
+      },
+      addToModule: async (_p: string, moduleId: string, issues: string[]) => {
+        added.push({ moduleId, issues });
+        return {};
+      },
+    });
+  };
+
+  it('takes the module of the item being held', async () => {
+    const working = randomUUID();
+    await hold(working);
+    const plane = planeWithModules({ members: [working] });
+
+    const out = await write(plane);
+    expect(out.moduleId).toBe(MODULE);
+    expect(out.moduleInherited).toBe(true);
+    expect(plane.added[0]?.moduleId).toBe(MODULE);
+  });
+
+  it('prefers the parent over the held item', async () => {
+    // A sub-item belongs to its feature more definitely than a note belongs to
+    // whatever its author happened to be holding.
+    const working = randomUUID();
+    const parent = randomUUID();
+    await hold(working);
+    const plane = planeWithModules({ members: [parent] });
+
+    const out = await write(plane, { parentId: parent });
+    expect(out.moduleId).toBe(MODULE);
+    expect(out.moduleInherited).toBe(true);
+  });
+
+  it('does not call an explicit module inherited', async () => {
+    const explicit = randomUUID();
+    await hold(randomUUID());
+    const plane = planeWithModules({ members: [] });
+
+    const out = await write(plane, { moduleId: explicit });
+    expect(out.moduleId).toBe(explicit);
+    expect(out.moduleInherited).toBeUndefined();
+  });
+
+  it('files nothing when the source is in no module', async () => {
+    await hold(randomUUID());
+    const plane = planeWithModules({ members: [] });
+
+    const out = await write(plane);
+    expect(out.moduleId).toBeUndefined();
+    expect(plane.added).toEqual([]);
+  });
+
+  it('still captures when modules are disabled on the project', async () => {
+    // The write-first primitive outranks the convenience. A capture that failed
+    // because modules were off would be the worst possible trade.
+    await hold(randomUUID());
+    const plane = planeWithModules({ members: [], modulesFail: true });
+
+    const out = await write(plane);
+    expect(out.workItemId).toBeTruthy();
+    expect(out.moduleId).toBeUndefined();
+    expect(out.moduleError).toBeUndefined();
+  });
+
+  it('asks nothing of Plane when there is no parent and no lease', async () => {
+    let asked = 0;
+    const plane = Object.assign(fakePlane(), {
+      moduleOf: async () => {
+        asked++;
+        return undefined;
+      },
+    });
+    await write(plane);
+    expect(asked).toBe(0);
   });
 });

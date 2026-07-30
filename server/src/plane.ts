@@ -83,6 +83,18 @@ export class PlaneClient {
   private labelCache = new Map<string, { at: number; labels: Label[] }>();
   /** Never expires: a project identifier is fixed at creation. */
   private identifierCache = new Map<string, string>();
+  /**
+   * item id -> module id, per project. Plane offers no reverse lookup.
+   *
+   * `ok` records whether the map was built successfully. A failed build is cached
+   * too, briefly: without that, a `decompose` of ten children against an
+   * unreachable module endpoint retries the whole lookup ten times, and each
+   * retry is the full backoff ladder.
+   */
+  private moduleCache = new Map<
+    string,
+    { at: number; byItem: Map<string, string>; ok: boolean }
+  >();
 
   constructor(
     private readonly baseUrl: string,
@@ -106,6 +118,7 @@ export class PlaneClient {
     scoped.stateCache = this.stateCache;
     scoped.labelCache = this.labelCache;
     scoped.identifierCache = this.identifierCache;
+    scoped.moduleCache = this.moduleCache;
     return scoped;
   }
 
@@ -334,6 +347,59 @@ export class PlaneClient {
     return new Set(rows.map((r) => r.id));
   }
 
+  /**
+   * Which module a work item belongs to — the lookup Plane does not offer.
+   *
+   * Measured: a work item payload carries no module field at all, and
+   * `?expand=modules` is ignored. Membership is readable only from the module
+   * side, so the reverse direction costs one request per module and has to be
+   * cached or it would land on every capture.
+   *
+   * Returns the first module found. An item can belong to several; there is no
+   * basis for preferring one, and picking arbitrarily is honest only because the
+   * caller uses this to *suggest* a module, never to move work between them.
+   */
+  async moduleOf(projectId: string, workItemId: string, ttlMs = 60_000): Promise<string | undefined> {
+    const hit = this.moduleCache.get(projectId);
+    // A failed build is trusted for less time than a good one: it should stop a
+    // burst of lookups, not hide a project whose modules just came back.
+    const ttl = hit && !hit.ok ? Math.min(ttlMs, 10_000) : ttlMs;
+    if (hit && Date.now() - hit.at < ttl) return hit.byItem.get(workItemId);
+
+    const byItem = new Map<string, string>();
+    try {
+      const mods = await this.modules(projectId);
+      for (const m of mods) {
+        for (const id of await this.moduleIssueIds(projectId, m.id)) {
+          if (!byItem.has(id)) byItem.set(id, m.id);
+        }
+      }
+    } catch {
+      // Modules disabled on this project, or Plane unreachable. Inheriting a
+      // module is a convenience; failing a capture over it would trade the
+      // write-first primitive for a nicety.
+      this.moduleCache.set(projectId, { at: Date.now(), byItem: new Map(), ok: false });
+      return undefined;
+    }
+
+    this.moduleCache.set(projectId, { at: Date.now(), byItem, ok: true });
+    return byItem.get(workItemId);
+  }
+
+  /**
+   * Keep the membership cache honest about a write we just made.
+   *
+   * Without this the common chain breaks: an agent captures item A into a module,
+   * then captures B while holding A, and B fails to inherit because the map was
+   * built before A joined. Cheaper and more correct than shortening the TTL,
+   * which would only narrow the window rather than close it.
+   */
+  private rememberModule(projectId: string, moduleId: string, issues: string[]): void {
+    const hit = this.moduleCache.get(projectId);
+    if (!hit) return;
+    for (const id of issues) if (!hit.byItem.has(id)) hit.byItem.set(id, moduleId);
+  }
+
   /** A project's modules — the epic layer. Requires `module_view` on the project. */
   modules(projectId: string): Promise<Array<{ id: string; name: string }>> {
     return this.listAll<{ id: string; name: string }>(`/projects/${projectId}/modules/`);
@@ -346,10 +412,14 @@ export class PlaneClient {
    * its own endpoint, which is why nothing about it appears in a work item
    * listing and why a rollup costs a separate call.
    */
-  addToModule(projectId: string, moduleId: string, issues: string[]): Promise<unknown> {
-    return this.request('POST', `/projects/${projectId}/modules/${moduleId}/module-issues/`, {
-      issues,
-    });
+  async addToModule(projectId: string, moduleId: string, issues: string[]): Promise<unknown> {
+    const res = await this.request(
+      'POST',
+      `/projects/${projectId}/modules/${moduleId}/module-issues/`,
+      { issues },
+    );
+    this.rememberModule(projectId, moduleId, issues);
+    return res;
   }
 
   /** Workspace-wide search. Backs capture's dedup-on-write. */

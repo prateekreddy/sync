@@ -53,6 +53,9 @@ const fakePlane = (
   opts: { failOn?: string; missingParent?: boolean; moduleMissing?: boolean } = {},
 ): PlaneClient =>
   Object.assign(new PlaneClient('http://plane.invalid', 'k', 'ws'), {
+    // These tests are about decomposition, not module lookup. Unstubbed, each
+    // child would dial http://plane.invalid and pay the retry ladder.
+    moduleOf: async () => undefined,
     getWorkItem: async (_p: string, id: string) => {
       if (opts.missingParent) throw new GatewayError('NOT_FOUND', 'nope');
       return { id, sequence_id: 1, name: 'parent', parent: null } as unknown as WorkItem;

@@ -572,6 +572,11 @@ So placement is derived rather than requested:
 - **References in a completion become edges.** "Superseded by SYNC-32" was already
   being parsed out of the outcome text by `findEvidence` and discarded one line
   later. The information was never missing, only unreachable.
+- **The module is inherited** from the parent, or failing that from the discovery
+  source. This reverses an earlier decision, and the reversal is the point: the
+  original argument was that a rollup which quietly includes things is worse than
+  one that visibly misses them, and six days later "visibly misses" meant 25 of 35
+  items in no module at all. The caution bought nothing and cost the rollup.
 
 Both refuse to guess rather than guessing well. Holding two items infers no
 provenance; a bare `#42` is never read as a work item. A wrong edge is permanent
@@ -581,6 +586,26 @@ detection may guess, durable structure may not.** `evidence.ts` reads `#42` as a
 citation because a false positive there costs nothing; `references.ts` refuses to,
 because the board already contains "Merge PR #1 (work-tracking skill)", where `#1`
 is a GitHub pull request and SYNC-1 is an unrelated redeploy.
+
+### The cost of a lookup Plane does not offer
+
+A work item payload carries no module field, and `?expand=modules` is ignored —
+membership is readable only from the module side. So "which module is this item
+in" costs one request per module, cached per project.
+
+That cache is the whole design. Two things it has to get right, both found by
+measurement rather than reasoning:
+
+- **A successful write patches it.** Without that the common chain breaks: capture
+  A into a module, then capture B while holding A, and B fails to inherit because
+  the map predates A. Shortening the TTL would narrow that window, not close it.
+- **A failed build is cached too**, briefly. A `decompose` of ten children against
+  an unreachable module endpoint otherwise retries the full backoff ladder ten
+  times. Caught when the test suite went from 8 seconds to 24.
+
+And the lookup is bounded by a deadline at the *caller*, not inside itself,
+because the latency budget belongs to `capture` — which must stay trivial or the
+write-first discipline dies — rather than to the lookup.
 
 ### What Plane cannot express
 

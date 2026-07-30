@@ -87,7 +87,12 @@ from `claim` when it:
 So: always give `body` enough for someone else to act without you — what, where, and how anyone
 would know it is done. Set `priority` honestly.
 
-**Provenance is automatic now.** If you hold exactly one item in the project, whatever you capture
+**Placement is automatic now.** Whatever you capture lands in the module of its `parentId`, or
+failing that of the item you are holding, and the reply says `moduleInherited: true`. Pass
+`moduleId` only to put work somewhere neither would have chosen. If the source is in no module,
+nothing is invented.
+
+**Provenance is automatic too.** If you hold exactly one item in the project, whatever you capture
 is linked back to it and the reply says `discoveredFromInferred: true`. You do not have to remember
 `discoveredFrom`, and you should not pass it just to be safe. Pass it only when the gateway cannot
 know: you noticed this while working something you have since released, or you are holding several

@@ -68,9 +68,10 @@ export const CaptureBody = z.object({
   moduleId: uuid
     .optional()
     .describe(
-      'Put this in a module — the epic layer, one per feature or workstream. Not inherited ' +
-        'from parentId: pass it explicitly, or use decompose which applies one module to ' +
-        'every child.',
+      'Put this in a module — the epic layer, one per feature or workstream. Usually leave it ' +
+        'out: it is inherited from parentId, or failing that from the item you are holding, and ' +
+        'the reply says when it was inherited. Pass it to place work in a module neither of ' +
+        'those would have chosen.',
     ),
   idempotencyKey: z.string().max(200).optional().describe('Pass a stable key if you may retry.'),
 });

@@ -48,11 +48,9 @@ export interface CaptureInput {
   /**
    * Put the item in a module — the epic layer.
    *
-   * Deliberately not inherited from `parentId`. Plane does not inherit it either,
-   * and guessing would put work in a feature nobody assigned it to; a rollup that
-   * quietly includes things is worse than one that visibly misses them. Callers
-   * breaking an item up should pass it explicitly, which is why `decompose` takes
-   * it once and applies it to every child.
+   * Omitted, it is inherited from `parentId` or from the discovery source; see
+   * `inheritModule` for why that reverses the earlier decision not to. Pass it
+   * explicitly to place work somewhere neither of those would put it.
    */
   moduleId?: string | undefined;
   idempotencyKey?: string | undefined;
@@ -66,6 +64,12 @@ export interface CaptureResult {
   replayed: boolean;
   parentId?: string | undefined;
   moduleId?: string | undefined;
+  /**
+   * True when no module was named and this took the one its parent or discovery
+   * source is in. Reported for the same reason as `discoveredFromInferred`: an
+   * agent should be able to see a placement it did not ask for.
+   */
+  moduleInherited?: boolean | undefined;
   /** The item this was linked back to, whether stated or derived from the lease. */
   discoveredFrom?: string | undefined;
   /**
@@ -114,6 +118,53 @@ async function inferSource(
   return only ? { id: only.workItemId, inferred: true } : null;
 }
 
+/**
+ * Which module this belongs to, when nobody said.
+ *
+ * This reverses a decision recorded in `CaptureInput.moduleId`, and the reversal
+ * is worth stating: the argument was that a rollup which quietly includes things
+ * is worse than one that visibly misses them. Measured on the real board six days
+ * later, "visibly misses" meant **25 of 35 items in no module at all**, so the
+ * rollup described under a third of the work and the caution bought nothing.
+ *
+ * Inheriting from the *parent* or the *discovery source* is safe in a way that
+ * guessing would not be: both are places this work demonstrably came from, and
+ * moving an item afterwards is one call. Parent first, because it is the stronger
+ * statement — a sub-item belongs to its feature more definitely than a note
+ * belongs to whatever its author happened to be holding.
+ *
+ * Costs one Plane round trip per module on a cold cache, because Plane exposes no
+ * way to ask an item which module it is in. Never fails a capture: an inherited
+ * module is a convenience, and the write-first primitive outranks it.
+ */
+const INHERIT_DEADLINE_MS = 2_000;
+
+async function inheritModule(
+  plane: PlaneClient,
+  input: CaptureInput,
+  source: { id: string } | null,
+): Promise<{ id: string; inherited: boolean } | null> {
+  if (input.moduleId) return { id: input.moduleId, inherited: false };
+
+  const from = input.parentId ?? source?.id;
+  if (!from) return null;
+
+  // Bounded, because this is on the capture path and capture must stay trivial.
+  // The warm case is a Map lookup with no I/O at all; the cold case is one
+  // listing per module. The case this guards is neither: when Plane's module
+  // endpoint is unreachable, PlaneClient's retry ladder turns a convenience into
+  // roughly four seconds of backoff on every capture an agent makes. Caught in a
+  // test that suddenly took 25 seconds.
+  //
+  // The deadline lives here rather than in `moduleOf` deliberately: the latency
+  // budget belongs to the caller that has one, not to the lookup.
+  const found = await Promise.race([
+    plane.moduleOf(input.projectId, from).catch(() => undefined),
+    new Promise<undefined>((r) => setTimeout(() => r(undefined), INHERIT_DEADLINE_MS).unref?.()),
+  ]);
+  return found ? { id: found, inherited: true } : null;
+}
+
 export async function capture(
   plane: PlaneClient,
   pool: Pool,
@@ -155,6 +206,11 @@ export async function capture(
   const target = normalize(input.title);
   const hits = await plane.search(target).catch(() => []);
   const dupe = hits.find((h) => normalize(h.name) === target);
+
+  // Computed before the branch: the dedup path needs it too, because an item
+  // someone already wrote down still belongs in the workstream this caller is
+  // working in.
+  const source = await inferSource(pool, actor, input);
 
   let result: CaptureResult;
   if (dupe) {
@@ -215,7 +271,6 @@ export async function capture(
     // Provenance. Plane has no `discovered_from` relation type, so this is
     // recorded as relates_to plus an explicit comment — the edge keeps it
     // navigable, the comment keeps it meaningful.
-    const source = await inferSource(pool, actor, input);
     if (source) {
       await plane
         .relate(input.projectId, created.id, 'relates_to', [source.id])
@@ -239,10 +294,15 @@ export async function capture(
   // branch too. An item someone already wrote down still belongs in the feature
   // this caller is working on, and a rollup that misses it is wrong in the
   // direction that looks like less work remaining.
-  if (input.moduleId) {
+  const module = await inheritModule(plane, input, source);
+  if (module) {
     try {
-      await plane.addToModule(input.projectId, input.moduleId, [result.workItemId]);
-      result = { ...result, moduleId: input.moduleId };
+      await plane.addToModule(input.projectId, module.id, [result.workItemId]);
+      result = {
+        ...result,
+        moduleId: module.id,
+        ...(module.inherited ? { moduleInherited: true } : {}),
+      };
     } catch (err) {
       // Reported, never thrown. Write-it-down-first only survives if capture
       // cannot fail in interesting ways, and by this point the item exists: a
@@ -253,8 +313,8 @@ export async function capture(
         ...result,
         moduleError:
           err instanceof GatewayError && err.code === 'NOT_FOUND'
-            ? `No module ${input.moduleId} in this project, or modules are not enabled on it. The item was created but is not in a module.`
-            : `Could not add to module ${input.moduleId}: ${String(err)}. The item was created.`,
+            ? `No module ${module.id} in this project, or modules are not enabled on it. The item was created but is not in a module.`
+            : `Could not add to module ${module.id}: ${String(err)}. The item was created.`,
       };
     }
   }
