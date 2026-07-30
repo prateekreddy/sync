@@ -1,7 +1,8 @@
 import type { Pool } from './db.js';
 import { GatewayError } from './errors.js';
 import type { PlaneClient, State, WorkItem } from './plane.js';
-import { viewContext, viewOf, type WorkItemView } from './view.js';
+import { resolve } from './query.js';
+import { viewOf, type WorkItemView } from './view.js';
 
 /**
  * Readiness gate.
@@ -97,49 +98,24 @@ interface ReadyOpts {
 /**
  * Ready, unleased candidates in claim order.
  *
- * Live leases are filtered out here as an optimisation only — `claim` is atomic
- * regardless, so a stale read costs a wasted attempt, never a double-claim.
+ * A preset over `resolve`: predicate = ready, ordered, limited. It contains no
+ * filtering of its own, deliberately — `next` and `find(ready:true)` returning
+ * different sets was a real defect, and the only durable fix is that neither
+ * decides what ready means.
  */
 export async function readyCandidates(
   plane: PlaneClient,
   pool: Pool,
   opts: ReadyOpts,
 ): Promise<Candidate[]> {
-  const [items, states, ctx] = await Promise.all([
-    plane.listWorkItems(opts.projectId),
-    plane.states(opts.projectId),
-    // One context, shared with every other read tool, so `labels` means the same
-    // thing here as it does in find and tree.
-    viewContext(plane, pool, opts.projectId, opts.fields),
-  ]);
-  const labelNames = ctx.labelNames;
-  const leased = ctx.leases;
-
-  const groupOf = new Map(states.map((s) => [s.id, s.group]));
-
-  // Children come free — every item in the list already carries its parent — so
-  // the sub-item check costs no extra API calls on the browse path.
-  const openChildren = countOpenChildren(items, groupOf);
-
-  const wanted = (opts.capabilities ?? []).map((c) => c.toLowerCase());
-
-  return items
-    .filter((i) => !leased.has(i.id))
-    .filter(
-      (i) => screen(i, groupOf.get(i.state), labelNames, openChildren.get(i.id) ?? 0).length === 0,
-    )
-    .filter((i) => {
-      if (!wanted.length) return true;
-      const names = labelsOf(i, labelNames);
-      return wanted.some((w) => names.includes(w));
-    })
-    .sort(
-      (a, b) =>
-        PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] ||
-        a.created_at.localeCompare(b.created_at),
-    )
-    .slice(0, opts.limit ?? 20)
-    .map((i) => viewOf(i, ctx));
+  const { items, ctx } = await resolve(plane, pool, {
+    projectId: opts.projectId,
+    ready: true,
+    ...(opts.capabilities?.length ? { capabilities: opts.capabilities } : {}),
+    limit: opts.limit ?? 20,
+    ...(opts.fields ? { fields: opts.fields } : {}),
+  });
+  return items.map((i) => viewOf(i, ctx));
 }
 
 export interface Explanation {
@@ -165,49 +141,24 @@ export async function explain(
   pool: Pool,
   opts: { projectId: string; workItemId: string; capabilities?: string[] },
 ): Promise<Explanation> {
-  const [items, states, ctx] = await Promise.all([
-    plane.listWorkItems(opts.projectId),
-    plane.states(opts.projectId),
-    viewContext(plane, pool, opts.projectId),
-  ]);
-  const labelNames = ctx.labelNames;
-  const held = ctx.leases.get(opts.workItemId);
+  const { items, ctx, reasons } = await resolve(plane, pool, {
+    projectId: opts.projectId,
+    workItemId: opts.workItemId,
+    ...(opts.capabilities?.length ? { capabilities: opts.capabilities } : {}),
+  });
 
-  const item = items.find((i) => i.id === opts.workItemId);
+  const item = items[0];
   if (!item) {
     throw new GatewayError('NOT_FOUND', 'No such work item in this project', {
       workItemId: opts.workItemId,
     });
   }
 
-  const groupOf = new Map(states.map((s) => [s.id, s.group]));
-  const openChildren = countOpenChildren(items, groupOf).get(item.id) ?? 0;
-  const reasons = screen(item, groupOf.get(item.state), labelNames, openChildren);
+  // The cheap reasons come from the shared predicate; blockers cost an API call
+  // per item, so they are only paid for when someone asks about one item.
+  const why = [...reasons(item), ...(await verifyClaimable(plane, opts.projectId, opts.workItemId))];
 
-  // A live lease is not a defect in the item, so the gate filters it separately
-  // from screening. To someone asking why they cannot have it, it is the answer.
-  if (held) {
-    reasons.push(`held by ${held.holder} until ${held.expiresAt}`);
-  }
-
-  const wanted = (opts.capabilities ?? []).map((c) => c.toLowerCase());
-  if (wanted.length) {
-    const names = item.labels.map((id) => (labelNames.get(id) ?? id).toLowerCase());
-    if (!wanted.some((w) => names.includes(w))) {
-      // Worth stating plainly: this item is fine, it is simply not yours. Without
-      // it, a capability-scoped agent sees an empty queue and no cause.
-      reasons.push(
-        `does not match your capabilities (${wanted.join(', ')}) — its labels are ` +
-          (names.length ? names.join(', ') : 'none'),
-      );
-    }
-  }
-
-  reasons.push(...(await verifyClaimable(plane, opts.projectId, opts.workItemId)));
-
-  // The item comes back as the same view every other tool returns, so "yes you
-  // may claim this" also answers "and is it worth claiming" without a second call.
-  return { item: viewOf(item, ctx), claimable: reasons.length === 0, reasons };
+  return { item: viewOf(item, ctx), claimable: why.length === 0, reasons: why };
 }
 
 /** Unfinished sub-items, keyed by parent. Derived from a list already in hand. */

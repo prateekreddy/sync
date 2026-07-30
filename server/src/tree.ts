@@ -1,7 +1,8 @@
 import type { Pool } from './db.js';
 import { GatewayError } from './errors.js';
 import type { PlaneClient, State, WorkItem } from './plane.js';
-import { viewContext, viewOf, type WorkItemView } from './view.js';
+import { resolve } from './query.js';
+import { viewOf, type WorkItemView } from './view.js';
 
 /**
  * The sub-tree under a work item, with lease state.
@@ -40,15 +41,25 @@ const DONE = new Set<State['group']>(['completed', 'cancelled']);
 export async function tree(
   plane: PlaneClient,
   pool: Pool,
-  opts: { projectId: string; workItemId: string; depth?: number; fields?: string[] | undefined },
+  opts: {
+    projectId: string;
+    workItemId: string;
+    depth?: number;
+    fields?: string[] | undefined;
+    /** Show only what could be claimed — and the containers holding it. */
+    ready?: boolean | undefined;
+    capabilities?: string[] | undefined;
+  },
 ): Promise<Tree> {
   const depth = opts.depth ?? 5;
 
-  const [items, states, ctx] = await Promise.all([
-    plane.listWorkItems(opts.projectId),
-    plane.states(opts.projectId),
-    viewContext(plane, pool, opts.projectId, opts.fields),
-  ]);
+  // `all` rather than the matched set: a tree needs every item to resolve parent
+  // links, even the ones a `ready` filter would exclude from its own nodes.
+  const { all: items, ctx, groupOf, reasons } = await resolve(plane, pool, {
+    projectId: opts.projectId,
+    ...(opts.fields ? { fields: opts.fields } : {}),
+    ...(opts.capabilities?.length ? { capabilities: opts.capabilities } : {}),
+  });
 
   const byId = new Map(items.map((i) => [i.id, i]));
   const root = byId.get(opts.workItemId);
@@ -58,7 +69,6 @@ export async function tree(
     });
   }
 
-  const groupOf = new Map(states.map((s) => [s.id, s.group]));
   const childrenOf = new Map<string, WorkItem[]>();
   for (const i of items) {
     if (!i.parent) continue;
@@ -68,6 +78,16 @@ export async function tree(
   }
 
   let open = 0;
+
+  /**
+   * Under `ready`, a container is kept when something claimable sits beneath it.
+   * Dropping it would hide its children — a parent is unclaimable *because* the
+   * work is in the children, so pruning it prunes the answer.
+   */
+  const hasOpenDescendant = (item: WorkItem): boolean =>
+    (childrenOf.get(item.id) ?? []).some(
+      (k) => reasons(k).length === 0 || hasOpenDescendant(k),
+    );
 
   const build = (item: WorkItem, left: number, seen: Set<string>): TreeNode => {
     const node: TreeNode = viewOf(item, ctx);
@@ -81,6 +101,7 @@ export async function tree(
 
     node.children = kids
       .sort((a, b) => a.sequence_id - b.sequence_id)
+      .filter((k) => !opts.ready || reasons(k).length === 0 || hasOpenDescendant(k))
       .map((k) => {
         if (!DONE.has(groupOf.get(k.state) as State['group'])) open++;
         return build(k, left - 1, new Set([...seen, k.id]));

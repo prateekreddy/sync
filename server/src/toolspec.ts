@@ -76,6 +76,13 @@ export const TreeQuery = z.object({
   projectId: uuid,
   workItemId: uuid,
   depth: z.coerce.number().int().min(1).max(10).default(5),
+  ready: z.coerce
+    .boolean()
+    .optional()
+    .describe(
+      'Show only what you could claim right now, plus the containers holding it. ' +
+        'Answers "what is left under this that I can pick up".',
+    ),
   fields,
 });
 
@@ -240,7 +247,9 @@ export const NATIVE_TOOLS: NativeTool[] = [
       'is working it right now, the holder and when their lease runs out. Also returns the path ' +
       'up to the root, so an item handed to you in isolation still shows what it is part of, and ' +
       'openDescendants, the count of unfinished work below it. Use this before decomposing ' +
-      'further, and instead of listing the project and reassembling it yourself.',
+      'further, and instead of listing the project and reassembling it yourself. Pass ' +
+      'ready: true to see only what you could claim, with the containers holding it kept so ' +
+      'the tree still makes sense.',
     schema: TreeQuery,
     method: 'GET',
     request: (a) => ({ path: q('/v1/tree', a) }),

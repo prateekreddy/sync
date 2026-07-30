@@ -571,17 +571,18 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   // ── tree (read-only) ─────────────────────────────────────────────────────
   app.get('/v1/tree', async (req) => {
     const query = TreeQuery.parse(req.query);
-    await actorOf(req);
+    const actor = await actorOf(req);
     const { fields: rawFields, ...rest } = query;
     return tree(plane, pool, {
       ...rest,
       ...(parseFields(rawFields) ? { fields: parseFields(rawFields) } : {}),
+      ...(actor.capabilities.length ? { capabilities: actor.capabilities } : {}),
     });
   });
 
   // ── find (read-only) ─────────────────────────────────────────────────────
   app.get('/v1/find', async (req) => {
-    await actorOf(req);
+    const actor = await actorOf(req);
     const f = FindQuerySchema.parse(req.query);
     return find(plane, pool, {
       projectId: f.projectId,
@@ -592,6 +593,9 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       ...(f.holder ? { holder: f.holder } : {}),
       ...(f.parentId ? { parentId: f.parentId } : {}),
       ...(f.ready ? { ready: f.ready } : {}),
+      // The token's scope reaches the predicate from every entry point, so
+      // find(ready:true) and next return the same set. They did not before.
+      ...(actor.capabilities.length ? { capabilities: actor.capabilities } : {}),
       limit: f.limit,
       ...(parseFields(f.fields) ? { fields: parseFields(f.fields) } : {}),
     });
