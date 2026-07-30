@@ -114,6 +114,11 @@ export const DecomposeBody = z.object({
     .max(50),
 });
 
+export const SearchQuery = z.object({
+  query: z.string().min(2).max(200).describe('Text to look for in work item titles.'),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+});
+
 export const HistoryQuery = z.object({
   projectId: uuid,
   workItemId: uuid,
@@ -292,6 +297,20 @@ export const NATIVE_TOOLS: NativeTool[] = [
     schema: BoardQuery,
     method: 'GET',
     request: (a) => ({ path: q('/v1/board', a) }),
+  },
+  {
+    name: 'search',
+    title: 'Find work anywhere in the workspace',
+    description:
+      'Search work item titles across every project you can see — the only tool here that ' +
+      'crosses project boundaries. Use it to check whether something is already written down ' +
+      'before capturing it, or to locate an item a human referred to by name. Results are ' +
+      'pointers, not full items: they carry the id, readable id, title and project, and you ' +
+      'then use find, tree or why inside that project for anything more. Scoped to your own ' +
+      'Plane access, so it can never show you a project you could not open yourself.',
+    schema: SearchQuery,
+    method: 'GET',
+    request: (a) => ({ path: q('/v1/search', a) }),
   },
   {
     name: 'find',

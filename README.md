@@ -169,7 +169,7 @@ when an agent is actually working an item.
 
 ## The tool surface
 
-One MCP server, 62 tools, two halves.
+One MCP server, 63 tools, two halves.
 
 **Ours — coordination.** Plane has no equivalent for any of these.
 
@@ -179,6 +179,7 @@ next      → see what's ready        (read-only, reserves nothing)
 why       → why can't I have that?  (the gate's own reasons)
 tree      → what's under this item? (sub-items, state, who holds them)
 find      → filtered query           (labels, priority, module, holder, ready)
+search    → find work anywhere        (across projects, scoped to your access)
 board     → where does this stand?   (progress per module, live leases)
 decompose → break an item up         (one call, not N)
 claim     → take it atomically      (returns an epoch — keep it)

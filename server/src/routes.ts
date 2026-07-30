@@ -50,6 +50,7 @@ import {
   TreeQuery,
   WhyQuery,
   ReleaseBody,
+  SearchQuery,
 } from './toolspec.js';
 
 export interface Deps {
@@ -598,6 +599,42 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       ...(b.moduleId ? { moduleId: b.moduleId } : {}),
       ...(actor.capabilities.length ? { capabilities: actor.capabilities } : {}),
     });
+  });
+
+  // ── search (read-only, workspace-wide) ───────────────────────────────────
+  //
+  // The only tool that crosses project boundaries, which makes scoping the whole
+  // design question. It runs with the AGENT's Plane token, never the service
+  // account: the service account can see every project, so falling back to it
+  // would quietly turn a search box into a way to read projects the caller has no
+  // access to. An agent without its own Plane identity is refused rather than
+  // downgraded.
+  app.get('/v1/search', async (req) => {
+    const actor = await actorOf(req);
+    const s = SearchQuery.parse(req.query);
+
+    if (!actor.planeToken) {
+      throw new GatewayError(
+        'FORBIDDEN',
+        'search reaches every project you can see, so it needs this agent to have its own ' +
+          'Plane identity. Ask your operator to re-issue the token with --plane-token.',
+      );
+    }
+
+    const hits = await plane.as(actor.planeToken).search(s.query);
+    return {
+      query: s.query,
+      // Pointers, not items. A hit may be in a project whose states and labels we
+      // have not loaded, and inventing a partial view of it would be worse than
+      // saying plainly "here is where it lives, look there".
+      results: hits.slice(0, s.limit).map((h) => ({
+        workItemId: h.id,
+        readableId: `${h.project__identifier}-${h.sequence_id}`,
+        title: h.name,
+        projectId: h.project_id,
+      })),
+      matched: hits.length,
+    };
   });
 
   // ── find (read-only) ─────────────────────────────────────────────────────
