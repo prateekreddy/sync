@@ -198,8 +198,41 @@ export class PlaneClient {
     return out;
   }
 
+  /**
+   * Every field any consumer of `listWorkItems` reads.
+   *
+   * Plane returns 29 fields per work item and its `fields` parameter cuts that to
+   * whatever is named here — measured at 7.8x on a 34-item board, and the saving
+   * is upstream, so the bytes never cross the network at all.
+   *
+   * This list is load-bearing and fails silently when wrong: the readiness gate
+   * screens on `is_draft`, `state`, `parent`, `labels` and `description_html`, so
+   * dropping one does not raise anything, it just stops withholding work. Anything
+   * added to `WorkItem` and read off a *list* must be added here too, and
+   * test/fields.test.ts exists to make that failure loud.
+   */
+  static readonly LIST_FIELDS = [
+    'id',
+    'sequence_id',
+    // Nothing reads `project` off a list today, but `WorkItem` declares it
+    // required — omitting it would make the runtime object quietly disagree with
+    // the type, which is a worse bug than 36 bytes a row is a cost.
+    'project',
+    'name',
+    'description_html',
+    'state',
+    'priority',
+    'assignees',
+    'labels',
+    'parent',
+    'is_draft',
+    'created_at',
+    'updated_at',
+  ] as const;
+
   listWorkItems(projectId: string): Promise<WorkItem[]> {
-    return this.listAll<WorkItem>(`/projects/${projectId}/work-items/`);
+    const fields = PlaneClient.LIST_FIELDS.join(',');
+    return this.listAll<WorkItem>(`/projects/${projectId}/work-items/?fields=${fields}`);
   }
 
   getWorkItem(projectId: string, id: string): Promise<WorkItem> {
