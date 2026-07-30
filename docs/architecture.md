@@ -430,12 +430,25 @@ So it ships on two always-on channels, because neither is sufficient alone:
 2. **A few lines in `CLAUDE.md` / `AGENTS.md`.** The only channel guaranteed to be
    in context.
 
-**Not a skill.** Skills load on demand, when the model judges them relevant — right
-for occasional procedural work, wrong for rules that always apply. A skill holding
-"claim before you work" would be strictly worse than the same words in `AGENTS.md`,
-with an extra failure mode where it is never loaded. The one thing that fits the
-skill shape is a session-start routine (`held` → `next` → claim), which is three
-tool calls a human can just ask for.
+**The rules are not a skill.** Skills load on demand, when the model judges them
+relevant — right for occasional procedural work, wrong for rules that always apply.
+A skill holding "claim before you work" would be strictly worse than the same words
+in `AGENTS.md`, with an extra failure mode where it is never loaded.
+
+**A skill, for the surface the rules deliberately omit.** That argument bounds what
+a skill must not hold; it does not leave nothing behind. Three rules fit in an
+always-on channel precisely because they say nothing about the forty-seven Plane
+tools behind them — when a cycle is the right container, what `transfer_cycle_issues`
+is for, why a deduped capture can leave a decomposition one child short. That
+material is large, wanted occasionally, and useless until an agent is already holding
+an item, which is the exact shape a skill fits. `skills/work-tracking/` holds it,
+derived from `toolspec.ts`, `errors.ts`, `readiness.ts` and `toolpolicy.ts` so it
+moves when they do.
+
+The division is the whole point: a channel that always fires carries only what must
+always fire, and everything else is one load away. Putting the surface in
+`AGENTS.md` would cost every request; putting the rules in the skill would cost the
+requests that matter.
 
 ## Settled
 

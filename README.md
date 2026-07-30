@@ -153,6 +153,12 @@ Both doors lead to the same catalogue and the same policy.
 [`docs/onboarding.md`](docs/onboarding.md) has the full walkthrough, troubleshooting,
 what belongs in `CLAUDE.md`/`AGENTS.md`, and how to wire this into project creation.
 
+Three rules belong in context for every request; Plane's forty-seven tools do not.
+[`skills/work-tracking/`](skills/work-tracking/) is the playbook for those — the claim
+loop and its failure modes, what the readiness gate withholds, and what cycles, modules,
+labels and worklogs are each good for. Copy it to `~/.claude/skills/` and it loads only
+when an agent is actually working an item.
+
 > **Give the agent only the `sync_agent_…` token**, never a Plane token. A Plane
 > token can set `assignee` directly, which bypasses the lease and puts two agents
 > on one item.

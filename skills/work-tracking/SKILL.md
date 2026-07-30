@@ -10,8 +10,13 @@ Two halves live on one MCP server. Do not confuse them:
 
 - **Coordination tools** (`capture`, `next`, `why`, `claim`, `heartbeat`, `complete`, `release`,
   `link`, `held`) exist because Plane has no equivalent. They are the only safe way to take work.
-- **Plane's own tools** (47 of them) are a faithful wrapper over Plane's API and have **no notion of
-  a lease**. Everything below the coordination loop is theirs.
+- **Plane's own tools** — currently 47 — are a faithful wrapper over Plane's API and have **no
+  notion of a lease**. Everything below the coordination loop is theirs.
+
+Both halves are served *by the gateway*, not by anything installed here, so the catalogue grows on a
+gateway deploy with nothing to reinstall. Treat the tool list you were handed as authoritative rather
+than this document: if a name here is missing, it moved upstream. Where the two halves collide on a
+name, the coordination tool wins and Plane's is dropped — nothing can shadow `claim`.
 
 You almost never need to pass a project id: the gateway fills `projectId` / `project_id` from your
 token's binding. Pass one explicitly only when working outside your default project.
@@ -26,22 +31,35 @@ held  →  claim  →  …work…  →  heartbeat every ~TTL/3  →  complete
 
 1. **`held`** — call it first after any restart, compaction, or when you are unsure. It tells you
    what you are already holding. Resuming beats re-claiming.
-2. **`claim`** — omit `workItemId` and let the gateway pick the best ready item. Calling `next` and
-   then claiming that id is a race; `next` is read-only and reserves nothing, so use it to *look*,
-   not to choose. `claim` returns a **lease: a work item id and an `epoch`.** Keep both — every
-   later call needs them, and the epoch is what proves the lease is still yours.
-   `ttlSeconds` defaults to 600 (min 30, max 3600). Size it to the slowest realistic run.
+2. **`claim`** — omit `workItemId` and let the gateway pick. Calling `next` and then claiming that id
+   is a race; `next` is read-only and reserves nothing, so use it to *look*, not to choose. "Best"
+   is not a mystery: highest priority first, oldest first within a priority, blockers verified per
+   candidate so a blocked item costs one attempt rather than a wasted run. `claim` returns a
+   **lease: a work item id and an `epoch`.** Keep both — every later call needs them, and the epoch
+   is what proves the lease is still yours. `ttlSeconds` defaults to 600 (min 30, max 3600). Size it
+   to the slowest realistic run. If you were dispatched by another agent, pass `spawnedBy` so the
+   attribution chain resolves back to a person.
 3. **`heartbeat`** — roughly every TTL/3 during long work. A lapsed lease returns the item to the
-   pool and another agent may take it while you are still typing.
+   pool and another agent may take it while you are still typing. Expiry always comments on the item,
+   and **after three expiries it is flagged for a human** — an item that repeatedly kills its agent
+   is underspecified, and the fix is refinement, not another attempt.
 4. **`complete`** — `outcome` is not a formality: it is the evidence. What you did, the PR link or
-   commit, and what you actually verified. `close` defaults to true. Use **`release`** with a reason
-   when you are handing work back unfinished — silence is the one unacceptable ending.
+   commit, and what you actually verified. `close` defaults to true; pass `close: false` to end the
+   lease and record the outcome while leaving the item open for someone else's half. Use **`release`**
+   with a reason when you are handing work back unfinished — silence is the one unacceptable ending.
 
 ## Capture: write it down before you decide
 
 Call `capture` the moment you notice something, not when you get round to it. It is idempotent
 (pass `idempotencyKey` if you might retry) and near-duplicate titles merge into the existing item,
 so calling it freely is the intended usage.
+
+**Read what it returns.** `deduped: true` means you did not create anything — your text was dropped
+and an existing item was handed back, so if your body carried something the original lacks, add it
+as a comment. `replayed: true` means the same `idempotencyKey` returned a stored answer. A
+`parentId` that is not the one you passed means the item you deduped into already lived under a
+different parent, and was **not** re-parented — the fleet is not rearranged behind your back, so
+your decomposition is one child short and you have to notice.
 
 A capture is only useful if an agent can later pick it up. The readiness gate **withholds** an item
 from `claim` when it:
@@ -159,6 +177,34 @@ A good claimed-work rhythm: claim → comment what you intend → add to the cur
 work, heartbeating → comment anything a human would want to know → `complete` with evidence →
 worklog. And `capture` everything you noticed on the way.
 
+## The board lags, and that is deliberate
+
+The lease is the truth; Plane is a mirror written in the background. `complete` ends your lease the
+moment it returns and updates Plane afterwards, so you never fail because Plane was slow.
+
+Two consequences worth knowing before you act on what you see:
+
+- **A blocker you just finished can still block its dependant** for a second or so, because the
+  readiness gate asks Plane. Wait and retry rather than concluding the link is wrong.
+- **A board still showing "In Progress" for finished work** means a mirror write failed, not that
+  the lease is confused. Say so; do not reach for `update_issue` to "fix" the state, which is exactly
+  the write the gateway refuses on an item you no longer hold.
+
+## When `next` or `claim` comes back empty
+
+`NO_WORK` is not a fault. **Call `why` on an item you expected to be offered** — it answers with
+the reasons the gate itself used, including the two you cannot see from the item: a live lease, and
+a capability mismatch. Guess only if that is somehow unavailable, in this order:
+
+1. Everything ready is **already leased** by another agent.
+2. Items exist but **fail the readiness gate** — most often no description, or a parent whose
+   children are the real work.
+3. **Your token carries capabilities**, which double as label routing: you are shown only items
+   labelled with one of them. A capability list you did not expect is the usual reason a project
+   full of work looks empty to exactly one agent.
+
+`next` returns at most `limit` items (default 10, max 50), so a short list is a page, not a verdict.
+
 ## What the gateway refuses, and why
 
 - **`assignees` or `state` via `update_issue` on an item you do not hold.** Those two fields *are*
@@ -184,8 +230,10 @@ Every refusal carries a code and a recovery line. The ones that change what you 
 | `STALE_EPOCH` | **your lease lapsed and someone else reclaimed it** | **discard the work — do not submit it** — and claim fresh |
 | `LEASE_EXPIRED` | lapsed, nobody took it | claim it again before continuing |
 | `LEASE_ENDED` | already completed or released | terminal; do not re-submit, claim something else |
+| `IDEMPOTENCY_MISMATCH` | that key was used with a different body | your bug — use a new key, do not retry the old one |
 | `FORBIDDEN` | your token lacks the capability | do not retry; ask the operator |
 | `UNAUTHENTICATED` | token missing, revoked, or replaced | stop — no tool will work; ask for a new token |
+| `UPSTREAM` | Plane was unreachable or errored | retry with backoff; nothing you did is wrong |
 
 `STALE_EPOCH` is the one worth reading twice: whatever you computed rests on state another agent has
 since changed. Writing it anyway is exactly the silent-wrong-result failure everything else here
