@@ -173,7 +173,8 @@ Work lives in Plane, reached through the `sync` MCP server. Three rules:
 
 1. **Write it down first.** The moment you notice anything worth doing — a bug, a
    missing test, a refactor, a question — call `capture` before deciding whether
-   to do it now. It deduplicates and is safe to call freely.
+   to do it now. It deduplicates and is safe to call freely. This applies to a
+   bug someone just pointed out to you: being discussed is not being tracked.
 2. **Claim before you work.** Never start non-trivial work on an item you have not
    claimed with `claim`. Assigning yourself in Plane reserves nothing: two agents
    doing it both believe they own the item. Only `claim` is atomic.
