@@ -3,12 +3,17 @@ import { GatewayError } from './errors.js';
 export interface WorkItem {
   id: string;
   sequence_id: number;
-  project: string;
+  /**
+   * Optional because list responses do not carry it: `fields=` omits both this
+   * and `assignees`, which nothing reads off a list, and a type that promised
+   * them would be lying about two thirds of the objects in circulation.
+   */
+  project?: string;
   name: string;
   description_html?: string;
   state: string;
   priority: 'urgent' | 'high' | 'medium' | 'low' | 'none';
-  assignees: string[];
+  assignees?: string[];
   labels: string[];
   parent: string | null;
   is_draft: boolean;
@@ -202,8 +207,15 @@ export class PlaneClient {
    * Every field any consumer of `listWorkItems` reads.
    *
    * Plane returns 29 fields per work item and its `fields` parameter cuts that to
-   * whatever is named here — measured at 7.8x on a 34-item board, and the saving
-   * is upstream, so the bytes never cross the network at all.
+   * whatever is named here. On a 34-item board that is 30,271 chars down to about
+   * 14,000, and the saving is upstream, so the bytes never cross the network.
+   *
+   * Do not expect a dramatic number here. Measured per field, the cost is spread
+   * almost evenly — `description_html` is only 17.6% — because most of the payload
+   * is 36-char uuids and JSON key names repeated once per row. Going materially
+   * lower would mean changing the response *shape*, which no parameter reaches.
+   * This payload is also gateway-to-Plane only; what an agent receives is the
+   * seven-field projection built from it.
    *
    * This list is load-bearing and fails silently when wrong: the readiness gate
    * screens on `is_draft`, `state`, `parent`, `labels` and `description_html`, so
@@ -214,15 +226,10 @@ export class PlaneClient {
   static readonly LIST_FIELDS = [
     'id',
     'sequence_id',
-    // Nothing reads `project` off a list today, but `WorkItem` declares it
-    // required — omitting it would make the runtime object quietly disagree with
-    // the type, which is a worse bug than 36 bytes a row is a cost.
-    'project',
     'name',
     'description_html',
     'state',
     'priority',
-    'assignees',
     'labels',
     'parent',
     'is_draft',

@@ -88,12 +88,10 @@ describe('the fields we ask Plane for', () => {
     for (const key of [
       'id',
       'sequence_id',
-      'project',
       'name',
       'description_html',
       'state',
       'priority',
-      'assignees',
       'labels',
       'is_draft',
       'created_at',
@@ -102,6 +100,11 @@ describe('the fields we ask Plane for', () => {
       expect(item[key], `${key} is declared on WorkItem but not requested`).toBeDefined();
     }
     expect('parent' in item).toBe(true); // nullable, so presence is the check
+
+    // `project` and `assignees` are deliberately NOT requested — nothing reads
+    // them off a list, and both are optional on WorkItem so the type stays honest.
+    expect(item.project).toBeUndefined();
+    expect(item.assignees).toBeUndefined();
   });
 
   it('actually drops the bulk of the payload', () => {
