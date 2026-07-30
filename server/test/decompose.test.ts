@@ -47,7 +47,11 @@ const made: Array<Record<string, unknown>> = [];
  * A PlaneClient whose writes are recorded. `failOn` makes one title blow up the
  * way Plane would — a validation error on a single child, not a transport fault.
  */
-const fakePlane = (opts: { failOn?: string; missingParent?: boolean } = {}): PlaneClient =>
+const moduled: string[] = [];
+
+const fakePlane = (
+  opts: { failOn?: string; missingParent?: boolean; moduleMissing?: boolean } = {},
+): PlaneClient =>
   Object.assign(new PlaneClient('http://plane.invalid', 'k', 'ws'), {
     getWorkItem: async (_p: string, id: string) => {
       if (opts.missingParent) throw new GatewayError('NOT_FOUND', 'nope');
@@ -65,6 +69,11 @@ const fakePlane = (opts: { failOn?: string; missingParent?: boolean } = {}): Pla
     labels: async () => [],
     comment: async () => ({}),
     relate: async () => ({}),
+    addToModule: async (_p: string, m: string, issues: string[]) => {
+      if (opts.moduleMissing) throw new GatewayError('NOT_FOUND', 'no such module');
+      moduled.push(...issues.map((i) => `${m}:${i}`));
+      return {};
+    },
   });
 
 const kids = (...titles: string[]) =>
@@ -117,6 +126,33 @@ describe('decompose', () => {
         children: kids('a'),
       }),
     ).rejects.toThrow(GatewayError);
+  });
+
+  it('puts every child in the module, so a rollup is not silently short', async () => {
+    moduled.length = 0;
+    const moduleId = randomUUID();
+    const got = await decompose(fakePlane(), pool, actor, {
+      projectId: PROJECT,
+      parentId: PARENT,
+      children: kids('m1', 'm2'),
+      moduleId,
+    });
+    expect(got.created.every((c) => c.moduleId === moduleId)).toBe(true);
+    expect(moduled.filter((m) => m.startsWith(moduleId)).length).toBe(2);
+  });
+
+  it('still creates the children when the module does not exist', async () => {
+    // The item existing matters more than the edge. Failing the capture would
+    // report a lost intention that was not lost.
+    const got = await decompose(fakePlane({ moduleMissing: true }), pool, actor, {
+      projectId: PROJECT,
+      parentId: PARENT,
+      children: kids('m3'),
+      moduleId: randomUUID(),
+    });
+    expect(got.complete).toBe(true);
+    expect(got.created[0]?.moduleId).toBeUndefined();
+    expect(got.created[0]?.moduleError).toContain('not in a module');
   });
 
   it('replays on the same idempotency keys instead of duplicating', async () => {

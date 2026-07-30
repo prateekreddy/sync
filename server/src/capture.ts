@@ -44,6 +44,16 @@ export interface CaptureInput {
    * silently changes what the fleet is allowed to pick up.
    */
   parentId?: string | undefined;
+  /**
+   * Put the item in a module — the epic layer.
+   *
+   * Deliberately not inherited from `parentId`. Plane does not inherit it either,
+   * and guessing would put work in a feature nobody assigned it to; a rollup that
+   * quietly includes things is worse than one that visibly misses them. Callers
+   * breaking an item up should pass it explicitly, which is why `decompose` takes
+   * it once and applies it to every child.
+   */
+  moduleId?: string | undefined;
   idempotencyKey?: string | undefined;
 }
 
@@ -54,6 +64,9 @@ export interface CaptureResult {
   deduped: boolean;
   replayed: boolean;
   parentId?: string | undefined;
+  moduleId?: string | undefined;
+  /** Set when the item was created but could not be put in the module. */
+  moduleError?: string | undefined;
 }
 
 export async function capture(
@@ -165,6 +178,30 @@ export async function capture(
           `<p>Discovered while working on a related item, by ${actor.holder}.</p>`,
         )
         .catch(() => {});
+    }
+  }
+
+  // Membership is an edge, added after the item exists — and applied on the dedup
+  // branch too. An item someone already wrote down still belongs in the feature
+  // this caller is working on, and a rollup that misses it is wrong in the
+  // direction that looks like less work remaining.
+  if (input.moduleId) {
+    try {
+      await plane.addToModule(input.projectId, input.moduleId, [result.workItemId]);
+      result = { ...result, moduleId: input.moduleId };
+    } catch (err) {
+      // Reported, never thrown. Write-it-down-first only survives if capture
+      // cannot fail in interesting ways, and by this point the item exists: a
+      // missing module edge is a reporting gap, an unwritten item is a lost
+      // intention. Throwing here would tell the agent the capture failed, which
+      // is false, and the honest alternative is to say what did not happen.
+      result = {
+        ...result,
+        moduleError:
+          err instanceof GatewayError && err.code === 'NOT_FOUND'
+            ? `No module ${input.moduleId} in this project, or modules are not enabled on it. The item was created but is not in a module.`
+            : `Could not add to module ${input.moduleId}: ${String(err)}. The item was created.`,
+      };
     }
   }
 

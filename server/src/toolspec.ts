@@ -58,6 +58,13 @@ export const CaptureBody = z.object({
         'a parent with unfinished sub-items stops being claimable, so nobody will pick it up ' +
         'until every child is done.',
     ),
+  moduleId: uuid
+    .optional()
+    .describe(
+      'Put this in a module — the epic layer, one per feature or workstream. Not inherited ' +
+        'from parentId: pass it explicitly, or use decompose which applies one module to ' +
+        'every child.',
+    ),
   idempotencyKey: z.string().max(200).optional().describe('Pass a stable key if you may retry.'),
 });
 
@@ -89,6 +96,7 @@ export const TreeQuery = z.object({
 export const DecomposeBody = z.object({
   projectId: uuid,
   parentId: uuid.describe('The item being broken up. It becomes a container and stops being claimable.'),
+  moduleId: uuid.optional().describe('Applied to every child — a decomposition belongs to one feature.'),
   children: z
     .array(
       z.object({

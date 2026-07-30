@@ -313,6 +313,19 @@ export class PlaneClient {
     return new Set((rows ?? []).map((r) => r.id));
   }
 
+  /**
+   * Put work items in a module.
+   *
+   * Module membership is an edge, not a field on the item — Plane keeps it behind
+   * its own endpoint, which is why nothing about it appears in a work item
+   * listing and why a rollup costs a separate call.
+   */
+  addToModule(projectId: string, moduleId: string, issues: string[]): Promise<unknown> {
+    return this.request('POST', `/projects/${projectId}/modules/${moduleId}/module-issues/`, {
+      issues,
+    });
+  }
+
   /** Workspace-wide search. Backs capture's dedup-on-write. */
   async search(query: string): Promise<Array<{ id: string; name: string; sequence_id: number; project_id: string; project__identifier: string }>> {
     const res = await this.request<{ issues?: Array<Record<string, unknown>> }>(

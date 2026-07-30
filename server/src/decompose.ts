@@ -45,7 +45,13 @@ export async function decompose(
   plane: PlaneClient,
   pool: Pool,
   actor: Actor,
-  input: { projectId: string; parentId: string; children: DecomposeChild[] },
+  input: {
+    projectId: string;
+    parentId: string;
+    children: DecomposeChild[];
+    /** Applied to every child — a decomposition belongs to one feature. */
+    moduleId?: string | undefined;
+  },
 ): Promise<DecomposeResult> {
   // A parent that does not exist would otherwise produce N children pointing at
   // nothing, each of which Plane accepts, leaving orphans nobody is looking for.
@@ -69,6 +75,7 @@ export async function decompose(
           parentId: input.parentId,
           ...(child.priority ? { priority: child.priority } : {}),
           ...(child.labels ? { labels: child.labels } : {}),
+          ...(input.moduleId ? { moduleId: input.moduleId } : {}),
           ...(child.idempotencyKey ? { idempotencyKey: child.idempotencyKey } : {}),
         }),
       );
