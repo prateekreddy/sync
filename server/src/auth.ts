@@ -69,7 +69,7 @@ export async function issueToken(
 
 export async function authenticate(pool: Pool, bearer: string | undefined): Promise<Actor> {
   const token = bearer?.replace(/^Bearer\s+/i, '').trim();
-  if (!token) throw new GatewayError('NOT_HOLDER', 'Missing agent token');
+  if (!token) throw new GatewayError('UNAUTHENTICATED', 'No Authorization: Bearer <token> header');
 
   const { rows } = await pool.query<{
     name: string;
@@ -85,7 +85,7 @@ export async function authenticate(pool: Pool, bearer: string | undefined): Prom
   );
 
   const row = rows[0];
-  if (!row) throw new GatewayError('NOT_HOLDER', 'Unknown or revoked agent token');
+  if (!row) throw new GatewayError('UNAUTHENTICATED', 'Unknown or revoked agent token');
 
   let planeToken: string | null = null;
   if (row.plane_token_enc) {
