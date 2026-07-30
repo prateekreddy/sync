@@ -23,10 +23,14 @@ import {
 } from './oauth.js';
 import { board } from './board.js';
 import { capture } from './capture.js';
-import { claimsIn, corroborate, record } from './attest.js';
-import { evidenceWarning, findEvidence, type EvidencePolicy } from './evidence.js';
-import { verifySignature } from './github.js';
-import { handleDelivery } from './webhook.js';
+import { citationsFor, recordCitations } from './citation.js';
+import {
+  evidenceWarning,
+  findEvidence,
+  UNVERIFIED_LABEL,
+  type EvidencePolicy,
+} from './evidence.js';
+import { ABSENT_LABEL, absent, checkEvidence, type GitHubConfig } from './ghcheck.js';
 import { decompose } from './decompose.js';
 import { GatewayError, HTTP_STATUS, RECOVERY } from './errors.js';
 import * as lease from './lease.js';
@@ -75,13 +79,10 @@ export interface Deps {
   planeBaseUrl: string;
   workspaceSlug: string;
   /**
-   * Shared secret for GitHub webhook deliveries. Absent disables the endpoint —
-   * it is the endpoint's only authentication, so there is no "off" that still
-   * accepts.
+   * How to ask GitHub whether a cited artefact exists. Null disables checking,
+   * and every citation is then honestly reported as `unchecked`.
    */
-  githubWebhookSecret?: string | undefined;
-  /** May a merged pull request saying `Fixes SYNC-42` transition an unheld item? */
-  githubAutoClose: boolean;
+  github: GitHubConfig | null;
   /** Whether agents can be onboarded without a shell on this host. */
   allowMinting: boolean;
   mintRatePerMinute: number;
@@ -98,24 +99,6 @@ export interface Deps {
 
 export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   const { pool, plane } = deps;
-
-  // GitHub signs the *bytes* it sent, so the parsed object cannot verify a
-  // delivery — re-serialising it changes key order and whitespace and the HMAC no
-  // longer matches. Fastify discards the raw body after parsing, so it is kept
-  // here. Applies to every JSON route rather than one, because a content type
-  // parser is per content type; the cost is one Buffer reference per request.
-  app.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, body, done) => {
-    const raw = body as Buffer;
-    (req as { rawBody?: Buffer }).rawBody = raw;
-    if (raw.length === 0) return done(null, undefined);
-    try {
-      done(null, JSON.parse(raw.toString('utf8')) as unknown);
-    } catch {
-      const err = new Error('Body is not valid JSON') as Error & { statusCode?: number };
-      err.statusCode = 400;
-      done(err, undefined);
-    }
-  });
 
   // OAuth speaks form encoding, not JSON — both the consent form and RFC 6749's
   // token endpoint. Fastify parses only JSON out of the box, so without this the
@@ -179,47 +162,6 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   });
 
   app.get('/healthz', async () => ({ ok: true }));
-
-  // ── GitHub webhook ───────────────────────────────────────────────────────
-  //
-  // The only unauthenticated write endpoint, and the only one that can transition
-  // a work item without an agent. Its authentication is the HMAC, so the order
-  // below is not negotiable: verify the signature against the raw bytes before
-  // anything else looks at the payload.
-  //
-  // Always answers 2xx once the signature checks out, including for events we do
-  // nothing with. A 4xx marks the delivery failed in GitHub's UI and puts it on a
-  // redelivery queue, which turns "we ignore `issue_comment`" into a permanent
-  // stream of red in someone's repository settings.
-  app.post('/v1/webhooks/github', async (req, reply) => {
-    if (!deps.githubWebhookSecret) {
-      // Not registered-but-404, which would read as "wrong URL" to whoever is
-      // setting the hook up. The problem is configuration and it says so.
-      return reply.status(503).send({
-        error: 'UNAVAILABLE',
-        message: 'GitHub webhooks are not configured on this gateway',
-        recovery: 'Set GITHUB_WEBHOOK_SECRET and restart, then use the same secret in the repository webhook settings.',
-      });
-    }
-
-    const raw = (req as { rawBody?: Buffer }).rawBody;
-    const signature = req.headers['x-hub-signature-256'] as string | undefined;
-    if (!raw || !verifySignature(deps.githubWebhookSecret, raw, signature)) {
-      req.log.warn({ delivery: req.headers['x-github-delivery'] }, 'webhook signature rejected');
-      return reply.status(401).send({ error: 'UNAUTHENTICATED', message: 'Bad signature' });
-    }
-
-    const event = (req.headers['x-github-event'] as string | undefined) ?? '';
-    if (event === 'ping') return { ok: true, pong: true };
-
-    const result = await handleDelivery(
-      { pool, plane, autoClose: deps.githubAutoClose },
-      event,
-      req.body,
-    );
-    req.log.info({ event, refs: result.refs }, 'github delivery');
-    return result;
-  });
 
   // ── self-service onboarding ──────────────────────────────────────────────
   //
@@ -734,12 +676,12 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     const q = HistoryQuery.parse(req.query);
     const [leaseRecord, evidence] = await Promise.all([
       lease.record(pool, q.workItemId),
-      corroborate(pool, q.workItemId),
+      citationsFor(pool, q.workItemId),
     ]);
     // A null record is the honest answer for an item nobody has ever claimed,
     // and materially different from one claimed and released. `evidence` answers
-    // the other half — not just who attempted this, but whether what the last
-    // attempt claimed ever actually landed.
+    // the other half — what each completion pointed at, and what GitHub said
+    // about it when asked.
     return { workItemId: q.workItemId, record: leaseRecord, evidence };
   });
 
@@ -862,11 +804,31 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     const evidence = findEvidence(b.outcome);
     const warning = deps.evidencePolicy === 'off' ? null : evidenceWarning(b.outcome);
 
+    // This call is the notification, so this is the moment to check. Not a
+    // background sweep and not a webhook: the agent is on the line right now, and
+    // an answer it receives while it can still act on it is worth more than one
+    // discovered an hour later by something else.
+    //
+    // Before the lease ends, so `refuse` can still reject without leaving the
+    // agent holding nothing. Failures inside are already `unchecked`, never
+    // thrown — a lease must not fail to end because GitHub was slow.
+    const checks = deps.evidencePolicy === 'off' ? [] : await checkEvidence(deps.github, evidence);
+    const fabricated = absent(checks);
+
     // Refuse *before* ending the lease, or the agent is left holding nothing
     // while the item stays open — the one outcome worse than an unverified
     // completion. Off by default; see evidence.ts for why warn is the default.
     if (warning && deps.evidencePolicy === 'refuse') {
       throw new GatewayError('INVALID', warning, { workItemId: b.workItemId });
+    }
+    if (fabricated.length && deps.evidencePolicy === 'refuse') {
+      throw new GatewayError(
+        'INVALID',
+        `This completion cites something that does not exist: ${fabricated
+          .map((c) => c.detail)
+          .join('; ')}. Fix the reference, or say plainly what was done instead.`,
+        { workItemId: b.workItemId, evidence: checks },
+      );
     }
 
     const l = await lease.complete(pool, {
@@ -876,22 +838,15 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       reason: b.outcome,
     });
 
-    // Keep what it cited, so the claim can be checked later instead of only now.
-    // After the lease ends, deliberately: a failure to record must not cost an
-    // agent its completion, and the lease row is the commit point for everything.
-    await record(
-      pool,
-      claimsIn(b.outcome).map((e) => ({
-        workItemId: b.workItemId,
-        projectId: l.projectId,
-        source: 'agent' as const,
-        kind: e.kind as 'commit' | 'url',
-        value: e.value,
-        actor: actor.holder,
-      })),
-    ).catch((err: unknown) => {
-      req.log.warn({ err, workItemId: b.workItemId }, 'recording evidence claims failed');
-      return 0;
+    // After the lease ends, deliberately: the lease row is the commit point, and
+    // a failure to write the audit trail must not cost an agent its completion.
+    await recordCitations(pool, {
+      workItemId: b.workItemId,
+      projectId: l.projectId,
+      actor: actor.holder,
+      checks,
+    }).catch((err: unknown) => {
+      req.log.warn({ err, workItemId: b.workItemId }, 'recording citations failed');
     });
 
     void mirrorComplete(plane.as(actor.planeToken), pool, {
@@ -900,19 +855,29 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       actor,
       outcome: b.outcome,
       close: b.close && deps.allowAgentClose,
-      ...(warning ? { unverified: true } : {}),
+      // Two different failures, two different labels. `unverified` is an agent
+      // being terse; `evidence-missing` is an agent being wrong, and it is now
+      // evidence of absence rather than absence of evidence — GitHub was asked.
+      labels: [
+        ...(warning ? [UNVERIFIED_LABEL] : []),
+        ...(fabricated.length ? [ABSENT_LABEL] : []),
+      ],
     });
-    // If the pull request merged before the agent got round to saying so, the
-    // github attestation is already there and this is confirmed on the spot. The
-    // two orderings are the same code path, which is the point of the table.
-    const { verified } = await corroborate(pool, b.workItemId).catch(() => ({ verified: false }));
+
+    // One field, because an agent reading two warnings has to work out which
+    // matters. They are mutually exclusive anyway — a completion that cited
+    // nothing has nothing to be wrong about.
+    const notice =
+      fabricated.length > 0
+        ? `Recorded, and labelled "${ABSENT_LABEL}": ${fabricated.map((c) => c.detail).join('; ')}.`
+        : warning;
 
     return {
       lease: l,
       closed: b.close && deps.allowAgentClose,
-      evidence,
-      verified,
-      ...(warning ? { warning } : {}),
+      evidence: checks.length ? checks : evidence,
+      verified: checks.some((c) => c.status === 'landed'),
+      ...(notice ? { warning: notice } : {}),
     };
   });
 

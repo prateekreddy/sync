@@ -172,11 +172,13 @@ GATEWAY_DB_PASSWORD=$(randb64 32 24)
 GATEWAY_TOKEN_KEY=$(rand 32)
 ALLOW_AGENT_CLOSE=true
 PLANE_MCP=on
-# Shared secret for GitHub webhook deliveries — paste this into the repository's
-# webhook settings (Settings → Webhooks → Secret). It is the only authentication
-# on an endpoint that can close work items, so blank disables the endpoint rather
-# than opening it. Generated here so nobody is tempted to invent a weak one.
-GITHUB_WEBHOOK_SECRET=$(rand 32)
+# Where the code lives, and a read-only token for it. Set both to have `complete`
+# check that a cited commit or pull request actually exists, at the moment it is
+# cited. Left blank, checking is off and citations are reported "unchecked".
+# The token is also what lets the gateway distinguish "no such commit" from "a
+# repository I cannot see" — without it, it will never call a citation absent.
+GITHUB_REPO=
+GITHUB_TOKEN=
 
 # ── filled in by provision.sh ────────────────────────────────────────────────
 PLANE_API_KEY=

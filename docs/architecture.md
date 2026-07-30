@@ -56,15 +56,16 @@ test-and-set. That is one SQL statement in a database we control.
 
 ```
   non-devs ──▶ Plane Intake ─┐
-  humans   ──▶ Plane Web UI ─┤
-                             ├──▶  PLANE  ◀── REST ──┐
-  GitHub ──webhook──▶ Gateway┘        │              │
-                             ▲        │ webhook      │
-  agents  ──── MCP ──▶  GATEWAY ◀─────┘              │
+  humans   ──▶ Plane Web UI ─┤──▶  PLANE  ◀── REST ──┐
+                             │       │               │
+  agents  ──── MCP ──▶  GATEWAY ─────┘               │
                              │                       │
-                             └──▶ agent.lease ───────┘
-                                  (Plane's Postgres,
-                                   separate schema + role)
+                             ├──▶ agent.lease ───────┘
+                             │    (Plane's Postgres,
+                             │     separate schema + role)
+                             │
+                             └──▶ GitHub API   (on `complete`: does the
+                                                cited artefact exist?)
 ```
 
 **Plane** — unchanged, self-hosted. System of record for everything.
@@ -480,63 +481,69 @@ MCP built in — conceptually this project, but v0.1 and one developer); *Huly*
 only, no concurrency story); *GitLab* (official MCP, but gated behind Duo);
 *Taiga, Redmine, Tuleap* (community MCP only, no locking).
 
-## Evidence: a claim by someone, not a boolean
+## Evidence: asked at the moment it is claimed
 
-`complete` takes free text, extracts citations from it, and used to throw them away.
-So an agent could say "merged in #42" and close the item whether or not #42 existed,
-and nothing downstream could ever ask again. The whole coordination loop rests on
-completions being true, which made this the largest functional gap in the system.
+`complete` takes free text, extracts citations from it, and used to throw them
+away. So an agent could say "merged in #42" and close the item whether or not #42
+existed. The whole coordination loop rests on completions being true, which made
+this the largest functional gap in the system.
 
-The fix is not "add a webhook". A webhook is a source; the missing primitive was that
-**a citation is a claim, and claims carry the weight of who made them**:
+The first design was a GitHub webhook: receive `pull_request` events, match them
+against stored claims, reconcile. It worked, and it was thrown away, because
+`complete` **is** the notification. The agent is telling us, at that exact
+moment, that the work is done and here is the artefact — so the gateway asks
+GitHub then and there and answers in the response.
 
-- `agent` — free text, self-reported at completion, unverified by construction.
-- `github` — HMAC-signed, describing something that actually happened.
+That deletion removed almost everything the feature had accumulated:
 
-Both go in one table (`attestation`). Verification then stops being a mechanism and
-becomes a query: is there a `github` row with the same `match_key` as the `agent` row?
+- **No inbound endpoint.** The receiver was the only unauthenticated write path
+  in the system and the only thing that could transition an item with no agent
+  involved. Its whole defence was one HMAC.
+- **No normalisation.** A `match_key` existed solely so an agent's `3f7a891`
+  could later meet GitHub's 40-character sha. With one source there is nothing to
+  match, so there is nothing to normalise and nothing to get subtly wrong.
+- **No free-text parsing.** Push hands you a pull request title and body you did
+  not ask for, which is where `#42` (a GitHub issue, not ours), `UTF-8` (shaped
+  exactly like a reference), and closed-without-merging all became hazards to
+  design around. Asking a direct question raises none of them.
+- **No sweep, no timers, no per-repository setup.**
 
-### Normalise on write, compare exactly on read
+### What is actually being asked
 
-An agent writes `3f7a891`. GitHub sends the full 40-character sha. An agent pastes a
-pull request URL with `?w=1`; GitHub sends it bare. Comparing those fuzzily would be a
-permanent source of silent wrong answers, so both sides are reduced to an artefact
-identity by **one** function (`matchKey`) at write time, and corroboration is `=`.
-`commit:3f7a891`, `pr:acme/app#42`. If that function ever disagreed with itself
-nothing would error — corroboration would simply return false forever — which is why
-it takes the artefact and nothing else: no source, no context, no options.
+Not "was it merged eventually" — a pull request is usually still open when the
+agent that opened it finishes, and whether a human merges it later is not the
+agent's to control. That is reported `pending` and is not a failure.
 
-### The two orderings are one code path
+The sharp question is **does the cited artefact exist at all**. A fabricated sha,
+a pull request number never opened, a link to nothing: those make a completion
+actively misleading, and every one of them is visible immediately.
 
-The attestation is written before anything is decided. So a merge that arrives before
-the agent's `complete` corroborates it the instant it lands, and a merge that arrives
-after corroborates it retroactively. Neither is a special case.
+### Never an accusation on thin evidence
 
-### Mention versus closing keyword
+Anything that could not be established is `unchecked`, never `absent`. A timeout,
+a 5xx, a rate limit, an unconfigured gateway — and, importantly, a 404 without a
+token, because a private repository answers a stranger exactly as a nonexistent
+one does. Claiming an agent made something up because the gateway lacked
+credentials would be a false accusation on real work.
 
-GitHub's own convention decides whether a change may transition an item: `Fixes
-SYNC-42` closes it, a bare `SYNC-42` only records evidence. This is the difference
-between "touches" and "finishes", and it means the destructive action requires the
-author to have said the destructive thing — in words they already use.
-
-Two references are deliberately *not* honoured. Bare `#42` in a pull request means a
-GitHub issue, not ours; reading it as ours would let a routine cross-reference close
-unrelated work. And a pull request closed without merging is ignored entirely, because
-it references items exactly as a merged one does while meaning the opposite.
-
-`UTF-8` and `SHA-256` have precisely the shape of a reference, and nothing in the text
-can distinguish them. Rather than guess, the parser returns the identifier half and
-the caller discards anything that does not name a real project — a check that makes
-the whole class of false positives impossible instead of improbable.
+For the same reason the check never throws: a lease must not fail to end because
+a third party was slow.
 
 ### Two failures, deliberately kept apart
 
-- `unverified` — the completion cited **nothing** checkable. Set at completion time.
-- `evidence-missing` — the completion cited something specific that, a day later, has
-  never appeared. Set by an hourly sweep.
+- `unverified` — the completion cited **nothing** checkable.
+- `evidence-missing` — it cited something specific that GitHub says does not
+  exist. Evidence of absence, not absence of evidence.
 
-Collapsing them into one flag would lose the distinction that matters: the first is an
-agent being terse, the second is an agent being wrong.
+Collapsing them would lose the distinction that matters: the first is an agent
+being terse, the second is an agent being wrong.
+
+### What was given up
+
+A merged pull request can no longer close an item nobody claimed. That case was
+the webhook's strongest argument, and it sits in tension with this system's own
+discipline — claim, then complete — so losing it costs less than the machinery it
+required.
 
 ## Settled
 

@@ -147,8 +147,15 @@ export async function mirrorComplete(
     actor: Actor;
     outcome: string;
     close: boolean;
-    /** Completion cited nothing checkable — mark it so the board shows the difference. */
-    unverified?: boolean;
+    /**
+     * Labels to add to the item, by name.
+     *
+     * A list rather than the `unverified` boolean this replaced: there are two
+     * distinct ways a completion falls short — cited nothing, and cited something
+     * that does not exist — and a second boolean would have been the point at
+     * which the shape was clearly wrong. The caller names what it means.
+     */
+    labels?: string[];
   },
 ): Promise<void> {
   return serial(args.workItemId, async () => {
@@ -163,16 +170,16 @@ export async function mirrorComplete(
         await actorNote(plane, args.actor, args.outcome),
       );
 
-      // Labelled rather than refused: the completion is real, it simply cites
-      // nothing anyone can check, and a board that shows which is which is worth
+      // Labelled rather than refused: the completion is real, it simply falls
+      // short of proving itself, and a board that shows which is which is worth
       // more than one that blocks the agent. Best-effort like every mirror write.
-      if (args.unverified) {
+      if (args.labels?.length) {
         try {
           // Read-modify-write, because Plane's `labels` is a replacement, not an
-          // append: writing [unverified] alone would silently strip every label
-          // the item already carried, including the load-bearing ones.
+          // append: writing the one label we care about would silently strip
+          // every label the item already carried, including load-bearing ones.
           const [ids, current] = await Promise.all([
-            resolveLabels(plane, args.projectId, [UNVERIFIED_LABEL]),
+            resolveLabels(plane, args.projectId, args.labels),
             plane.getWorkItem(args.projectId, args.workItemId),
           ]);
           const merged = [...new Set([...(current.labels ?? []), ...ids])];
@@ -180,7 +187,7 @@ export async function mirrorComplete(
             await plane.updateWorkItem(args.projectId, args.workItemId, { labels: merged });
           }
         } catch (err) {
-          log.warn({ err, workItemId: args.workItemId }, 'unverified label failed');
+          log.warn({ err, workItemId: args.workItemId, labels: args.labels }, 'labelling failed');
         }
       }
       await pool.query('update lease set mirrored = true where work_item_id = $1', [args.workItemId]);

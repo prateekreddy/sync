@@ -6,8 +6,8 @@ import { mirrorReturn } from './mirror.js';
 import { PlaneClient } from './plane.js';
 import { PlaneMcp } from './planemcp.js';
 import type { EvidencePolicy } from './evidence.js';
+import { configFromEnv } from './ghcheck.js';
 import { registerRoutes } from './routes.js';
-import { sweepUnlanded } from './webhook.js';
 
 function required(name: string): string {
   const v = process.env[name];
@@ -40,6 +40,15 @@ const planeMcp =
         maxSessions: Number(process.env['PLANE_MCP_MAX_SESSIONS'] ?? 24),
       });
 
+/**
+ * How to ask GitHub whether a cited artefact exists.
+ *
+ * Read at startup so a malformed GITHUB_REPO fails the boot rather than every
+ * completion. Null when nothing is configured — checking is then off, and each
+ * citation is reported `unchecked` instead of being quietly treated as fine.
+ */
+const github = configFromEnv(process.env);
+
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL ?? 'info' },
   // Agents retry; a request that hangs is worse than one that fails fast.
@@ -67,14 +76,10 @@ registerRoutes(app, {
   // stricter policy without touching the lease logic.
   evidencePolicy: (process.env['REQUIRE_EVIDENCE'] as EvidencePolicy | undefined) ?? 'warn',
   allowAgentClose: (process.env.ALLOW_AGENT_CLOSE ?? 'true') === 'true',
-  // Without this the webhook endpoint refuses every delivery: the signature is
-  // its only authentication, and an endpoint that closes work items must not have
-  // an unauthenticated mode at all.
-  githubWebhookSecret: process.env['GITHUB_WEBHOOK_SECRET'],
-  // On by default, because "a merged PR closes the item with no agent asserting
-  // anything" is the whole point. It still takes an explicit `Fixes SYNC-42` — a
-  // bare mention only records evidence.
-  githubAutoClose: (process.env['GITHUB_AUTOCLOSE'] ?? 'on') !== 'off',
+  // How to ask GitHub whether a cited artefact exists. Null when nothing is
+  // configured, and every citation is then reported as `unchecked` rather than
+  // quietly treated as fine.
+  github,
 });
 
 /**
@@ -113,30 +118,9 @@ async function sweep(): Promise<void> {
 
 const timer = setInterval(() => void sweep(), SWEEP_MS);
 
-/**
- * Completions that cited a pull request nobody ever merged.
- *
- * The expensive failure this whole feature exists for. A completion citing
- * something real that never landed reads exactly like a good one, forever, unless
- * something goes looking — and only elapsed time can tell the two apart. Hourly,
- * because the signal is "a day has passed", not "a minute has".
- */
-const UNLANDED_AFTER_HOURS = Number(process.env['UNLANDED_AFTER_HOURS'] ?? 24);
-const unlandedTimer = setInterval(
-  () => {
-    void sweepUnlanded({ pool, plane }, UNLANDED_AFTER_HOURS)
-      .then((n) => {
-        if (n) app.log.warn({ count: n }, 'completions cited evidence that never landed');
-      })
-      .catch((err: unknown) => app.log.error({ err }, 'unlanded sweep failed'));
-  },
-  Number(process.env['UNLANDED_SWEEP_MS'] ?? 3_600_000),
-);
-
 async function shutdown(signal: string): Promise<void> {
   app.log.info({ signal }, 'shutting down');
   clearInterval(timer);
-  clearInterval(unlandedTimer);
   await app.close();
   // Child MCP processes are ours to clean up; leaving them would strand one node
   // process per agent identity after every restart.

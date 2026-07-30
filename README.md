@@ -248,48 +248,47 @@ point; they share an instance but are separate databases.
 **Running two gateway replicas** reopens an out-of-order display bug in the Plane
 mirror — finished work can show as "In Progress". The lease stays correct either way.
 
-## Verifying completions against GitHub
+## Checking completions against GitHub
 
-`complete` takes an agent's word for it. The webhook receiver is what checks that word
-against something that actually happened.
+`complete` takes an agent's word for it. If the gateway knows where the code
+lives, it checks that word *while the agent is still on the call* — no webhook,
+no polling, no background loop. `complete` **is** the notification.
 
-Add a webhook in the repository: **Settings → Webhooks → Add webhook**.
+Set either of these in `deploy/.env` and restart:
 
-| Field | Value |
+```bash
+GITHUB_REPO=owner/name     # where bare commit shas are looked up
+GITHUB_TOKEN=ghp_...       # read-only. Required for private repositories
+```
+
+Every citation in the outcome comes back with a verdict:
+
+| Status | Meaning |
 |---|---|
-| Payload URL | `https://<your-gateway>/v1/webhooks/github` |
-| Content type | `application/json` |
-| Secret | the same string as `GITHUB_WEBHOOK_SECRET` in `deploy/.env` |
-| Events | *Pull requests* and *Pushes* |
+| `landed` | Merged, or an ancestor of the default branch |
+| `pending` | Real, not merged yet. An open pull request at completion time is normal |
+| `absent` | GitHub says there is no such thing. The item is labelled `evidence-missing` |
+| `unchecked` | Not askable — no token, no repo, not a GitHub link, or GitHub was unreachable |
 
-Restart the gateway after setting the secret. Without it the endpoint answers 503 and
-says so — the signature is its only authentication, so there is no mode where it
-accepts unsigned deliveries.
+Two labels, deliberately distinct. `unverified` means the completion cited
+**nothing**; `evidence-missing` means it cited something specific that does not
+exist. The first is an agent being terse, the second is an agent being wrong.
 
-**What a reference means.** Write the qualified form, `SYNC-42`, not `#42` — inside a
-pull request `#42` is a GitHub issue, and reading it as ours would let an ordinary
-cross-reference close unrelated work.
+**It never blocks on GitHub.** Anything that fails — no token, a timeout, a 5xx,
+a rate limit — becomes `unchecked`, which is a stated absence of information
+rather than an accusation. A lease must not fail to end because a third party
+was slow.
 
-- `Fixes SYNC-42` / `Closes SYNC-42` / `Resolves SYNC-42` on a **merged** pull request
-  closes the item, with a comment naming the pull request. Nobody has to assert
-  anything.
-- A bare mention (`Groundwork for SYNC-42`) records the evidence and moves nothing.
-- If an agent holds the lease, the item stays open and the holder is told — their own
-  `complete` is corroborated the moment they call it.
-- A pull request closed **without** merging does nothing at all.
+**Without a token it will not accuse.** A private repository answers 404 to a
+stranger exactly as a nonexistent one does, so an unauthenticated 404 is reported
+`unchecked`, never `absent`.
 
-**Both orderings work.** If the merge arrives first, the agent's later `complete`
-comes back `verified: true`. If the completion comes first, the merge confirms it and
-lifts the `unverified` label. `history` shows what was claimed and what was observed.
+`REQUIRE_EVIDENCE=refuse` turns `absent` into a rejected `complete` — checked
+*before* the lease ends, so a refused agent still holds its work.
 
-**Completions that never landed.** Hourly, any completion citing a pull request that
-has not appeared after `UNLANDED_AFTER_HOURS` (default 24) is labelled
-`evidence-missing` and commented once. That label means *cited something specific that
-does not exist*; `unverified` means *cited nothing at all*. They are different
-failures and worth telling apart.
-
-Set `GITHUB_AUTOCLOSE=off` to keep the evidence trail without letting a merge
-transition anything.
+What this deliberately does **not** do is watch for the pull request to merge
+later. That would need a receiver or a poller, and the failure worth catching is
+the citation that resolves to nothing, which is visible immediately.
 
 ## Troubleshooting
 
@@ -308,9 +307,9 @@ transition anything.
 | `next` returns nothing | Call `why` on the item you expected. It reports the gate's own reasons — no description, blocked, leased, unfinished children, label, capability mismatch |
 | Plane shows "In Progress" for finished work | Mirror write failed. `docker compose logs gateway \| grep 'plane mirror failed'` |
 | Gateway crash-loops on `PLANE_API_KEY is not set` | `.env` was read before provisioning filled it in. Re-run `docker compose up -d gateway` |
-| Webhook deliveries show 503 | `GITHUB_WEBHOOK_SECRET` is unset. Set it in `deploy/.env` and restart the gateway |
-| Webhook deliveries show 401 | The repository's secret does not match `GITHUB_WEBHOOK_SECRET`. They must be byte-identical |
-| Webhook 200s but nothing happens | Check the response body's `refs`. `no-such-item` means the identifier is not a project the gateway's token can see; `mentioned` means the text had no closing keyword |
+| Every citation comes back `unchecked` | Neither `GITHUB_TOKEN` nor `GITHUB_REPO` is set, so checking is off |
+| A real commit is reported `absent` | `GITHUB_REPO` points at the wrong repository, or the sha is on a fork the token cannot see |
+| A private repo's citations are `unchecked` | Set `GITHUB_TOKEN`. Without it a private 404 is indistinguishable from a missing one, and the gateway will not guess |
 
 ## Tests
 

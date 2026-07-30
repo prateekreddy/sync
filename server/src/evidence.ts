@@ -5,9 +5,10 @@
  * ends and the item closes on an agent's unverified word, and nothing downstream
  * can tell a completion backed by a merged PR from one backed by nothing.
  *
- * This is the cheap half of that problem — SYNC-2's webhook verifies the claim
- * *after* the fact and needs a receiver. This catches the *empty* claim now, at
- * the moment it is made, with no external dependency.
+ * This half asks only "did you cite anything at all", which needs nothing but the
+ * string. Whether what was cited actually exists is a separate question with a
+ * separate answer — see ghcheck.ts, which asks GitHub while the agent is still on
+ * the call.
  *
  * A pure predicate over a string, deliberately: detection is a primitive, and
  * what to do about a completion with no evidence is policy the caller applies.

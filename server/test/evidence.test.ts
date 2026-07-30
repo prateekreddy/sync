@@ -4,8 +4,8 @@ import { findEvidence, evidenceWarning } from '../src/evidence.js';
 /**
  * `complete` takes free text and accepts anything, including "done". Nothing
  * downstream can tell a completion backed by a merged PR from one backed by
- * nothing — SYNC-2's webhook checks the claim afterwards, this catches the empty
- * claim at the moment it is made.
+ * nothing. This catches the empty claim; ghcheck.ts asks GitHub whether a
+ * non-empty one is true.
  *
  * The bar is deliberately low. This is not verification, it is "did you cite
  * anything at all", and a false positive costs nothing while a false negative
