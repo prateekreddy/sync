@@ -87,7 +87,8 @@ const ask = (plane: PlaneClient, capabilities?: string[]) =>
 describe('explain', () => {
   it('says an ordinary ready item is claimable, with nothing to report', async () => {
     const got = await ask(fakePlane([item()]));
-    expect(got).toMatchObject({ claimable: true, reasons: [], readableId: '#42' });
+    expect(got).toMatchObject({ claimable: true, reasons: [] });
+    expect(got.item.readableId).toBe('#42');
   });
 
   it('names the live holder and when the lease runs out', async () => {
@@ -101,7 +102,9 @@ describe('explain', () => {
     });
     const got = await ask(fakePlane([item()]));
     expect(got.claimable).toBe(false);
-    expect(got.heldBy?.holder).toBe('agent:someone-else');
+    // One spelling for a lease, the same one tree and find use.
+    expect(got.item.holder).toBe('agent:someone-else');
+    expect(got.item.expiresAt).toMatch(/^20/);
     expect(got.reasons.join(' ')).toContain('agent:someone-else');
   });
 
@@ -114,7 +117,7 @@ describe('explain', () => {
     });
     await pool.query("update lease set expires_at = now() - interval '1 second'");
     const got = await ask(fakePlane([item()]));
-    expect(got.heldBy).toBeUndefined();
+    expect(got.item.holder).toBeUndefined();
     expect(got.claimable).toBe(true);
   });
 

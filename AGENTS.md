@@ -28,6 +28,32 @@ refuses it, and the reason it refuses is in `docs/architecture.md`.
 To break a large item up, call `capture` once per child with `parentId` set to the
 large item. A parent with unfinished children is deliberately unclaimable.
 
+## How to build here
+
+**Design from primitives.** A feature is a composition of primitives. Before
+implementing, name the primitive: does it exist, is this a composition of ones
+that do, or does a new one belong? Then build the primitive and let the feature
+fall out of it.
+
+**When the same decision is made in more than one place, a primitive is missing.**
+A boolean flag, a duplicated response shape, a mapping repeated at three call
+sites — each is the shadow of something that should exist once. Every design
+defect found in this repo so far has been that: `verbose: boolean` where a
+projection belonged, five read tools hand-building five shapes for one work item,
+a label gate matching names against uuids because resolution lived nowhere.
+
+**Prefer the shape that makes the bug impossible over the patch that fixes this
+instance.** Resolving labels in one place beats remembering to resolve them in
+five.
+
+**Assume failures here are silent.** A gate that stops gating, a filter that
+fails open, a projection that drops a field the caller needed — none of these
+raise anything. Test the wiring, not just the predicate: this codebase has been
+bitten twice by a pure function that was correct and a caller that starved it.
+
+**Measure rather than assert**, and quote the number you can actually ship, not
+the best case you probed. Then say where it was measured.
+
 ## Working on this repo
 
 - `server/` is the gateway, `mcp/` the stdio bridge, `deploy/` the stack.

@@ -1,6 +1,7 @@
 import type { Pool } from './db.js';
 import { GatewayError } from './errors.js';
 import type { PlaneClient, State, WorkItem } from './plane.js';
+import { viewContext, viewOf, type WorkItemView } from './view.js';
 
 /**
  * The sub-tree under a work item, with lease state.
@@ -15,19 +16,16 @@ import type { PlaneClient, State, WorkItem } from './plane.js';
  * worked, and an agent that cannot tell those apart duplicates someone's run.
  */
 
-export interface TreeNode {
-  workItemId: string;
-  readableId: string;
-  title: string;
-  state: string;
-  priority: WorkItem['priority'];
-  /** Present only while someone holds it. */
-  holder?: string;
-  expiresAt?: string;
+/**
+ * A node is the shared work item view plus the two things only a tree has.
+ * Composing rather than redeclaring is what stops `tree` drifting from `find`
+ * about what a field like `labels` contains.
+ */
+export type TreeNode = WorkItemView & {
   children?: TreeNode[];
   /** Set when `depth` stopped the walk, so a truncated tree is never mistaken for a complete one. */
   truncated?: true;
-}
+};
 
 export interface Tree {
   /** Root first, ending at the requested item's parent. Empty when it is a root. */
@@ -42,19 +40,14 @@ const DONE = new Set<State['group']>(['completed', 'cancelled']);
 export async function tree(
   plane: PlaneClient,
   pool: Pool,
-  opts: { projectId: string; workItemId: string; depth?: number },
+  opts: { projectId: string; workItemId: string; depth?: number; fields?: string[] | undefined },
 ): Promise<Tree> {
   const depth = opts.depth ?? 5;
 
-  const [items, states, leases] = await Promise.all([
+  const [items, states, ctx] = await Promise.all([
     plane.listWorkItems(opts.projectId),
     plane.states(opts.projectId),
-    pool
-      .query<{ work_item_id: string; holder: string; expires_at: Date }>(
-        `select work_item_id, holder, expires_at from lease
-          where state = 'held' and expires_at > now()`,
-      )
-      .then((r) => new Map(r.rows.map((x) => [x.work_item_id, x]))),
+    viewContext(plane, pool, opts.projectId, opts.fields),
   ]);
 
   const byId = new Map(items.map((i) => [i.id, i]));
@@ -77,15 +70,7 @@ export async function tree(
   let open = 0;
 
   const build = (item: WorkItem, left: number, seen: Set<string>): TreeNode => {
-    const held = leases.get(item.id);
-    const node: TreeNode = {
-      workItemId: item.id,
-      readableId: `#${item.sequence_id}`,
-      title: item.name,
-      state: states.find((s) => s.id === item.state)?.name ?? 'unknown',
-      priority: item.priority,
-      ...(held ? { holder: held.holder, expiresAt: held.expires_at.toISOString() } : {}),
-    };
+    const node: TreeNode = viewOf(item, ctx);
 
     // A cycle cannot be produced through `capture`, but `update_issue` can set any
     // parent and Plane does not stop it. Recursing forever on someone's mistake is

@@ -12,6 +12,22 @@ import { z } from 'zod';
 
 const uuid = z.string().uuid();
 
+/**
+ * Field selection, defined once and shared by every read tool.
+ *
+ * Bolting a different flag onto each tool is how `verbose: boolean` happened.
+ * Selection is a property of the shared work-item view, so it is one parameter
+ * with one meaning wherever it appears.
+ */
+const fields = z
+  .string()
+  .optional()
+  .describe(
+    'Comma-separated keys to return per item, e.g. "workItemId,title,holder". ' +
+      'Omit for the full view: workItemId, readableId, title, priority, state, labels, ' +
+      'parentId, holder, expiresAt, updatedAt. workItemId is always returned.',
+  );
+
 export const DEFAULT_TTL = 600;
 export const MAX_TTL = 3600;
 
@@ -48,6 +64,7 @@ export const CaptureBody = z.object({
 export const NextQuery = z.object({
   projectId: uuid,
   limit: z.coerce.number().int().min(1).max(50).default(10),
+  fields,
 });
 
 export const WhyQuery = z.object({
@@ -59,6 +76,7 @@ export const TreeQuery = z.object({
   projectId: uuid,
   workItemId: uuid,
   depth: z.coerce.number().int().min(1).max(10).default(5),
+  fields,
 });
 
 export const DecomposeBody = z.object({
@@ -97,6 +115,7 @@ export const FindQuerySchema = z.object({
   parentId: uuid.optional().describe('Direct children of this item.'),
   ready: z.coerce.boolean().optional().describe('Only items claim would accept.'),
   limit: z.coerce.number().int().min(1).max(100).default(25),
+  fields,
 });
 
 export const ClaimBody = z.object({

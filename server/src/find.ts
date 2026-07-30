@@ -1,6 +1,7 @@
 import type { Pool } from './db.js';
 import type { PlaneClient, State, WorkItem } from './plane.js';
 import { screen } from './readiness.js';
+import { viewContext, viewOf, type WorkItemView } from './view.js';
 
 /**
  * Filtered queries over a project's work.
@@ -35,20 +36,11 @@ export interface FindQuery {
   parentId?: string | undefined;
   ready?: boolean | undefined;
   limit?: number | undefined;
-}
-
-export interface FoundItem {
-  workItemId: string;
-  readableId: string;
-  title: string;
-  priority: WorkItem['priority'];
-  state: string;
-  labels: string[];
-  holder?: string;
+  fields?: string[] | undefined;
 }
 
 export interface FindResult {
-  items: FoundItem[];
+  items: WorkItemView[];
   /** Matches before `limit` was applied, so a truncated answer is visibly truncated. */
   matched: number;
 }
@@ -60,20 +52,15 @@ export async function find(
 ): Promise<FindResult> {
   const limit = q.limit ?? 25;
 
-  const [items, states, labelNames, leases, moduleMembers] = await Promise.all([
+  const [items, states, ctx, moduleMembers] = await Promise.all([
     plane.listWorkItems(q.projectId),
     plane.states(q.projectId),
-    plane.labelNames(q.projectId),
-    pool
-      .query<{ work_item_id: string; holder: string }>(
-        `select work_item_id, holder from lease where state = 'held' and expires_at > now()`,
-      )
-      .then((r) => new Map(r.rows.map((x) => [x.work_item_id, x.holder]))),
+    viewContext(plane, pool, q.projectId, q.fields),
     q.moduleId ? plane.moduleIssueIds(q.projectId, q.moduleId) : Promise.resolve(null),
   ]);
 
+  const { labelNames, leases } = ctx;
   const groupOf = new Map(states.map((s) => [s.id, s.group]));
-  const nameOf = new Map(states.map((s) => [s.id, s.name]));
   const wantedLabels = (q.labels ?? []).map((l) => l.trim().toLowerCase()).filter(Boolean);
 
   // Only needed for `ready`, and it is derived from the list we already have.
@@ -103,7 +90,7 @@ export async function find(
     }
 
     if (q.holder) {
-      const held = leases.get(i.id);
+      const held = leases.get(i.id)?.holder;
       if (q.holder === 'none' && held) return false;
       if (q.holder === 'any' && !held) return false;
       if (q.holder !== 'none' && q.holder !== 'any' && held !== q.holder) return false;
@@ -118,19 +105,5 @@ export async function find(
     return true;
   });
 
-  return {
-    matched: matches.length,
-    items: matches.slice(0, limit).map((i) => {
-      const held = leases.get(i.id);
-      return {
-        workItemId: i.id,
-        readableId: `#${i.sequence_id}`,
-        title: i.name,
-        priority: i.priority,
-        state: nameOf.get(i.state) ?? 'unknown',
-        labels: i.labels.map((id) => labelNames.get(id) ?? id),
-        ...(held ? { holder: held } : {}),
-      };
-    }),
-  };
+  return { matched: matches.length, items: matches.slice(0, limit).map((i) => viewOf(i, ctx)) };
 }

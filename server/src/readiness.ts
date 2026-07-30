@@ -1,6 +1,7 @@
 import type { Pool } from './db.js';
 import { GatewayError } from './errors.js';
 import type { PlaneClient, State, WorkItem } from './plane.js';
+import { viewContext, viewOf, type WorkItemView } from './view.js';
 
 /**
  * Readiness gate.
@@ -23,15 +24,8 @@ const PRIORITY_RANK: Record<WorkItem['priority'], number> = {
   none: 4,
 };
 
-export interface Candidate {
-  workItemId: string;
-  projectId: string;
-  readableId: string;
-  title: string;
-  priority: WorkItem['priority'];
-  labels: string[];
-  updatedAt: string;
-}
+/** @deprecated Candidates are `WorkItemView`s now; kept only as a type alias. */
+export type Candidate = WorkItemView;
 
 export interface NotReady {
   workItemId: string;
@@ -97,6 +91,7 @@ interface ReadyOpts {
   projectId: string;
   capabilities?: string[];
   limit?: number;
+  fields?: string[] | undefined;
 }
 
 /**
@@ -110,19 +105,15 @@ export async function readyCandidates(
   pool: Pool,
   opts: ReadyOpts,
 ): Promise<Candidate[]> {
-  const [items, states, labelNames, leased] = await Promise.all([
+  const [items, states, ctx] = await Promise.all([
     plane.listWorkItems(opts.projectId),
     plane.states(opts.projectId),
-    // Both the blocking-label gate and capability routing below match on names,
-    // and a work item carries only label ids. Cached client-side, so this costs
-    // one request per project per minute rather than one per browse.
-    plane.labelNames(opts.projectId),
-    pool
-      .query<{ work_item_id: string }>(
-        `select work_item_id from lease where state = 'held' and expires_at > now()`,
-      )
-      .then((r) => new Set(r.rows.map((x) => x.work_item_id))),
+    // One context, shared with every other read tool, so `labels` means the same
+    // thing here as it does in find and tree.
+    viewContext(plane, pool, opts.projectId, opts.fields),
   ]);
+  const labelNames = ctx.labelNames;
+  const leased = ctx.leases;
 
   const groupOf = new Map(states.map((s) => [s.id, s.group]));
 
@@ -148,24 +139,14 @@ export async function readyCandidates(
         a.created_at.localeCompare(b.created_at),
     )
     .slice(0, opts.limit ?? 20)
-    .map((i) => ({
-      workItemId: i.id,
-      projectId: opts.projectId,
-      readableId: `#${i.sequence_id}`,
-      title: i.name,
-      priority: i.priority,
-      labels: i.labels,
-      updatedAt: i.updated_at,
-    }));
+    .map((i) => viewOf(i, ctx));
 }
 
 export interface Explanation {
-  workItemId: string;
-  readableId: string;
-  title: string;
+  /** The item itself, in the same shape every other read tool returns. */
+  item: WorkItemView;
   claimable: boolean;
   reasons: string[];
-  heldBy?: { holder: string; expiresAt: string };
 }
 
 /**
@@ -184,18 +165,13 @@ export async function explain(
   pool: Pool,
   opts: { projectId: string; workItemId: string; capabilities?: string[] },
 ): Promise<Explanation> {
-  const [items, states, labelNames, held] = await Promise.all([
+  const [items, states, ctx] = await Promise.all([
     plane.listWorkItems(opts.projectId),
     plane.states(opts.projectId),
-    plane.labelNames(opts.projectId),
-    pool
-      .query<{ holder: string; expires_at: Date }>(
-        `select holder, expires_at from lease
-          where work_item_id = $1 and state = 'held' and expires_at > now()`,
-        [opts.workItemId],
-      )
-      .then((r) => r.rows[0]),
+    viewContext(plane, pool, opts.projectId),
   ]);
+  const labelNames = ctx.labelNames;
+  const held = ctx.leases.get(opts.workItemId);
 
   const item = items.find((i) => i.id === opts.workItemId);
   if (!item) {
@@ -211,7 +187,7 @@ export async function explain(
   // A live lease is not a defect in the item, so the gate filters it separately
   // from screening. To someone asking why they cannot have it, it is the answer.
   if (held) {
-    reasons.push(`held by ${held.holder} until ${held.expires_at.toISOString()}`);
+    reasons.push(`held by ${held.holder} until ${held.expiresAt}`);
   }
 
   const wanted = (opts.capabilities ?? []).map((c) => c.toLowerCase());
@@ -229,14 +205,9 @@ export async function explain(
 
   reasons.push(...(await verifyClaimable(plane, opts.projectId, opts.workItemId)));
 
-  return {
-    workItemId: item.id,
-    readableId: `#${item.sequence_id}`,
-    title: item.name,
-    claimable: reasons.length === 0,
-    reasons,
-    ...(held ? { heldBy: { holder: held.holder, expiresAt: held.expires_at.toISOString() } } : {}),
-  };
+  // The item comes back as the same view every other tool returns, so "yes you
+  // may claim this" also answers "and is it worth claiming" without a second call.
+  return { item: viewOf(item, ctx), claimable: reasons.length === 0, reasons };
 }
 
 /** Unfinished sub-items, keyed by parent. Derived from a list already in hand. */

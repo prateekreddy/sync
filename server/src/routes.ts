@@ -31,6 +31,7 @@ import type { PlaneMcp } from './planemcp.js';
 import { explain, readyCandidates, verifyClaimable } from './readiness.js';
 import { find } from './find.js';
 import { tree } from './tree.js';
+import { parseFields } from './view.js';
 import { handleMcpHttp } from './mcphttp.js';
 import { callTool, listTools } from './tools.js';
 import {
@@ -550,8 +551,10 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       projectId: q.projectId,
       ...(actor.capabilities.length ? { capabilities: actor.capabilities } : {}),
       limit: q.limit,
+      ...(parseFields(q.fields) ? { fields: parseFields(q.fields) } : {}),
     });
-    return { candidates };
+    // The project belongs on the envelope, not repeated on every row.
+    return { projectId: q.projectId, candidates };
   });
 
   // ── why (read-only diagnostic) ───────────────────────────────────────────
@@ -569,7 +572,11 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   app.get('/v1/tree', async (req) => {
     const query = TreeQuery.parse(req.query);
     await actorOf(req);
-    return tree(plane, pool, query);
+    const { fields: rawFields, ...rest } = query;
+    return tree(plane, pool, {
+      ...rest,
+      ...(parseFields(rawFields) ? { fields: parseFields(rawFields) } : {}),
+    });
   });
 
   // ── find (read-only) ─────────────────────────────────────────────────────
@@ -586,6 +593,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       ...(f.parentId ? { parentId: f.parentId } : {}),
       ...(f.ready ? { ready: f.ready } : {}),
       limit: f.limit,
+      ...(parseFields(f.fields) ? { fields: parseFields(f.fields) } : {}),
     });
   });
 
@@ -642,7 +650,10 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       if ((await verifyClaimable(plane, b.projectId, c.workItemId)).length) continue;
       const l = await lease.claim(pool, {
         workItemId: c.workItemId,
-        projectId: c.projectId,
+        // The candidate came from a project-scoped query, so the project is the
+        // one asked for. Repeating it on every row was the redundancy the shared
+        // view exists to remove.
+        projectId: b.projectId,
         holder: actor.holder,
         holderChain: chain,
         ttlSeconds: b.ttlSeconds,

@@ -73,6 +73,9 @@ const fakePlane = (items: WorkItem[]): PlaneClient =>
   Object.assign(new PlaneClient('http://plane.invalid', 'k', 'ws'), {
     listWorkItems: async () => items,
     states: async () => STATES,
+    // The shared view context resolves label ids to names, so every fake feeding
+    // a read tool has to answer this or it falls through to a real fetch.
+    labels: async () => [],
   });
 
 const ask = (items: WorkItem[], key: string, depth?: number) =>
