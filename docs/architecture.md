@@ -342,6 +342,37 @@ the scheme falls back to the one the request arrived on rather than to `https` �
 advertising `https` to a gateway reached over HTTP sends the client to a port
 nothing is listening on.
 
+### Revocation has to be self-service too
+
+Self-service minting with CLI-only revocation is asymmetric in the dangerous
+direction: anyone can create an agent and nobody can retire one without a shell
+on the gateway host — so the person best placed to notice a leaked token is the
+one who cannot act on it.
+
+Two paths, because they answer different questions:
+
+- **`DELETE /v1/agent-tokens/<agent>`**, authenticated by the owner's Plane token.
+  Works from anywhere, for tokens issued by either route, and covers the case the
+  client cannot: a machine you no longer have.
+- **`POST /oauth/revoke`** (RFC 7009), authenticated by presenting the token
+  itself. Advertised in the metadata so a client that revokes on logout makes
+  "Clear authentication" mean the token stops working everywhere rather than
+  merely disappearing from one keychain.
+
+Presenting a credential is sufficient authorisation to retire it: whoever holds
+it can already use it, so revoking removes capability rather than granting any.
+Revocation by *name* needs the ownership predicate for the opposite reason —
+without it, anyone could disable anyone else's agents, a denial of service that
+requires no credential of the victim's.
+
+The by-name path tries the caller-qualified form first and then the bare one, so
+CLI-issued tokens — which are not namespaced — remain revocable. Both attempts
+are ownership-checked, so the fallback widens what you can *name*, never whose
+agents you can touch.
+
+`revoke` answers 200 for an unknown token, as the RFC requires: an endpoint that
+distinguished them would be an oracle for testing whether a stolen token is live.
+
 Headless runs cannot complete a browser flow, so the `Authorization` header path
 remains supported rather than deprecated. Claude Code treats a configured header
 as authoritative and will not fall back to OAuth if it is rejected, so the two are

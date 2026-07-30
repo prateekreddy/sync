@@ -80,6 +80,42 @@ rejected token fails here rather than inside an agent session. Every value comes
 from a flag, then an environment variable, then a prompt. `--client codex` prints
 Codex config instead of registering.
 
+## Revoking an agent
+
+```bash
+curl -sS -X DELETE https://<gateway-host>/v1/agent-tokens/worker-1 \
+  -H "Authorization: Bearer plane_api_..."
+```
+
+The token stops working immediately; an agent still using it gets
+`UNAUTHENTICATED` on its next call. You can only revoke agents you own. Give the
+bare name (`worker-1`) or the full one (`you/worker-1`) — both work.
+
+To bring the agent back, mint the same name again. It gets a fresh token and
+keeps its project binding.
+
+**`claude mcp logout sync` and "Clear authentication" in `/mcp` are not this.**
+They delete the stored credential from that machine only; the token stays valid
+everywhere else. Use them to sign out, and the call above when a token may have
+leaked or a machine is gone.
+
+A client that supports OAuth revocation can do both at once — the gateway
+advertises `revocation_endpoint` (RFC 7009), and a token presented there is
+retired server-side:
+
+```bash
+curl -sS -X POST https://<gateway-host>/oauth/revoke \
+  -H 'Content-Type: application/json' -d '{"token":"sync_agent_..."}'
+```
+
+That endpoint always answers 200, including for a token that never existed, so it
+cannot be used to test whether one is live. Whether `claude mcp logout` calls it
+is up to the client and is not verified here — use the `DELETE` above when you
+need to be certain.
+
+`MINT_TOKENS=off` disables `DELETE` along with minting, leaving
+`revoke-token` on the CLI.
+
 ## Rules
 
 - **Give the agent only the `sync_agent_…` token.** Never give it your Plane

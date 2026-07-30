@@ -137,6 +137,16 @@ Set `GATEWAY_PUBLIC_URL` in `deploy/.env` to the URL agents use. Sign-in builds
 every address from it, and behind a proxy that does not forward the original host
 it cannot be inferred.
 
+To retire an agent — you can only revoke your own:
+
+```bash
+curl -sS -X DELETE https://<gateway-host>/v1/agent-tokens/worker-1 \
+  -H "Authorization: Bearer plane_api_..."
+```
+
+`claude mcp logout` only clears the local copy. Use the call above when a token
+may have leaked or a machine is gone.
+
 The stdio bridge in `mcp/` is there for clients that cannot speak HTTP transport.
 Both doors lead to the same catalogue and the same policy.
 
