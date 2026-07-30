@@ -61,6 +61,24 @@ export const TreeQuery = z.object({
   depth: z.coerce.number().int().min(1).max(10).default(5),
 });
 
+export const FindQuerySchema = z.object({
+  projectId: uuid,
+  labels: z
+    .string()
+    .optional()
+    .describe('Comma-separated label names. An item must carry all of them.'),
+  priority: z.enum(['urgent', 'high', 'medium', 'low', 'none']).optional(),
+  stateGroup: z.enum(['backlog', 'unstarted', 'started', 'completed', 'cancelled']).optional(),
+  moduleId: uuid.optional().describe('Only items in this module.'),
+  holder: z
+    .string()
+    .optional()
+    .describe("An agent name, or 'any' for anything currently held, or 'none' for unheld."),
+  parentId: uuid.optional().describe('Direct children of this item.'),
+  ready: z.coerce.boolean().optional().describe('Only items claim would accept.'),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+});
+
 export const ClaimBody = z.object({
   projectId: uuid,
   workItemId: uuid.optional().describe('Omit to let the gateway pick the best ready item.'),
@@ -173,6 +191,20 @@ export const NATIVE_TOOLS: NativeTool[] = [
     schema: TreeQuery,
     method: 'GET',
     request: (a) => ({ path: q('/v1/tree', a) }),
+  },
+  {
+    name: 'find',
+    title: 'Search this project',
+    description:
+      'Filter a project\'s work by label, priority, state group, module, parent, or who is ' +
+      'holding it — and combine them. Returns compact rows plus `matched`, the number of hits ' +
+      'before `limit`. Plane\'s own list tools cannot filter at all, so use this rather than ' +
+      'listing the project and sifting it yourself. `holder` is unique to this tool: it comes ' +
+      'from the lease table, so \'any\' shows what the fleet is working on and \'none\' shows ' +
+      'what is free. `ready: true` applies the same gate claim uses.',
+    schema: FindQuerySchema,
+    method: 'GET',
+    request: (a) => ({ path: q('/v1/find', a) }),
   },
   {
     name: 'claim',

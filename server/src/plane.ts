@@ -254,6 +254,25 @@ export class PlaneClient {
     return { id: me.id ?? '', email: me.email ?? '' };
   }
 
+  /**
+   * Work item ids in a module.
+   *
+   * Note this route returns a bare array of full work items rather than Plane's
+   * usual paginated envelope, so it cannot go through `listAll`. Only the ids are
+   * kept — the caller already has the items from the project listing, and Plane
+   * will not filter that listing for us anyway.
+   *
+   * Requires `module_view` on the project; without it Plane answers 404, which
+   * reads like a wrong URL rather than a disabled feature.
+   */
+  async moduleIssueIds(projectId: string, moduleId: string): Promise<Set<string>> {
+    const rows = await this.request<Array<{ id: string }>>(
+      'GET',
+      `/projects/${projectId}/modules/${moduleId}/module-issues/`,
+    );
+    return new Set((rows ?? []).map((r) => r.id));
+  }
+
   /** Workspace-wide search. Backs capture's dedup-on-write. */
   async search(query: string): Promise<Array<{ id: string; name: string; sequence_id: number; project_id: string; project__identifier: string }>> {
     const res = await this.request<{ issues?: Array<Record<string, unknown>> }>(

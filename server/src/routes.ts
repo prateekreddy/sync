@@ -28,6 +28,7 @@ import { mirrorClaim, mirrorComplete, mirrorReturn } from './mirror.js';
 import type { PlaneClient } from './plane.js';
 import type { PlaneMcp } from './planemcp.js';
 import { explain, readyCandidates, verifyClaimable } from './readiness.js';
+import { find } from './find.js';
 import { tree } from './tree.js';
 import { handleMcpHttp } from './mcphttp.js';
 import { callTool, listTools } from './tools.js';
@@ -37,6 +38,7 @@ import {
   CompleteBody,
   HeartbeatBody,
   LinkBody,
+  FindQuerySchema,
   NextQuery,
   TreeQuery,
   WhyQuery,
@@ -559,6 +561,23 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     const query = TreeQuery.parse(req.query);
     await actorOf(req);
     return tree(plane, pool, query);
+  });
+
+  // ── find (read-only) ─────────────────────────────────────────────────────
+  app.get('/v1/find', async (req) => {
+    await actorOf(req);
+    const f = FindQuerySchema.parse(req.query);
+    return find(plane, pool, {
+      projectId: f.projectId,
+      ...(f.labels ? { labels: f.labels.split(',') } : {}),
+      ...(f.priority ? { priority: f.priority } : {}),
+      ...(f.stateGroup ? { stateGroup: f.stateGroup } : {}),
+      ...(f.moduleId ? { moduleId: f.moduleId } : {}),
+      ...(f.holder ? { holder: f.holder } : {}),
+      ...(f.parentId ? { parentId: f.parentId } : {}),
+      ...(f.ready ? { ready: f.ready } : {}),
+      limit: f.limit,
+    });
   });
 
   // ── claim ────────────────────────────────────────────────────────────────
