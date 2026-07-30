@@ -143,6 +143,72 @@ export async function revokeOwnedAgent(
   return rows.length > 0;
 }
 
+export interface OwnedAgent {
+  name: string;
+  active: boolean;
+  capabilities: string[];
+  principal: string;
+  defaultProjectId: string | null;
+  /** Whether this agent writes to Plane as itself rather than the service account. */
+  writesAsItself: boolean;
+  createdAt: string;
+  lastSeenAt: string | null;
+}
+
+/**
+ * The agents a Plane user owns.
+ *
+ * Minting and revoking were both self-service and enumeration was not, so anyone
+ * who forgot an agent's name could never revoke it — exactly the lost-laptop case
+ * revocation exists for. It came up for real while closing SYNC-5: the leaked
+ * Plane token could be probed and confirmed dead, and the leaked *agent* tokens
+ * could not be listed at all.
+ *
+ * Revoked agents are included, deliberately. "Did my revoke work?" is the first
+ * question after a revoke, and an endpoint that answers it by omission cannot be
+ * told apart from one that lost the row.
+ *
+ * Scoped by `plane_user_id`, which means agents issued from the CLI without
+ * `--plane-token` — whose owner is genuinely unknown to the database — never
+ * appear here. That is not a gap to route around: those belong to whoever has a
+ * shell, and `cli.js list-tokens` shows them all. Widening this endpoint to cover
+ * them would mean showing one person another person's agents.
+ *
+ * Never returns the token or its hash. The token is shown once at issue time and
+ * is unrecoverable by construction; an endpoint that could hand it back would
+ * quietly undo that.
+ */
+export async function listOwnedAgents(pool: Pool, planeUserId: string): Promise<OwnedAgent[]> {
+  const { rows } = await pool.query<{
+    name: string;
+    active: boolean;
+    capabilities: string[];
+    principal: string;
+    default_project_id: string | null;
+    has_plane_token: boolean;
+    created_at: Date;
+    last_seen_at: Date | null;
+  }>(
+    `select name, active, capabilities, principal, default_project_id,
+            plane_token_enc is not null as has_plane_token, created_at, last_seen_at
+       from agent_token
+      where plane_user_id = $1
+      order by active desc, name`,
+    [planeUserId],
+  );
+
+  return rows.map((r) => ({
+    name: r.name,
+    active: r.active,
+    capabilities: r.capabilities,
+    principal: r.principal,
+    defaultProjectId: r.default_project_id,
+    writesAsItself: r.has_plane_token,
+    createdAt: r.created_at.toISOString(),
+    lastSeenAt: r.last_seen_at ? r.last_seen_at.toISOString() : null,
+  }));
+}
+
 export async function authenticate(pool: Pool, bearer: string | undefined): Promise<Actor> {
   const token = bearer?.replace(/^Bearer\s+/i, '').trim();
   if (!token) throw new GatewayError('UNAUTHENTICATED', 'No Authorization: Bearer <token> header');

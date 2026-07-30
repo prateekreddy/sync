@@ -141,6 +141,19 @@ Set `GATEWAY_PUBLIC_URL` in `deploy/.env` to the URL agents use. Sign-in builds
 every address from it, and behind a proxy that does not forward the original host
 it cannot be inferred.
 
+To see the agents you own — names, project binding, and whether each is still
+active:
+
+```bash
+curl -sS https://<gateway-host>/v1/agent-tokens \
+  -H "Authorization: Bearer plane_api_..."
+```
+
+Revoked agents stay in the list, marked inactive, so "did my revoke work?" has an
+answer. Agents issued from the CLI without `--plane-token` have no recorded Plane
+owner and appear for nobody; an operator sees every agent with
+`node dist/cli.js list-tokens`.
+
 To retire an agent — you can only revoke your own:
 
 ```bash

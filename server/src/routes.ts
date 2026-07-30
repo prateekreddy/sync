@@ -5,6 +5,7 @@ import {
   authenticate,
   chainFor,
   issueToken,
+  listOwnedAgents,
   revokeByToken,
   revokeOwnedAgent,
   type Actor,
@@ -435,6 +436,50 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
    * The name may be given bare ("worker-1") or fully qualified ("you/worker-1");
    * a bare one is namespaced to the caller, so it can only ever address their own.
    */
+  // ── list your own agents ─────────────────────────────────────────────────
+  //
+  // The third side of the self-service triangle. Minting and revoking were both
+  // possible without an operator and enumeration was not, so an agent whose name
+  // you had forgotten could never be revoked — which is the situation revocation
+  // exists for. Gated with the other two: an operator who turns self-service off
+  // expects the whole surface gone, not two thirds of it.
+  app.get('/v1/agent-tokens', async (req, reply) => {
+    if (!deps.allowMinting) {
+      throw new GatewayError(
+        'FORBIDDEN',
+        'Self-service token management is disabled on this gateway (MINT_TOKENS=off). Ask your operator to list them with the CLI.',
+      );
+    }
+    if (!mintAllowed(req.ip, Date.now())) {
+      return reply.status(429).send({
+        error: 'RATE_LIMITED',
+        message: 'Too many requests from this address.',
+        recovery: 'Wait a minute and try again.',
+      });
+    }
+
+    const planeToken = (req.headers['authorization'] as string | undefined)
+      ?.replace(/^Bearer\s+/i, '')
+      .trim();
+    if (!planeToken) {
+      throw new GatewayError(
+        'UNAUTHENTICATED',
+        'Send your Plane personal token as Authorization: Bearer <token>.',
+      );
+    }
+
+    const identity = await identify(deps.planeBaseUrl, planeToken);
+    const agents = await listOwnedAgents(pool, identity.id);
+    return {
+      agents,
+      // Said rather than left to be inferred from an empty list: agents issued
+      // from the CLI without --plane-token have no recorded owner and cannot
+      // appear here for anyone.
+      note:
+        'Agents issued from the CLI without --plane-token have no recorded Plane owner and are not listed here. An operator can see every agent with `cli.js list-tokens`.',
+    };
+  });
+
   app.delete('/v1/agent-tokens/*', async (req, reply) => {
     if (!deps.allowMinting) {
       throw new GatewayError(

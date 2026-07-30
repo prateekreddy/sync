@@ -1,6 +1,12 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { issueToken, authenticate, revokeByToken, revokeOwnedAgent } from '../src/auth.js';
+import {
+  issueToken,
+  authenticate,
+  listOwnedAgents,
+  revokeByToken,
+  revokeOwnedAgent,
+} from '../src/auth.js';
 import { createPool } from '../src/db.js';
 import { GatewayError } from '../src/errors.js';
 import { agentName, createRateLimiter } from '../src/mint.js';
@@ -23,6 +29,7 @@ afterAll(async () => {
   // These tests create real token rows. Left behind they accumulate on every run
   // and make `list-tokens` useless for seeing what is actually deployed.
   await pool.query("delete from agent_token where name like 't-%/worker'");
+  await pool.query("delete from agent_token where name = 't-orphan/worker'");
   await pool.end();
 });
 
@@ -198,5 +205,82 @@ describe('mint rate limiter', () => {
     expect(allow('a', t0)).toBe(true);
     expect(allow('a', t0)).toBe(false);
     expect(allow('b', t0)).toBe(true);
+  });
+});
+
+/**
+ * Minting and revoking were both self-service and enumeration was not, so an
+ * agent whose name you had forgotten could never be revoked — the lost-laptop
+ * case revocation exists for. It came up for real closing SYNC-5: the leaked
+ * Plane token could be probed and confirmed dead, and the leaked agent tokens
+ * could not be listed at all.
+ */
+describe('listing your own agents', () => {
+  const owner = identity();
+  const other = identity();
+
+  it('shows yours and nobody else\'s', async () => {
+    await issueToken(pool, {
+      name: `t-${owner.id.slice(0, 8)}/worker`,
+      principal: 'human:a',
+      planeUserId: owner.id,
+    });
+    await issueToken(pool, {
+      name: `t-${other.id.slice(0, 8)}/worker`,
+      principal: 'human:b',
+      planeUserId: other.id,
+    });
+
+    const mine = await listOwnedAgents(pool, owner.id);
+    expect(mine.map((a) => a.name)).toEqual([`t-${owner.id.slice(0, 8)}/worker`]);
+  });
+
+  it('never returns the token or its hash', async () => {
+    // The token is shown once at issue time and is unrecoverable by design. An
+    // endpoint that could hand it back would quietly undo that.
+    const [agent] = await listOwnedAgents(pool, owner.id);
+    const keys = Object.keys(agent ?? {});
+    expect(keys).not.toContain('token');
+    expect(keys.some((k) => k.includes('sha') || k.includes('enc'))).toBe(false);
+  });
+
+  it('keeps showing an agent after it is revoked', async () => {
+    // "Did my revoke work?" is the first question after revoking, and an answer
+    // by omission cannot be told apart from a lost row.
+    const name = `t-${owner.id.slice(0, 8)}/worker`;
+    expect(await revokeOwnedAgent(pool, name, owner.id)).toBe(true);
+
+    const after = await listOwnedAgents(pool, owner.id);
+    expect(after.find((a) => a.name === name)?.active).toBe(false);
+  });
+
+  it('says whether an agent writes to Plane as itself', async () => {
+    // Storing a Plane token means encrypting it, which needs the key the gateway
+    // would have in production.
+    process.env.GATEWAY_TOKEN_KEY ??= 'a'.repeat(64);
+    const withToken = identity();
+    await issueToken(pool, {
+      name: `t-${withToken.id.slice(0, 8)}/worker`,
+      principal: 'human:c',
+      planeUserId: withToken.id,
+      planeToken: 'plane_api_whatever',
+    });
+    const [agent] = await listOwnedAgents(pool, withToken.id);
+    expect(agent?.writesAsItself).toBe(true);
+  });
+
+  it('returns nothing for a user who owns no agents', async () => {
+    expect(await listOwnedAgents(pool, randomUUID())).toEqual([]);
+  });
+
+  it('cannot see agents with no recorded owner', async () => {
+    // CLI-issued agents without --plane-token have a null plane_user_id. They
+    // belong to whoever has a shell, and `cli.js list-tokens` shows them. Making
+    // them visible here would mean showing one person another person's agents.
+    await issueToken(pool, { name: 't-orphan/worker', principal: 'human:operator' });
+    const all = await Promise.all(
+      [owner.id, other.id, randomUUID()].map((id) => listOwnedAgents(pool, id)),
+    );
+    expect(all.flat().map((a) => a.name)).not.toContain('t-orphan/worker');
   });
 });
