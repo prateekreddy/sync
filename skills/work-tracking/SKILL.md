@@ -48,6 +48,14 @@ held  →  claim  →  …work…  →  heartbeat every ~TTL/3  →  complete
    is what proves the lease is still yours. `ttlSeconds` defaults to 600 (min 30, max 3600). Size it
    to the slowest realistic run. If you were dispatched by another agent, pass `spawnedBy` so the
    attribution chain resolves back to a person.
+
+   **Read the `briefing` that comes back with the lease.** It carries the item's full text, its
+   parent, and every item linked to it — open ones first, and those arrive *with their text*, because
+   an open linked item is often a requirement on the work you just took rather than separate work.
+   This is the half of "write it down first" that used to be missing: a finding can be noticed,
+   captured and correctly placed and still never reach you, because placement puts it near the work
+   and only delivery puts it in front of the person doing it. Expect the constraint to contradict the
+   obvious implementation — that is usually why someone bothered to write it down.
 3. **`history`** — before working anything that reads harder than it looks. How many times the item
    has been claimed, how many of those lapsed rather than finished, who last held it and how that
    attempt ended (`null` if nobody ever has). Two agents having already timed out is context the

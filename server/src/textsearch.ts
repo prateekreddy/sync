@@ -38,6 +38,11 @@ export function plainText(html: string | undefined): string {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/\s+/g, ' ')
+    // Every tag becomes a space, so inline markup leaves one stranded before the
+    // punctuation that followed it: "<p>Do <b>this</b>.</p>" came out as
+    // "Do this .". Invisible to matching, but this text is now read by agents in
+    // claim briefings, not just scanned for terms.
+    .replace(/\s+([.,;:!?)\]])/g, '$1')
     .trim();
 }
 

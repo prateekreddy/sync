@@ -41,6 +41,7 @@ import { mirrorClaim, mirrorComplete, mirrorReturn } from './mirror.js';
 import type { PlaneClient } from './plane.js';
 import type { PlaneMcp } from './planemcp.js';
 import { explain, readyCandidates, verifyClaimable } from './readiness.js';
+import { briefingOrNull } from './briefing.js';
 import { find } from './find.js';
 import { tree } from './tree.js';
 import { parseFields } from './view.js';
@@ -894,7 +895,17 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         epoch: l.epoch,
         expiresAt: l.expiresAt,
       });
-      return { lease: l };
+      // Handed over WITH the lease rather than left for the agent to go and ask
+      // for. An agent that must remember to call tree, history and get_issue
+      // after every claim will not, under context pressure — the same argument
+      // that put module inheritance and lease-derived provenance in `capture`.
+      return {
+        lease: l,
+        briefing: await briefingOrNull(plane.as(actor.planeToken), {
+          projectId: b.projectId,
+          workItemId: l.workItemId,
+        }),
+      };
     }
 
     // Pick-and-claim. Blocker verification happens per candidate, so an item that
@@ -926,7 +937,14 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         epoch: l.epoch,
         expiresAt: l.expiresAt,
       });
-      return { lease: l, item: c };
+      return {
+        lease: l,
+        item: c,
+        briefing: await briefingOrNull(plane.as(actor.planeToken), {
+          projectId: b.projectId,
+          workItemId: l.workItemId,
+        }),
+      };
     }
 
     throw new GatewayError('NO_WORK', 'No ready, unclaimed work matched', {
