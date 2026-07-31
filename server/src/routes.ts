@@ -10,7 +10,13 @@ import {
   revokeOwnedAgent,
   type Actor,
 } from './auth.js';
-import { agentName, createRateLimiter, identify, visibleProjects } from './mint.js';
+import {
+  agentName,
+  createRateLimiter,
+  identify,
+  resolveProject,
+  visibleProjects,
+} from './mint.js';
 import {
   assertSafeRedirect,
   authServerMetadata,
@@ -240,15 +246,21 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   }): Promise<{ token: string; name: string; email: string }> {
     const identity = await identify(deps.planeBaseUrl, args.planeToken);
 
-    if (args.projectId) {
+    // Resolved, not merely checked: the caller may have picked from a dropdown,
+    // pasted a uuid, or typed the project's name, and all three should work.
+    let projectId = args.projectId;
+    if (projectId) {
       const visible = await visibleProjects(deps.planeBaseUrl, deps.workspaceSlug, args.planeToken);
-      if (!visible.has(args.projectId)) {
+      const match = resolveProject(visible, projectId);
+      if (!match) {
         throw new GatewayError(
           'FORBIDDEN',
-          `You are not a member of project ${args.projectId}, so an agent bound to it could not write. Add yourself to it in Plane first.`,
-          { visibleProjects: [...visible] },
+          `No project "${projectId}" that you can see, so an agent bound to it could not write. ` +
+            `Pick one of: ${visible.map((p) => p.name).join(', ') || '(none — you are not a member of any project)'}`,
+          { visibleProjects: visible },
         );
       }
+      projectId = match.id;
     }
 
     const name = agentName(identity, args.agent);
@@ -260,7 +272,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       // The caller's own token, so Plane's activity log attributes the agent's
       // writes to them rather than to a shared service account.
       planeToken: args.planeToken,
-      ...(args.projectId ? { defaultProjectId: args.projectId } : {}),
+      ...(projectId ? { defaultProjectId: projectId } : {}),
       onlyIfOwnedBy: identity.id,
     });
 
@@ -268,7 +280,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     // anyone is watching, because afterwards it is unreconstructable — only the
     // hash is kept.
     app.log.info(
-      { agent: name, planeUser: identity.id, email: identity.email, project: args.projectId },
+      { agent: name, planeUser: identity.id, email: identity.email, project: projectId },
       'issued agent token',
     );
     return { token, name, email: identity.email };
@@ -354,6 +366,35 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         ...(deps.planeWebUrl ? { planeUrl: deps.planeWebUrl } : {}),
       }),
     );
+  });
+
+  /**
+   * The projects this Plane token can see, for the consent screen's dropdown.
+   *
+   * Exists because the consent page is rendered before anyone has typed a token,
+   * so the server cannot know the list at render time. Takes no gateway
+   * credential, for the same reason the mint endpoint does not: the caller is
+   * proving who they are with the Plane token in the body, and this returns
+   * strictly less than that token already grants them.
+   *
+   * Rate limited on the same per-address budget as minting. It calls Plane once
+   * per request, so an unthrottled one lets a stranger burn the workspace's
+   * rate-limit budget with someone else's stolen token.
+   */
+  app.post('/oauth/projects', async (req, reply) => {
+    if (!mintAllowed(req.ip, Date.now())) {
+      return reply.status(429).send({ error: 'RATE_LIMITED' });
+    }
+    const b = z.object({ planeToken: z.string().min(1) }).parse(req.body);
+    // A bad token returns an empty list rather than an error: this endpoint is a
+    // convenience behind a field the user is still filling in, and the real
+    // verdict on the token belongs to the authorize step, which says so properly.
+    const projects = await visibleProjects(
+      deps.planeBaseUrl,
+      deps.workspaceSlug,
+      b.planeToken,
+    ).catch(() => []);
+    return reply.send(projects);
   });
 
   app.post('/oauth/authorize', async (req, reply) => {

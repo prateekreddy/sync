@@ -251,14 +251,21 @@ export function consentPage(args: {
     .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`)
     .join('');
 
+  // The list cannot be known when this page is first rendered — it takes the
+  // user's Plane token to ask, and they have not typed it yet. So the field
+  // starts as text and the script below turns it into a real <select> the moment
+  // a token is present. Without JavaScript the text input remains, and it accepts
+  // a project NAME as well as a uuid, because "find the uuid in a URL" is the
+  // problem being solved rather than an acceptable fallback.
   const projectField = args.projects?.length
     ? `<label>Project
-         <select name="projectId">
+         <select name="projectId" id="pid">
+           <option value="">— choose per call —</option>
            ${args.projects.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}
          </select>
        </label>`
-    : `<label>Project id <small>the uuid in the project's URL in Plane</small>
-         <input name="projectId" placeholder="optional — leave blank to choose per call">
+    : `<label for="pid">Project <small id="pidhelp">name or id — or leave blank to choose per call</small>
+         <input name="projectId" id="pid" placeholder="optional — leave blank to choose per call">
        </label>`;
 
   const tokenHelp = args.planeUrl
@@ -295,6 +302,52 @@ ${args.error ? `<div class="err">${esc(args.error)}</div>` : ''}
   ${projectField}
   <button type="submit">Authorize</button>
 </form>
+<script>
+// Swap the free-text project field for a dropdown once we can actually ask which
+// projects this person has. Enhancement only: every failure path leaves the text
+// input exactly as it was, because a broken dropdown that silently blocks
+// onboarding is worse than a uuid someone has to look up.
+(function () {
+  var tok = document.querySelector('input[name=planeToken]');
+  var pid = document.getElementById('pid');
+  var help = document.getElementById('pidhelp');
+  if (!tok || !pid || pid.tagName === 'SELECT') return;
+  var last = '';
+  async function load() {
+    var v = tok.value.trim();
+    if (!v || v === last) return;
+    last = v;
+    try {
+      var r = await fetch('/oauth/projects', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ planeToken: v }),
+      });
+      if (!r.ok) return;
+      var list = await r.json();
+      if (!Array.isArray(list) || !list.length) return;
+      var sel = document.createElement('select');
+      sel.name = 'projectId';
+      sel.id = 'pid';
+      sel.innerHTML =
+        '<option value="">— choose per call —</option>' +
+        list.map(function (p) {
+          var o = document.createElement('option');
+          o.value = p.id;
+          o.textContent = p.name;
+          return o.outerHTML;
+        }).join('');
+      pid.replaceWith(sel);
+      pid = sel;
+      if (help) help.textContent = 'projects you can write to';
+    } catch (e) {
+      /* leave the text input alone */
+    }
+  }
+  tok.addEventListener('change', load);
+  tok.addEventListener('blur', load);
+})();
+</script>
 <p class="note">Authorizing issues a token to the application that sent you here.
 Only do this if you started this from your own terminal.</p>
 </body></html>`;

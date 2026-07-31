@@ -65,18 +65,55 @@ export async function identify(baseUrl: string, planeToken: string): Promise<Pla
  * surfaces inside an agent session, hours later, as a tool that mysteriously does
  * not work. Cheaper to refuse it here.
  */
+export interface VisibleProject {
+  id: string;
+  name: string;
+}
+
+/**
+ * Returns the NAMES as well as the ids, which it used to throw away.
+ *
+ * That discard is why the consent screen asked people to paste a uuid out of a
+ * URL: the one call that knew what a project was called reduced its answer to a
+ * set of ids before anything could render them, so the `<select>` branch of the
+ * consent page could never be reached and sat there as dead code. Keeping the
+ * name costs nothing — Plane sends it in the same response.
+ */
 export async function visibleProjects(
   baseUrl: string,
   workspaceSlug: string,
   planeToken: string,
-): Promise<Set<string>> {
-  const body = await planeGet<{ results?: { id: string }[] } | { id: string }[]>(
+): Promise<VisibleProject[]> {
+  const body = await planeGet<
+    { results?: VisibleProject[] } | VisibleProject[]
+  >(
     `${baseUrl.replace(/\/$/, '')}/api/v1/workspaces/${workspaceSlug}/projects/?per_page=100`,
     planeToken,
     'list your projects',
   );
   const rows = Array.isArray(body) ? body : (body.results ?? []);
-  return new Set(rows.map((r) => r.id));
+  return rows.map((r) => ({ id: r.id, name: r.name }));
+}
+
+/**
+ * Resolve what someone typed or picked to a project id.
+ *
+ * Accepts the id, or the project's name case-insensitively. The name is there so
+ * the no-JavaScript path is usable: without it the fallback is "find the uuid in
+ * a URL", which is the thing being fixed. Returns null when nothing matches, so
+ * the caller can say which projects the token CAN see rather than only that this
+ * one failed.
+ */
+export function resolveProject(
+  projects: VisibleProject[],
+  wanted: string,
+): VisibleProject | null {
+  const w = wanted.trim().toLowerCase();
+  return (
+    projects.find((p) => p.id.toLowerCase() === w) ??
+    projects.find((p) => p.name.trim().toLowerCase() === w) ??
+    null
+  );
 }
 
 /**
