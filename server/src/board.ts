@@ -108,6 +108,30 @@ export interface Board {
 
 const DONE = new Set<State['group']>(['completed', 'cancelled']);
 
+/**
+ * Open leaf items with no parent — the shape of an inbox rather than a plan.
+ *
+ * Returns the ITEMS, not a count, and everything that needs the number takes
+ * `.length`. A count computed separately from the list it describes is how a
+ * summary ends up disagreeing with the evidence behind it, which is the failure
+ * this whole metric exists to catch. The periodic review names offenders and
+ * `structure` reports how many there are; both come from here, so they cannot
+ * drift apart.
+ *
+ * Containers are excluded deliberately: an item with children belongs at the
+ * root, that is what a root is.
+ */
+export function rootlessOpenOf(
+  all: WorkItem[],
+  groupOf: Map<string, State['group']>,
+): WorkItem[] {
+  const hasChild = new Set<string>();
+  for (const i of all) if (i.parent) hasChild.add(i.parent);
+  return all.filter(
+    (i) => !i.parent && !hasChild.has(i.id) && !DONE.has(groupOf.get(i.state) as State['group']),
+  );
+}
+
 function structureOf(
   all: WorkItem[],
   filed: Set<string>,
@@ -156,11 +180,11 @@ function structureOf(
       s.unplaced++;
       if (open) s.unplacedOpen++;
     }
-    // Deliberately not gated on `inModule`: being filed is what made the old
-    // number look healthy while the tree was flat.
-    if (open && !i.parent && !hasChildren) s.rootlessOpen++;
     s.depth = Math.max(s.depth, chain(i.id, new Set()));
   }
+  // From the shared rule rather than a second inline condition, so this number
+  // and the items the periodic review names are always the same set.
+  s.rootlessOpen = rootlessOpenOf(all, groupOf).length;
   return s;
 }
 

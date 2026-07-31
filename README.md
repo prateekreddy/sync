@@ -75,6 +75,51 @@ upstream's and changes between releases, so pointing your proxy at the individua
 containers instead would break on the next version bump. It binds nothing public in
 this mode.
 
+**Is your proxy itself a container?** Check with `docker ps --filter publish=443`. If
+it is, the block above cannot work: `127.0.0.1` inside a container is *that
+container's* loopback, and nothing is listening on it. The symptom is a 502 with a
+perfectly valid certificate, which points at nothing. Join the proxy to this stack's
+network and address the services by name:
+
+```yaml
+# in your proxy's own compose file
+services:
+  caddy:
+    networks: [default, sync_plane]      # PLANE_NETWORK from deploy/.env
+networks:
+  sync_plane:
+    external: true
+```
+
+```caddy
+plane.example.dev  { reverse_proxy proxy:80 }
+mcp.example.dev    { reverse_proxy gateway:8787 { flush_interval -1 } }
+```
+
+Traffic then stays on the Docker network, so the published loopback ports are not
+needed at all — drop them with a `docker-compose.override.yml` if you prefer no host
+bindings whatsoever:
+
+```yaml
+services:
+  proxy:
+    ports: !override []
+  gateway:                  # agent tokens are bearer credentials; keep it unpublished
+    ports: !override []
+```
+
+`provision.sh` needs no host port either way — it asks Docker where each service is.
+Two overrides exist for what it cannot infer, neither normally needed:
+
+| Variable | Use when |
+|---|---|
+| `PROVISION_BASE_URL` | Plane is reachable somewhere Docker cannot report |
+| `PROVISION_GATEWAY_URL` | same, for the gateway's `/healthz` poll |
+
+Nothing in the stack can know your proxy's public hostname, so the summary prints
+`<gateway-url>` for you to substitute. Set `SYNC_GATEWAY_URL` in `.env` to have it
+printed for real.
+
 ### Attach to a Plane you already run
 
 ```bash
@@ -97,39 +142,6 @@ token in `deploy/.env` as `PLANE_API_KEY`.
 Also turn **Modules** on in the project's settings. Plane gates them per project,
 and provisioning normally does it for you; without it every module call fails,
 and the 404 reads like a wrong URL rather than a disabled feature.
-
-### Behind a reverse proxy you already run
-
-If something else already owns `:80`/`:443` on the host — Caddy, nginx, Traefik —
-give this stack no host bindings at all and let that proxy reach it over the Docker
-network. In a `docker-compose.override.yml`:
-
-```yaml
-services:
-  proxy:                    # would otherwise collide on 80/443 and fail to bind
-    ports: !override []
-  gateway:                  # agent tokens are bearer credentials; keep it unpublished
-    ports: !override []
-```
-
-Then point your proxy at `proxy:80` and `gateway:8787`, attach it to the network
-named by `PLANE_NETWORK`, and in `.env` set `WEB_URL` and `CORS_ALLOWED_ORIGINS` to
-the `https://` address users actually visit — Plane builds absolute URLs and
-sign-in redirects from them, so leaving them `http://` breaks the login round trip.
-Leave `SITE_ADDRESS=:80`: TLS is the outer proxy's job and Plane's own proxy should
-not try to get a certificate.
-
-`provision.sh` needs no host port for this — it asks Docker where each service is.
-Two overrides exist for what it cannot infer, neither normally needed:
-
-| Variable | Use when |
-|---|---|
-| `PROVISION_BASE_URL` | Plane is reachable somewhere Docker cannot report |
-| `PROVISION_GATEWAY_URL` | same, for the gateway's `/healthz` poll |
-
-Nothing in the stack can know your proxy's public hostname, so the summary prints
-`<gateway-url>` for you to substitute. Set `SYNC_GATEWAY_URL` in `.env` to have it
-printed for real.
 
 ### What provisioning does
 
@@ -356,6 +368,28 @@ the citation that resolves to nothing, which is visible immediately.
 | HTTP 429 from `/v1/agent-tokens` | Mint limit is 10/min per address. Wait a minute |
 | `UNAUTHENTICATED` from a tool call | The agent token is wrong or was replaced. Mint a new one and re-run `claude mcp add` |
 | Agent connects but has no tools | Gateway is up but Plane is unreachable from it. Check `docker compose logs gateway` |
+| **502 from your reverse proxy, with a valid certificate** | The proxy answered and could not reach the stack. If that proxy is itself a container, `127.0.0.1` is *its* loopback, not the host's — join it to the stack's network and use `reverse_proxy proxy:80` and `gateway:8787`. See the two variants in `deploy/Caddyfile.sync` |
+| **Migrator loops on `password authentication failed for user "plane"`** | The `pgdata` volume predates the current `.env`: Postgres sets `POSTGRES_PASSWORD` only when it first initialises. Realign the database over its unix socket, which trusts local connections even when the TCP password is wrong — see below |
+
+Realigning a Postgres whose volume kept an older password, without losing data:
+
+```bash
+cd deploy
+PW=$(grep '^POSTGRES_PASSWORD=' .env | cut -d= -f2-)
+docker compose exec -T plane-db psql -U plane -d postgres -h /var/run/postgresql \
+  -v pw="$PW" <<<"ALTER USER plane WITH PASSWORD :'pw';"
+docker compose up -d
+```
+
+`-h /var/run/postgresql` is required: `PGHOST` is set inside the container, so psql
+would otherwise dial TCP and hit the very authentication it is repairing. The
+statement goes on stdin because psql does not interpolate `-v` variables inside
+`-c`, and passing the password as a psql variable rather than splicing it into the
+SQL keeps it correct for a password containing a quote.
+
+If Plane holds nothing worth keeping, `docker compose down && docker volume rm
+<project>_pgdata && docker compose up -d` is simpler.
+
 | 403 on every Plane write | The agent's Plane user is not a project member |
 | `next` returns nothing | Call `why` on the item you expected. It reports the gate's own reasons — no description, blocked, leased, unfinished children, label, capability mismatch |
 | Plane shows "In Progress" for finished work | Mirror write failed. `docker compose logs gateway \| grep 'plane mirror failed'` |

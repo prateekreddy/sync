@@ -118,9 +118,57 @@ async function sweep(): Promise<void> {
 
 const timer = setInterval(() => void sweep(), SWEEP_MS);
 
+/**
+ * The structural review, on its own clock.
+ *
+ * Deliberately not folded into the 30-second lease sweep. Board shape changes
+ * over days, so checking it every half minute would cost a full item listing per
+ * project per sweep and tell nobody anything new. Six hours is slow enough to be
+ * free and fast enough that drift is caught in the same working day.
+ *
+ * Set REVIEW=off to disable it. On by default, because a review that has to be
+ * switched on is one more thing nobody does — which is the exact failure this
+ * addresses.
+ */
+const REVIEW_MS = Number(process.env.REVIEW_INTERVAL_MS ?? 6 * 60 * 60 * 1000);
+const REVIEW_ON = (process.env.REVIEW ?? 'on') !== 'off';
+const REVIEW_THRESHOLDS = {
+  minRootless: Number(process.env.REVIEW_MIN_ROOTLESS ?? DEFAULT_THRESHOLDS.minRootless),
+  ratio: Number(process.env.REVIEW_ROOTLESS_RATIO ?? DEFAULT_THRESHOLDS.ratio),
+};
+
+async function review(): Promise<void> {
+  try {
+    for (const r of await reviewAll(plane, REVIEW_THRESHOLDS)) {
+      // Logged on every pass, including the quiet ones. These numbers are the
+      // only evidence the thresholds were ever chosen well, and they were picked
+      // as starting points rather than measured.
+      app.log.info(
+        {
+          projectId: r.projectId,
+          openItems: r.assessment.openItems,
+          rootless: r.assessment.rootless.length,
+          ratio: Number(r.assessment.ratio.toFixed(2)),
+          raised: r.raised,
+          ...(r.skipped ? { skipped: r.skipped } : {}),
+        },
+        r.raised ? 'board has gone flat, review raised' : `structural review: ${r.assessment.reason}`,
+      );
+    }
+  } catch (err) {
+    app.log.error({ err }, 'structural review failed');
+  }
+}
+
+// Runs on the interval only, never at boot: a gateway that restarts often would
+// otherwise review on every start, and the first pass would land before anyone
+// had a chance to set the thresholds for their own board.
+const reviewTimer = REVIEW_ON ? setInterval(() => void review(), REVIEW_MS) : null;
+
 async function shutdown(signal: string): Promise<void> {
   app.log.info({ signal }, 'shutting down');
   clearInterval(timer);
+  if (reviewTimer) clearInterval(reviewTimer);
   await app.close();
   // Child MCP processes are ours to clean up; leaving them would strand one node
   // process per agent identity after every restart.
