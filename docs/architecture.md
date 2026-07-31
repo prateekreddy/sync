@@ -426,16 +426,65 @@ alternatives rather than a chain.
 
 The discipline that matters most — *write it down the moment you notice it,
 claim before you work* — has to fire when the agent was **not** thinking about
-tools. Tool descriptions are read while choosing among tools, which is too late:
-by then the model has already decided what it is doing.
+tools.
 
-So it ships on two always-on channels, because neither is sufficient alone:
+This section used to say that tool descriptions were too late for that, because
+they are "read while choosing among tools". That was wrong, and worth correcting
+rather than quietly rewriting: it confused when a model *attends* to a
+description with when the description was *delivered*. Descriptions arrive as a
+set, from `tools/list`, and a model cannot call a tool without having been told
+it exists — so every description is in context before any choice is made. The
+evidence is in this repo's own history. `capture`'s description told agents to
+break work up one child at a time long after `decompose` existed, and that is
+the form agents used. A channel that can push the fleet toward the wrong
+behaviour is not one that arrives too late to push it toward the right one.
 
-1. **The MCP server's `instructions`**, sent in the handshake. Costs nothing to
-   maintain and reaches every agent from the gateway. Surfacing it is the client's
-   choice, and not every client does.
-2. **A few lines in `CLAUDE.md` / `AGENTS.md`.** The only channel guaranteed to be
-   in context.
+### What survives 2026-07-28
+
+MCP revision `2026-07-28` removes the `initialize` handshake. `instructions`
+survives on `DiscoverResult`, but `server/discover` is **optional** for clients
+to call — so the channel this section was built on becomes best-effort. That is
+a good reason to be precise about which channels are actually unconditional:
+
+| Channel | Delivered when | Guaranteed? |
+|---|---|---|
+| Tool descriptions | with `tools/list`, before any call | **yes** — a tool that was never listed cannot be called |
+| A refusal's message | at the moment the rule is violated | **yes**, and impossible to skip |
+| A call's own result | after the call that created the obligation | **yes**, for the agent that made it |
+| `instructions` | `initialize` today, `server/discover` after | no — the client chooses |
+| `CLAUDE.md` / `AGENTS.md` | every request, in repos that adopt it | yes, but per-repo and not shippable by the gateway |
+| A skill | when the model judges it relevant | no |
+
+**So the rule lives on the call that creates the obligation.** Not as prose
+somewhere central, but attached to the surface an agent is already looking at
+when the rule applies:
+
+| Rule | Carried by |
+|---|---|
+| write it down first | `capture` |
+| claim before you work | `claim` |
+| the lease expires; keep it alive | `claim`, `release` |
+| finish explicitly | `heartbeat`, `complete` |
+| resume before you re-claim | `held` |
+| you cannot take work by writing `assignees` | the `NOT_HOLDER` refusal, which names `claim` as the fix |
+
+This is why the surface survives a channel going optional: every load-bearing
+rule was already on a channel that cannot be skipped, and `instructions` had
+become a summary of rules stated properly elsewhere. Making that deliberate
+rather than lucky is the decision — **nothing load-bearing may live only in
+`instructions`**, which `server/test/docs.test.ts` now checks.
+
+`instructions` stays. It is still delivered to clients that ask, it costs
+nothing, and it is the one place that can say something belonging to no single
+tool. It is orientation, never the sole carrier.
+
+The two channels that remain, then:
+
+1. **Tool descriptions**, shipped by the gateway, reaching every agent
+   unconditionally, and versioned with the code they describe.
+2. **A few lines in `CLAUDE.md` / `AGENTS.md`.** Per-repo and human-installed,
+   so not a substitute — but for a repo that adopts it, the one channel that
+   fires even before the agent has listed a single tool.
 
 **The rules are not a skill.** Skills load on demand, when the model judges them
 relevant — right for occasional procedural work, wrong for rules that always apply.

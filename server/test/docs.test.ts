@@ -34,10 +34,42 @@ describe('the skill covers the surface it claims to', () => {
 });
 
 /**
- * Two channels are always on: the MCP handshake's `instructions`, and the repo
- * context file every request carries. A rule that appears in one and not the other
- * does not read as a contradiction to an agent — it reads as two rules, and the
- * one in front of it wins.
+ * No load-bearing rule may live only in `instructions`.
+ *
+ * MCP 2026-07-28 removes the `initialize` handshake. `instructions` survives on
+ * `DiscoverResult`, but calling `server/discover` is optional for clients — so a
+ * rule stated only there reaches whoever happens to ask for it. Tool descriptions
+ * have no such gap: a tool that was never listed cannot be called, so its
+ * description is in context by construction.
+ *
+ * Each rule is therefore pinned to the tool that creates the obligation it
+ * describes, which is also where an agent is already looking when it applies. See
+ * docs/architecture.md § Onboarding channels.
+ */
+describe('no rule depends on a channel a client may skip', () => {
+  const describes = (tool: string) =>
+    NATIVE_TOOLS.find((t) => t.name === tool)?.description ?? '';
+
+  const rules: Array<[string, string[], RegExp]> = [
+    ['write it down first', ['capture'], /MOMENT you notice/],
+    ['claim before you work', ['claim'], /ONLY way to start work/],
+    ['the lease expires', ['claim', 'release'], /lease expires|back to the pool/i],
+    ['finish explicitly', ['complete', 'heartbeat'], /end the lease|lease.*(expire|lapse)/i],
+    ['resume before re-claiming', ['held'], /after a restart/i],
+  ];
+
+  it.each(rules)('“%s” is stated on the tools that carry it', (_rule, tools, pattern) => {
+    // `some`, not `every`: a rule reaches an agent if any one of the tools it
+    // belongs to states it, and demanding all of them would push the same
+    // sentence into descriptions where it is noise.
+    expect(tools.some((t) => pattern.test(describes(t)))).toBe(true);
+  });
+});
+
+/**
+ * Two channels carry the rules: tool descriptions and the repo context file. A
+ * rule that appears in one and not the other does not read as a contradiction to
+ * an agent — it reads as two rules, and the one in front of it wins.
  *
  * The audit that caught the stale decomposition advice missed exactly this,
  * because it enumerated docs by directory and `AGENTS.md` is not in one.

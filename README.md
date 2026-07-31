@@ -327,7 +327,7 @@ the citation that resolves to nothing, which is visible immediately.
 ## Tests
 
 ```bash
-cd server && npm test          # 278 unit tests: lease semantics (20-way contention),
+cd server && npm test          # 283 unit tests: lease semantics (20-way contention),
                                # readiness screening, sub-item counting, tool policy,
                                # token ownership, evidence checking, reference linking,
                                # and that the skill still names every tool that exists
