@@ -167,20 +167,25 @@ look identical from the inside.
 `readyCandidates` now resolves ids once per browse from a per-project cache, and
 both consumers go through a single helper so they cannot drift apart again.
 
-## Agent surface (16 tools)
+## Agent surface (15 tools)
 
 | Tool | Why it exists |
 |---|---|
 | `capture` | 2 required fields, idempotency key, dedups on write. The write-first primitive — if capture isn't trivial, the discipline dies. |
+| `decompose` | N children in one call. A parent becomes claimable-as-a-plan at its *first* child, so a decomposition written one capture at a time is open to another agent while still half-specified. |
 | `next` | Ready + unleased, capability-filtered. Read-only. |
+| `find` | Filter within a project — label, priority, state group, module, parent, holder. Plane's list tools cannot filter at all, and `holder` is not Plane's to know. |
+| `search` | Titles across every project the caller can see. The only tool that crosses project boundaries, so "is this already written down?" has an answer before a duplicate capture. |
+| `board` | Per-module progress plus live leases, and `structure`: filed, parented, containers, depth, unplaced. Answers "does this board have any shape" — the question a flat inbox never prompts anyone to ask. |
 | `claim` | Atomic. Takes a filter *or* an id — `next`-then-`claim` is a TOCTOU race, so claim-by-filter must be one call. |
 | `heartbeat` | Extends TTL. Requires epoch. |
 | `release` | Back to the pool, with a reason. Requires epoch. |
 | `complete` | Terminal, with outcome + refs. Requires epoch. |
-| `link` | Typed edge — `discovered_from`, `blocks`, `duplicate_of`. Maps to Plane relations. |
+| `link` | Typed edge over Plane's own vocabulary — `blocking`, `blocked_by`, `duplicate`, `relates_to`. Plane accepts anything else and silently ignores it, so the set is fixed here rather than passed through. |
 | `held` | What am I holding? The first call after a restart, so a resumed agent does not re-claim. |
 | `why` | The gate's own reasons for withholding an item. The reasons were always computed and thrown away, which made "`next` returned nothing" unanswerable. |
 | `tree` | The sub-tree with lease state. Plane holds the parent links and the gateway holds the leases, so only here can "what is left" mean "not done *and* not already being worked". |
+| `history` | Claims, lapses, and how the last attempt ended. An item three agents timed out on is underspecified, and that is invisible on the item itself. |
 
 `link` is what makes this a memory substrate rather than a list: agent working A
 finds problem B, `capture` + `link(discovered_from)` keeps the provenance that makes

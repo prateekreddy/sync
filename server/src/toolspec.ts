@@ -244,8 +244,9 @@ export const NATIVE_TOOLS: NativeTool[] = [
       'are merged into the existing item rather than creating a second one, and passing the same ' +
       'idempotencyKey twice returns the original instead of duplicating. If you noticed this ' +
       'while working another item, the link back to it is made automatically from your lease. ' +
-      'To break a large item into sub-items, call capture once per child with parentId set to ' +
-      'the large item.',
+      'To break a large item into sub-items, use decompose rather than calling this once per ' +
+      'child: the plan becomes claimable at its FIRST child, so written one call at a time it is ' +
+      'open to another agent before you have finished writing it.',
     schema: CaptureBody,
     method: 'POST',
     request: (a) => ({ path: '/v1/capture', body: a }),

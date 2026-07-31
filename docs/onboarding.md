@@ -80,6 +80,29 @@ rejected token fails here rather than inside an agent session. Every value comes
 from a flag, then an environment variable, then a prompt. `--client codex` prints
 Codex config instead of registering.
 
+## Listing the agents you own
+
+```bash
+curl -sS https://<gateway-host>/v1/agent-tokens \
+  -H "Authorization: Bearer plane_api_..."
+```
+
+Names, capabilities, project binding, whether each still writes to Plane as
+itself, and when it was last seen. **Revoked agents stay in the list, marked
+inactive** — "did my revoke work?" is the first question after revoking, and an
+answer by omission cannot be told apart from a lost row.
+
+The token is never returned. It is shown once at issue time and stored only as a
+hash, so an endpoint that could hand it back would quietly undo that; to recover
+a lost token, mint the same name again.
+
+Scoped to *your* Plane user, which means agents issued from the CLI without
+`--plane-token` have no recorded owner and appear here for nobody. That is not a
+gap to route around: they belong to whoever has a shell on the gateway host, and
+`node dist/cli.js list-tokens` shows an operator all of them. Widening this
+endpoint would mean showing one person another person's agents. The reply says so
+in a `note` rather than leaving an empty list to be read as "you own nothing".
+
 ## Revoking an agent
 
 ```bash
@@ -113,8 +136,10 @@ cannot be used to test whether one is live. Whether `claude mcp logout` calls it
 is up to the client and is not verified here — use the `DELETE` above when you
 need to be certain.
 
-`MINT_TOKENS=off` disables `DELETE` along with minting, leaving
-`revoke-token` on the CLI.
+`MINT_TOKENS=off` turns off the whole self-service surface — `GET`, `POST` and
+`DELETE` together, since an operator who disables minting expects the endpoint
+gone rather than two thirds of it. `issue-token`, `list-tokens` and
+`revoke-token` stay on the CLI.
 
 ## Rules
 
@@ -140,6 +165,7 @@ need to be certain.
 | `Plane rejected that personal token` | Sent a `sync_agent_…` token, or the Plane token expired | Create a fresh token under Plane profile → Personal access tokens |
 | `You are not a member of project …` | You cannot see that project | Add yourself to it in Plane, then retry. The reply lists the projects you can see |
 | `already belongs to a different Plane user` | Someone else has that agent name | Pick another name |
+| You cannot remember what an agent was called, so you cannot revoke it | Nothing wrong — names are yours to choose and easy to lose | `GET /v1/agent-tokens` with your Plane token lists every agent you own, active or not |
 | HTTP 429 | 10 mints/minute per address | Wait a minute |
 | `refusing to send a token unencrypted` | Gateway URL is `http://` on a remote host | Use `https://`, or a localhost address |
 | `claude mcp list` shows `✘ Failed to connect` | Wrong URL, or the gateway is down | `curl https://<gateway-host>/healthz` should return `{"ok":true}` |
@@ -195,7 +221,7 @@ after the decision it was meant to change.
 ## Add the skill for everything else
 
 The rules are three lines because they have to be. What they leave out is the rest
-of the surface: fifty-five tools, and which one answers which question. That does
+of the surface: sixty-two tools, and which one answers which question. That does
 belong in a skill — it is reference, wanted occasionally, and far too long to sit
 in context for every request.
 
@@ -205,9 +231,10 @@ cp -r skills/work-tracking ~/.claude/skills/
 ```
 
 `skills/work-tracking/SKILL.md` covers the claim loop and its failure modes, what
-the readiness gate withholds, how capture's dedup interacts with decomposition,
-and what cycles, modules, labels, worklogs and comments are for once an agent
-holds an item. Codex has no skill mechanism — the file is plain Markdown, so point
+the readiness gate withholds, which of `next` / `find` / `search` / `board`
+answers which question, how capture's dedup interacts with decomposition, and what
+cycles, modules, labels, worklogs and comments are for once an agent holds an
+item. Codex has no skill mechanism — the file is plain Markdown, so point
 it at the path instead.
 
 ## Issuing a token from the server

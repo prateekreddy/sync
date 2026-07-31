@@ -182,7 +182,7 @@ when an agent is actually working an item.
 
 ## The tool surface
 
-One MCP server, 63 tools, two halves.
+One MCP server, 62 tools, two halves.
 
 **Ours — coordination.** Plane has no equivalent for any of these.
 
@@ -327,9 +327,9 @@ the citation that resolves to nothing, which is visible immediately.
 ## Tests
 
 ```bash
-cd server && npm test          # 44 unit tests: lease semantics (20-way contention),
+cd server && npm test          # 266 unit tests: lease semantics (20-way contention),
                                # readiness screening, sub-item counting, tool policy,
-                               # token ownership
+                               # token ownership, evidence checking, reference linking
 
 # against a running stack
 export GATEWAY=http://localhost:8787 PROJECT=<uuid> T1=… T2=… T3=…

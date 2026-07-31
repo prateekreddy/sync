@@ -61,8 +61,11 @@ Three rules, in order of how easy they are to get wrong:
 
 After a restart, call held first to find out what you were in the middle of.
 
-To break a large item up, call capture once per child with parentId set to the
-large item. A parent with unfinished children is deliberately unclaimable.
+To break a large item up, call decompose once with every child, rather than
+capture per child. A parent with unfinished children is deliberately unclaimable,
+so the plan becomes visible and claimable the moment its first child lands:
+written one call at a time, another agent can start work under a decomposition
+you have not finished writing.
 
 Plane's own tools are here too, for everything else — cycles, modules, labels,
 comments, worklogs. Two things are restricted: you cannot set assignees or state

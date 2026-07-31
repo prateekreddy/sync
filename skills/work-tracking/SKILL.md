@@ -8,8 +8,17 @@ user-invocable: true
 
 Two halves live on one MCP server. Do not confuse them:
 
-- **Coordination tools** (`capture`, `next`, `why`, `tree`, `claim`, `heartbeat`, `complete`,
-  `release`, `link`, `held`) exist because Plane has no equivalent. They are the only safe way to take work.
+- **Coordination tools** — 15 of them — exist because Plane has no equivalent. They are the only
+  safe way to take work.
+
+  | | Answers |
+  |---|---|
+  | `capture` `decompose` | write it down; break it up in one call |
+  | `next` `find` `search` `board` | what is there — ready, filtered, workspace-wide, rolled up |
+  | `why` `tree` `history` | why not this one; what is under it; has it been tried before |
+  | `claim` `heartbeat` `complete` `release` | the loop |
+  | `link` `held` | typed edges; what am I holding |
+
 - **Plane's own tools** — currently 47 — are a faithful wrapper over Plane's API and have **no
   notion of a lease**. Everything below the coordination loop is theirs.
 
@@ -39,11 +48,18 @@ held  →  claim  →  …work…  →  heartbeat every ~TTL/3  →  complete
    is what proves the lease is still yours. `ttlSeconds` defaults to 600 (min 30, max 3600). Size it
    to the slowest realistic run. If you were dispatched by another agent, pass `spawnedBy` so the
    attribution chain resolves back to a person.
-3. **`heartbeat`** — roughly every TTL/3 during long work. A lapsed lease returns the item to the
+3. **`history`** — before working anything that reads harder than it looks. How many times the item
+   has been claimed, how many of those lapsed rather than finished, who last held it and how that
+   attempt ended (`null` if nobody ever has). Two agents having already timed out is context the
+   description does not carry, and repeating their run is the most expensive way to discover it —
+   so if the count is high, `release` with that as the reason and label it `needs-refinement`
+   rather than becoming the third. Check it before claiming when you are naming an id, and right
+   after when you let the gateway pick. It is a running total, not a timeline: counts, not attempts.
+4. **`heartbeat`** — roughly every TTL/3 during long work. A lapsed lease returns the item to the
    pool and another agent may take it while you are still typing. Expiry always comments on the item,
    and **after three expiries it is flagged for a human** — an item that repeatedly kills its agent
    is underspecified, and the fix is refinement, not another attempt.
-4. **`complete`** — `outcome` is not a formality: it is the evidence. What you did, the PR link or
+5. **`complete`** — `outcome` is not a formality: it is the evidence. What you did, the PR link or
    commit, and what you actually verified. `close` defaults to true; pass `close: false` to end the
    lease and record the outcome while leaving the item open for someone else's half. Use **`release`**
    with a reason when you are handing work back unfinished — silence is the one unacceptable ending.
@@ -79,6 +95,35 @@ held  →  claim  →  …work…  →  heartbeat every ~TTL/3  →  complete
    something that does not exist and it is labelled `evidence-missing`. Both are visible on the
    board, so a vague "done" or a half-remembered sha is not a way to move faster — it is a way to be
    marked in public. Push your commit *before* you complete, and paste the sha you actually pushed.
+
+## Looking around
+
+Four tools answer four different questions, and reaching for the wrong one is how a project full of
+work looks empty:
+
+- **`next`** — what could I claim right now. Read-only, capability-filtered, at most `limit` items
+  (default 10, max 50), so a short list is a page rather than a verdict.
+- **`find`** — filter *this* project by label, priority, state group, module, parent, or holder, and
+  combine them. Plane's own list tools cannot filter at all, so use this instead of listing
+  everything and sifting it yourself. `holder` is the one Plane could never offer, because it comes
+  from the lease table: `any` shows what the fleet is working on, `none` shows what is free.
+  `ready: true` applies the same gate `claim` uses. The reply carries `matched` — the number of hits
+  *before* `limit` — so you can tell a complete answer from a first page.
+- **`search`** — titles across every project you can see, and the only tool here that crosses
+  project boundaries. Use it before capturing, to find out whether something is already written
+  down, and to resolve an item a human named rather than numbered. Results are pointers — id,
+  readable id, title, project — so follow up with `find`, `tree` or `why` inside that project.
+  Scoped to your own Plane access, so it cannot show you a project you could not open yourself.
+- **`board`** — where the whole project stands: per module, the total, done, held, ready and blocked
+  counts, which add up because an item is in exactly one bucket, plus every live lease. `ready` is
+  the number Plane cannot produce on its own — it needs the readiness gate *and* the lease table.
+  Read it before starting something new: finishing what is nearly done usually beats it.
+
+**`board` also answers whether the project has any shape at all.** Its `structure` block reports how
+many items are filed in a module, how many have a parent, how many are containers, how deep the
+hierarchy actually goes, and how many are unplaced. A `depth` of 1 with a high `unplacedOpen` is a
+flat inbox with a tracker's name on it, not a plan — and the fix is decomposition and modules, not
+more captures. Check it before adding to the pile.
 
 ## Capture: write it down before you decide
 
@@ -165,9 +210,15 @@ at once is the mistake — that is what labels are for.
   if someone is working it, the holder and lease expiry. Call it *before* decomposing: it is the
   only way to see whether the work was already broken up, and "unfinished" without a holder is a
   different thing from "unfinished and already being worked".
-- **`capture(parentId: …)`** makes a sub-item. Use it for real decomposition. A parent with
-  unfinished children stops being claimable, which is what you want: it is a container, not a task.
-  This composes up the tree — a grandparent stays unclaimable while any leaf under it is open.
+- **`decompose`** writes every child in one call, and is the right tool for breaking work up.
+  `capture(parentId: …)` makes a single sub-item and is for adding one child to a plan that already
+  exists. The difference matters because a parent with unfinished children stops being claimable —
+  which is what you want, it is a container rather than a task, and it composes up the tree so a
+  grandparent stays unclaimable while any leaf under it is open. But it also means the plan goes
+  live at its *first* child: written one capture at a time, another agent can claim child 1 and
+  start work while children 2–5 are still in your head. `decompose` is not a transaction — if some
+  children fail the rest still land — so read `complete` in the reply, and `failed`, which names
+  exactly which children did not.
 - **`discoveredFrom`** is provenance, not structure — usually derived from your lease rather than
   passed. If you pass it where you meant `parentId`, the fleet will happily claim the parent as
   well as the child. Giving `parentId` suppresses the provenance edge, because a parent already
@@ -253,7 +304,8 @@ a capability mismatch. Guess only if that is somehow unavailable, in this order:
    labelled with one of them. A capability list you did not expect is the usual reason a project
    full of work looks empty to exactly one agent.
 
-`next` returns at most `limit` items (default 10, max 50), so a short list is a page, not a verdict.
+A short `next` is a page, not a verdict — see **Looking around** above for the tool that answers
+each of those without guessing.
 
 ## What the gateway refuses, and why
 
