@@ -114,12 +114,13 @@ work looks empty:
   you would actually type live in the body. A body hit says `where: "body"` and carries the
   surrounding text, so you can tell a real match from a passing mention without opening it; title
   hits sort first. Use it before capturing, to find out whether something is already written down,
-  and to resolve an item a human named rather than numbered. Pass `workspace: true` to cross
-  project boundaries — that path searches **titles only**, because Plane offers no workspace-wide
-  search over descriptions and reading every project to fake one would cost a request each; the
-  reply says so rather than leaving you to conclude the work does not exist. Results are pointers,
-  so follow up with `find`, `tree` or `why` inside that project. Scoped to your own Plane access
-  either way.
+  and to resolve an item a human named rather than numbered. Pass `workspace: true` to cross project
+  boundaries — descriptions included there too, by sweeping each project you can see. Above 25
+  projects it falls back to Plane's title-only endpoint and says so in the reply, rather than reading
+  an arbitrary first 25 and silently skipping the one you wanted; a project it could not read is
+  named in `unreadableProjects`, because "no results" and "could not look" are different answers.
+  Results are pointers, so follow up with `find`, `tree` or `why` inside that project. Scoped to your
+  own Plane access either way.
 - **`board`** — where the whole project stands: per module, the total, done, held, ready and blocked
   counts, which add up because an item is in exactly one bucket, plus every live lease. `ready` is
   the number Plane cannot produce on its own — it needs the readiness gate *and* the lease table.
@@ -136,6 +137,30 @@ more captures. Check it before adding to the pile.
 Call `capture` the moment you notice something, not when you get round to it. It is idempotent
 (pass `idempotencyKey` if you might retry) and near-duplicate titles merge into the existing item,
 so calling it freely is the intended usage.
+
+**First decide whether it is a task at all.** "I discovered something" is not the same as "there is
+new work", and most discoveries are not: they are *constraints on work that already has an item*.
+Filed as a task, a constraint ends up sitting **next to** the work instead of **in** it, and the
+agent who claims that work never sees it. It then completes honestly, and the constraint stays open
+beside something that is already wrong. Re-parenting does not save you here — a sibling is exactly
+as unreachable as an orphan.
+
+So before you call `capture`, ask what the finding constrains. If it names existing items, split it:
+
+1. **The requirement goes into those items** as explicit acceptance criteria — specific enough that
+   it cannot be paraphrased into vagueness. Name the exact values, addresses or inputs to test
+   against, not the shape of the concern.
+2. **Only the independently verifiable residue stays a task**, and write it as a *proof* rather than
+   a statement: `Prove the rate limit binds on inbound credit, not outbound send` rather than
+   `Apply the rate limit to _credit, not _debit`. Give it `blocked_by` the items it verifies, so it
+   cannot be picked up before there is something to check.
+
+**Does the wrong version look right?** That is the test for whether step 2 earns a separate item. A
+rate limit on the wrong path compiles and passes a naive test; an address copied across chains
+produces config that reads as symmetric and never fails at deploy. Neither is caught by implementing
+carefully — only by deliberately feeding the guard bad input, which is real work and deserves its
+own item. When the wrong version *does* look wrong, the acceptance criterion alone is enough and a
+second item is landfill.
 
 **Read what it returns.** `deduped: true` means you did not create anything — your text was dropped
 and an existing item was handed back, so if your body carried something the original lacks, add it
@@ -171,10 +196,21 @@ outside this repo: keep. Internal and short-lived: put it in the body, where bei
 
 The test: would someone who has never read this repo know what changes for them?
 
-**Placement is automatic now.** Whatever you capture lands in the module of its `parentId`, or
-failing that of the item you are holding, and the reply says `moduleInherited: true`. Pass
-`moduleId` only to put work somewhere neither would have chosen. If the source is in no module,
-nothing is invented.
+**The module is automatic. The parent is not — and that asymmetry is on you until it is fixed.**
+Whatever you capture lands in the module of its `parentId`, or failing that of the item you are
+holding, and the reply says `moduleInherited: true`. Pass `moduleId` only to put work somewhere
+neither would have chosen. If the source is in no module, nothing is invented.
+
+`parentId` has no such inheritance: omit it and the item is created at the root, filed in a module
+and hanging off nothing. Because the module is filled in for you, the board still *reports* as
+placed — so this decays silently, and measurably does. Measured 2026-07-31 on a board built by one
+planning session and then worked normally: every item from the planning session parented, every item
+captured afterwards an orphan. The planning session used `decompose`, which always sets a parent;
+ordinary work used `capture`, which never does.
+
+Until the gateway inherits it, **pass `parentId` yourself** whenever the work belongs under something
+— and check what you have written: `board` reports `parented` against `items`, and a gap between
+them is the shape of this problem.
 
 **Provenance is automatic too.** If you hold exactly one item in the project, whatever you capture
 is linked back to it and the reply says `discoveredFromInferred: true`. You do not have to remember
