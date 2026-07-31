@@ -8,6 +8,7 @@ import { PlaneMcp } from './planemcp.js';
 import type { EvidencePolicy } from './evidence.js';
 import { configFromEnv } from './ghcheck.js';
 import { registerRoutes } from './routes.js';
+import { DEFAULT_THRESHOLDS, reviewAll } from './review.js';
 
 function required(name: string): string {
   const v = process.env[name];
