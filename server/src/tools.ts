@@ -160,10 +160,39 @@ const text = (body: unknown): ToolResult => ({
   content: [{ type: 'text', text: typeof body === 'string' ? body : JSON.stringify(body, null, 2) }],
 });
 
-const errorResult = (code: string, message: string, recovery?: string): ToolResult => ({
-  isError: true,
-  content: [{ type: 'text', text: `${code}: ${message}${recovery ? `\n\nWhat to do: ${recovery}` : ''}` }],
-});
+/**
+ * A refusal, as the model will read it.
+ *
+ * `fields` matters as much as `message` and used to be dropped here: the REST
+ * layer computes exactly which field failed and why, and this function forwarded
+ * only the code, the message and the recovery line — so `complete` with an
+ * over-long `outcome` arrived as "Request validation failed / Request was
+ * malformed", and the only way to learn it was a 2000-character cap on `outcome`
+ * was to go and read `toolspec.ts`.
+ *
+ * The cost of that is not one confused call. An agent that cannot see which
+ * field was wrong has two plausible next moves, retry the same body or give up,
+ * and giving up on `complete` means going silent — the one unacceptable ending.
+ */
+const errorResult = (
+  code: string,
+  message: string,
+  recovery?: string,
+  fields?: Array<{ field: string; problem: string }>,
+): ToolResult => {
+  const detail = fields?.length
+    ? `\n\n${fields.map((f) => `  ${f.field}: ${f.problem}`).join('\n')}`
+    : '';
+  return {
+    isError: true,
+    content: [
+      {
+        type: 'text',
+        text: `${code}: ${message}${detail}${recovery ? `\n\nWhat to do: ${recovery}` : ''}`,
+      },
+    ],
+  };
+};
 
 /**
  * Invoke a tool by name.
@@ -196,8 +225,13 @@ export async function callTool(
     });
     const parsed: unknown = res.body ? JSON.parse(res.body) : {};
     if (res.statusCode >= 400) {
-      const e = parsed as { error?: string; message?: string; recovery?: string };
-      return errorResult(e.error ?? 'ERROR', e.message ?? 'request failed', e.recovery);
+      const e = parsed as {
+        error?: string;
+        message?: string;
+        recovery?: string;
+        fields?: Array<{ field: string; problem: string }>;
+      };
+      return errorResult(e.error ?? 'ERROR', e.message ?? 'request failed', e.recovery, e.fields);
     }
     return text(parsed);
   }

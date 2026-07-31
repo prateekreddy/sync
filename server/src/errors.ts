@@ -78,6 +78,12 @@ export const RECOVERY: Record<ErrorCode, string> = {
   UNAUTHENTICATED:
     'Your gateway token is missing, revoked, or not recognised. Retrying cannot fix this and no other tool will work either — stop and ask your operator to issue a new token.',
   NOT_FOUND: 'No such work item.',
-  INVALID: 'Request was malformed.',
+  // Every INVALID says the same actionable thing — retrying unchanged is futile —
+  // without promising a field list. Most INVALIDs are schema failures and carry
+  // one, but a near-miss label name or a rejected epoch does not, and a recovery
+  // line pointing at "the listed fields" when none are listed sends the caller
+  // looking for something that is not there.
+  INVALID:
+    'The request did not match what the tool accepts. Change it and call again — sending the same thing will fail identically.',
   UPSTREAM: 'Plane was unreachable or errored. Retry with backoff.',
 };

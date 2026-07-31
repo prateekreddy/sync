@@ -100,6 +100,40 @@ export interface Deps {
   planeWebUrl?: string | undefined;
 }
 
+/**
+ * " — you sent 2160" for a length that overran, and nothing otherwise.
+ *
+ * Zod names the limit but never the value, so a caller over a cap has to guess
+ * how much to cut. On `complete` that guess costs a round trip per attempt, and
+ * the field it bites is `outcome`, where the caller is usually an agent that
+ * cannot see the schema.
+ *
+ * Exported for its own test: the interesting cases are the ones where it must
+ * stay silent rather than the one where it speaks, because a wrong number here
+ * is worse than none.
+ */
+export function sizeSuffix(
+  issue: z.ZodIssue,
+  req: { body?: unknown; query?: unknown },
+): string {
+  if (issue.code !== 'too_big' && issue.code !== 'too_small') return '';
+
+  // The body first, then the query: a GET validates its query string, and the
+  // same field name can exist in both on a route that takes each.
+  let node: unknown = (req.body as Record<string, unknown> | undefined) ?? undefined;
+  for (const key of issue.path) node = (node as Record<string, unknown> | undefined)?.[key as never];
+  if (node === undefined) {
+    node = req.query;
+    for (const key of issue.path) node = (node as Record<string, unknown> | undefined)?.[key as never];
+  }
+
+  if (typeof node === 'string') return ` — you sent ${node.length}`;
+  if (Array.isArray(node)) return ` — you sent ${node.length}`;
+  // Numbers are their own message ("must be less than or equal to 3600"), and
+  // echoing the value back adds nothing. Anything else, stay quiet.
+  return '';
+}
+
 export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   const { pool, plane } = deps;
 
@@ -153,7 +187,10 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         recovery: RECOVERY.INVALID,
         fields: err.issues.map((i) => ({
           field: i.path.join('.') || '(body)',
-          problem: i.message,
+          // Zod says "String must contain at most 2000 character(s)" but never
+          // what was sent, which leaves a caller trimming blind — and blind
+          // trimming of a completion outcome costs a round trip each attempt.
+          problem: i.message + sizeSuffix(i, req),
         })),
       });
     }
