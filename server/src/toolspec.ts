@@ -368,7 +368,11 @@ export const NATIVE_TOOLS: NativeTool[] = [
       'than start something new, and to see what the rest of the fleet is holding. ' +
       '`structure` says whether the board has any shape at all: how many items are filed in a ' +
       'module, have a parent, or are containers, how deep the hierarchy goes, and how many are ' +
-      'unplaced. A depth of 1 with a high `unplacedOpen` means a flat inbox rather than a plan.',
+      'unplaced. Read `rootlessOpen` rather than `unplacedOpen` to judge the tree: `unplaced` ' +
+      'counts only items that are in no module AND have no parent, so a board where everything ' +
+      'was filed in a module and nothing had a parent reported unplaced: 0 and read as fully ' +
+      'structured while being flat. `rootlessOpen` is open leaf work sitting at top level ' +
+      'whether filed or not — high, or a depth of 1, means an inbox rather than a plan.',
     schema: BoardQuery,
     method: 'GET',
     request: (a) => ({ path: q('/v1/board', a) }),

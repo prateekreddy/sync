@@ -136,9 +136,18 @@ work looks empty:
 
 **`board` also answers whether the project has any shape at all.** Its `structure` block reports how
 many items are filed in a module, how many have a parent, how many are containers, how deep the
-hierarchy actually goes, and how many are unplaced. A `depth` of 1 with a high `unplacedOpen` is a
-flat inbox with a tracker's name on it, not a plan — and the fix is decomposition and modules, not
-more captures. Check it before adding to the pile.
+hierarchy actually goes, and how many are unplaced.
+
+**Read `rootlessOpen`, not `unplacedOpen`, to judge the tree.** `unplaced` counts only items that
+are in no module *and* have no parent, so a board where everything was filed in a module and nothing
+had a parent reported `unplaced: 0` and read as fully structured while being completely flat — 63
+items, 14 of them hanging off nothing. Filed and placed are two different properties.
+`rootlessOpen` is open leaf work sitting at top level whether it is filed or not; containers are
+excluded, because a root is where a container belongs.
+
+A `depth` of 1, or a `rootlessOpen` close to the open item count, is a flat inbox with a tracker's
+name on it, not a plan — and the fix is decomposition and modules, not more captures. Check it
+before adding to the pile.
 
 ## Capture: write it down before you decide
 

@@ -63,6 +63,24 @@ export interface Structure {
   unplaced: number;
   /** The actionable half of `unplaced`: placing finished work changes nothing. */
   unplacedOpen: number;
+  /**
+   * Open leaf items with no parent — filed in a module or not.
+   *
+   * Distinct from `unplaced`, and the distinction is the point. `unplaced`
+   * requires an item to be in no module AND have no parent, so a board where
+   * every item was filed in a module and none had a parent reported
+   * `unplaced: 0` and read as fully structured. Filed and placed are two
+   * different properties, and conflating them made the metric say "fine" while
+   * the thing it measured decayed.
+   *
+   * Measured on a real project the day this was added: 63 items, `unplaced: 0`,
+   * and 14 with no parent at all.
+   *
+   * Containers are excluded on purpose — an item with children belongs at the
+   * root, that is what a root is. What this counts is leaf work sitting at top
+   * level, which is the shape of an inbox rather than a plan.
+   */
+  rootlessOpen: number;
   /** Longest parent chain. 1 means flat — every item is top level. */
   depth: number;
 }
@@ -123,19 +141,24 @@ function structureOf(
     containers: 0,
     unplaced: 0,
     unplacedOpen: 0,
+    rootlessOpen: 0,
     depth: 0,
   };
 
   for (const i of all) {
     const inModule = filed.has(i.id);
     const hasChildren = (childCount.get(i.id) ?? 0) > 0;
+    const open = !DONE.has(groupOf.get(i.state) as State['group']);
     if (inModule) s.filed++;
     if (i.parent) s.parented++;
     if (hasChildren) s.containers++;
     if (!inModule && !i.parent && !hasChildren) {
       s.unplaced++;
-      if (!DONE.has(groupOf.get(i.state) as State['group'])) s.unplacedOpen++;
+      if (open) s.unplacedOpen++;
     }
+    // Deliberately not gated on `inModule`: being filed is what made the old
+    // number look healthy while the tree was flat.
+    if (open && !i.parent && !hasChildren) s.rootlessOpen++;
     s.depth = Math.max(s.depth, chain(i.id, new Set()));
   }
   return s;

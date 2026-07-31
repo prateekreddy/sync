@@ -205,9 +205,31 @@ describe('structure', () => {
     });
   });
 
-  it('counts an item in a module as placed even with no parent', async () => {
+  it('counts an item in a module as filed even with no parent', async () => {
     const got = await board(planeWith(flat, [id('a')]), pool, { projectId: PROJECT });
     expect(got.structure).toMatchObject({ filed: 1, unplaced: 2 });
+  });
+
+  it('still calls a filed item rootless when it has no parent', async () => {
+    // The failure this exists for: `unplaced` needs an item to be in no module
+    // AND have no parent, so a board with everything filed and nothing parented
+    // reported unplaced: 0 and read as fully structured. Measured on a real
+    // project: 63 items, unplaced: 0, 14 with no parent.
+    const got = await board(planeWith(flat, flat.map((i) => i.id)), pool, { projectId: PROJECT });
+
+    expect(got.structure).toMatchObject({ filed: 3, unplaced: 0, rootlessOpen: 3 });
+  });
+
+  it('does not count a container as rootless — a root is where containers belong', async () => {
+    const got = await board(planeWith(shaped), pool, { projectId: PROJECT });
+    // `epic` has children, `loose` does not: only `loose` is rootless leaf work.
+    expect(got.structure?.rootlessOpen).toBe(1);
+  });
+
+  it('does not count finished work as rootless', async () => {
+    const mixed = [wi('open-1'), wi('shipped', { state: 'done' })];
+    const got = await board(planeWith(mixed), pool, { projectId: PROJECT });
+    expect(got.structure?.rootlessOpen).toBe(1);
   });
 
   it('separates the unplaced work you can still act on', async () => {
