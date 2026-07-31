@@ -250,8 +250,19 @@ services:
     environment:
       <<: *proxy-env
     ports:
-      - "${LISTEN_HTTP_PORT:-80}:80"
-      - "${LISTEN_HTTPS_PORT:-443}:443"
+      # The bind address is templated so this stack can sit behind a reverse
+      # proxy that already owns the host's 80 and 443 — `gen-env.sh
+      # --behind-proxy` sets it to 127.0.0.1 and moves both ports up. Publishing
+      # on every interface is right only when this proxy IS the edge; when it is
+      # not, an open 8090 is a second, unprotected way into Plane.
+      - "${PROXY_BIND:-0.0.0.0}:${LISTEN_HTTP_PORT:-80}:80"
+      # Still published behind an external proxy, on loopback and unused. Compose
+      # cannot omit a port entry conditionally, and a loopback port nothing
+      # connects to costs nothing — whereas duplicating this whole service under
+      # a second profile to drop one line would be a real maintenance cost. The
+      # inner Caddy never asks for a certificate regardless: SITE_ADDRESS stays
+      # `:80`, so nothing is listening on 443 to reach anyway.
+      - "${PROXY_BIND:-0.0.0.0}:${LISTEN_HTTPS_PORT:-443}:443"
     volumes:
       - proxy_config:/config
       - proxy_data:/data

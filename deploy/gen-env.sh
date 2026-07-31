@@ -3,6 +3,13 @@
 # Write deploy/.env with real, random secrets.
 #
 #   ./gen-env.sh [--domain localhost] [--port 80]
+#   ./gen-env.sh --behind-proxy --domain plane.example.dev --gateway-domain mcp.example.dev
+#
+# Use --behind-proxy on a host that already runs a reverse proxy (Caddy, nginx,
+# Traefik) owning 80 and 443. It binds this stack to loopback on high ports,
+# leaves TLS and certificates to that proxy, and writes a matching Caddyfile
+# next to .env. Without it, the bundled proxy is the edge and takes 80/443
+# itself, which on such a host simply fails to bind.
 #
 # This exists because Plane's published compose file ships *working defaults* for
 # SECRET_KEY, the MinIO credentials and the RabbitMQ password. They are in the
@@ -16,6 +23,8 @@ cd "$(dirname "$0")"
 DOMAIN=localhost
 PORT=80
 HTTPS_PORT=
+BEHIND_PROXY=0
+GATEWAY_DOMAIN=
 FORCE=0
 PLANE_URL=
 PLANE_NET=
@@ -26,6 +35,13 @@ while [ $# -gt 0 ]; do
     --domain)     DOMAIN="$2"; shift 2 ;;
     --port)       PORT="$2";   shift 2 ;;
     --https-port) HTTPS_PORT="$2"; shift 2 ;;
+    # Sit behind a reverse proxy that already terminates TLS on this host.
+    --behind-proxy) BEHIND_PROXY=1; shift ;;
+    # The hostname agents dial for the gateway. Behind a proxy this becomes
+    # GATEWAY_PUBLIC_URL, which is the OAuth issuer and every advertised
+    # endpoint — a wrong or missing value sends clients somewhere nothing is
+    # listening, and it cannot be inferred from the request behind a proxy.
+    --gateway-domain) GATEWAY_DOMAIN="$2"; shift 2 ;;
     # Attach to a Plane you already run instead of deploying one.
     --plane-url)  PLANE_URL="$2"; shift 2 ;;
     --plane-network) PLANE_NET="$2"; shift 2 ;;
@@ -56,17 +72,53 @@ fi
 rand() { openssl rand -hex "$1"; }
 randb64() { openssl rand -base64 "$1" | tr -d '\n=+/' | cut -c "1-$2"; }
 
-if [ "$PORT" = "80" ]; then
-  WEB_URL="http://${DOMAIN}"
-  HOST_PORT="${DOMAIN}"
-  : "${HTTPS_PORT:=443}"
-else
-  WEB_URL="http://${DOMAIN}:${PORT}"
-  HOST_PORT="${DOMAIN}:${PORT}"
-  # Someone who moved HTTP off 80 is running beside something else, and Plane's
-  # proxy binds both ports whether or not TLS is configured. Defaulting HTTPS to
-  # 443 there is a near-certain collision, so derive it instead.
+# Where this stack listens on the host, and what URL the outside world uses for
+# it. Behind a reverse proxy those are two different things, which is the whole
+# reason this mode exists: Plane and the gateway both build absolute URLs — login
+# redirects, CORS origins, the OAuth issuer — and every one of them must be the
+# PUBLIC https address, not the loopback port the proxy happens to forward from.
+if [ "$BEHIND_PROXY" -eq 1 ]; then
+  [ -n "$GATEWAY_DOMAIN" ] || {
+    echo "--behind-proxy also needs --gateway-domain (the hostname agents dial, e.g. mcp.example.dev)" >&2
+    exit 2
+  }
+  [ "$DOMAIN" != "localhost" ] || {
+    echo "--behind-proxy also needs --domain (the public hostname for Plane, e.g. plane.example.dev)" >&2
+    exit 2
+  }
+
+  # Loopback only. The proxy in front is the single way in, so anything bound to
+  # a public interface here is a second route that bypasses its TLS.
+  BIND=127.0.0.1
+  : "${PORT:=80}"
+  [ "$PORT" = "80" ] && PORT=8090
   : "${HTTPS_PORT:=$((PORT + 1))}"
+  GATEWAY_PORT=8787
+
+  # https, because that is what the front end serves even though this stack
+  # speaks plain HTTP behind it. Getting this wrong is not cosmetic: Plane builds
+  # sign-in redirects from WEB_URL, so an http:// value sends users out of the
+  # secure origin and the login round trip fails.
+  WEB_URL="https://${DOMAIN}"
+  GATEWAY_URL="https://${GATEWAY_DOMAIN}"
+  # No port: the public address is 443 via the front end.
+  HOST_PORT="${DOMAIN}"
+else
+  BIND=0.0.0.0
+  GATEWAY_PORT=8787
+  GATEWAY_URL=""
+  if [ "$PORT" = "80" ]; then
+    WEB_URL="http://${DOMAIN}"
+    HOST_PORT="${DOMAIN}"
+    : "${HTTPS_PORT:=443}"
+  else
+    WEB_URL="http://${DOMAIN}:${PORT}"
+    HOST_PORT="${DOMAIN}:${PORT}"
+    # Someone who moved HTTP off 80 is running beside something else, and Plane's
+    # proxy binds both ports whether or not TLS is configured. Defaulting HTTPS to
+    # 443 there is a near-certain collision, so derive it instead.
+    : "${HTTPS_PORT:=$((PORT + 1))}"
+  fi
 fi
 
 # One stack, two modes. Deploying Plane is the default; giving --plane-url turns
@@ -135,16 +187,35 @@ PLANE_DB_HOST=${PLANE_DB}
 APP_DOMAIN=${HOST_PORT}
 LISTEN_HTTP_PORT=${PORT}
 LISTEN_HTTPS_PORT=${HTTPS_PORT}
+# Which host interface the published ports bind to. 127.0.0.1 when something
+# else on this host terminates TLS: that front end is then the only way in, and
+# anything bound to a public interface would be a second route that bypasses it.
+PROXY_BIND=${BIND}
+GATEWAY_BIND=${BIND}
 # Plain HTTP. Plane does not require TLS — this tells its proxy to serve :80 and
 # never ask for a certificate. For real TLS set this to your domain and fill in
 # CERT_EMAIL, and the proxy will provision one over ACME.
+#
+# Leave it at :80 behind an external reverse proxy. That proxy holds the
+# certificate; a second Caddy also trying to answer ACME challenges for the same
+# name would fail every one of them and can burn the CA's rate limit for the
+# domain.
 SITE_ADDRESS=:80
 CERT_EMAIL=
 CERT_ACME_CA=https://acme-v02.api.letsencrypt.org/directory
-# Must carry the port, or Plane builds sign-in redirects that drop it.
+# The PUBLIC address, which behind a reverse proxy is not where this stack
+# listens. Plane builds sign-in redirects from it, so http:// here when the front
+# end serves https sends users out of the secure origin mid-login. Must carry the
+# port when there is one.
 WEB_URL=${WEB_URL}
 CORS_ALLOWED_ORIGINS=${WEB_URL}
 GATEWAY_LISTEN_PORT=8787
+# How agents reach the gateway from outside. This is the OAuth issuer and the
+# base of every endpoint the gateway advertises, so behind a proxy it must be set
+# explicitly: the request the gateway sees arrives on plain HTTP at a loopback
+# port, and anything derived from it would advertise an address no client can
+# reach. Empty is correct only when the gateway is itself the edge.
+GATEWAY_PUBLIC_URL=${GATEWAY_URL}
 
 # ── Plane ────────────────────────────────────────────────────────────────────
 APP_RELEASE=v1.3.1
@@ -212,4 +283,42 @@ if [ -n "$PLANE_URL" ]; then
 else
   echo "  docker compose up -d      # Plane; first boot pulls ~2GB and takes a few minutes"
   echo "  ./provision.sh            # workspace, project, agent tokens, then the gateway"
+fi
+
+# ── the reverse proxy in front, when there is one ────────────────────────────
+#
+# Written as a file rather than printed once, because the ports here are derived
+# and a snippet quoted from memory later will not match what .env actually says.
+if [ "$BEHIND_PROXY" -eq 1 ]; then
+  cat > Caddyfile.sync <<CADDY
+# Generated by gen-env.sh. Add to the Caddy already running on this host —
+# import it from your Caddyfile, or paste these two blocks in:
+#
+#   import $(pwd)/Caddyfile.sync
+#
+# Then: caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy
+#
+# This stack listens on loopback only and speaks plain HTTP. Caddy holds the
+# certificates for both names; nothing inside the stack asks for one.
+
+${DOMAIN} {
+    # Plane's own proxy, which does its internal path routing (/, /god-mode/,
+    # /spaces/, /api/, /auth/, /live/ and uploads). Point at it rather than at
+    # the individual containers: that routing is upstream's and changes between
+    # Plane releases, so reproducing it here would break on the next bump.
+    reverse_proxy 127.0.0.1:${PORT}
+}
+
+${GATEWAY_DOMAIN} {
+    # The agent gateway. Agent tokens are bearer credentials and cross this hop
+    # in the clear on loopback only.
+    reverse_proxy 127.0.0.1:${GATEWAY_PORT} {
+        # MCP streams over Server-Sent Events. Without this Caddy may buffer the
+        # response, and a streamed tool result arrives only when the call ends —
+        # which for a long call looks exactly like a hung agent.
+        flush_interval -1
+    }
+}
+CADDY
+  echo "wrote Caddyfile.sync"
 fi

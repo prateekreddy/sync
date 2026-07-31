@@ -123,7 +123,14 @@ services:
     ports:
       # Agent boxes dial in here. Put this behind TLS before exposing it beyond a
       # trusted network — agent tokens are bearer credentials.
-      - "${GATEWAY_LISTEN_PORT:-8787}:8787"
+      #
+      # The bind address is templated for exactly that reason: behind a reverse
+      # proxy terminating TLS, `gen-env.sh --behind-proxy` sets it to 127.0.0.1,
+      # so the only route in is the one that has a certificate. Left on every
+      # interface, port 8787 stays reachable over plain HTTP and every agent
+      # token crossing it is readable in transit — which is the failure a TLS
+      # front end was supposed to prevent.
+      - "${GATEWAY_BIND:-0.0.0.0}:${GATEWAY_LISTEN_PORT:-8787}:8787"
     networks: [plane]
     depends_on:
       gateway-migrate:

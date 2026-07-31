@@ -35,6 +35,46 @@ Do not skip `gen-env.sh`. Plane's published compose file ships *working defaults
 repository, so a stack brought up with them has a session-signing key and object
 storage anyone can guess. It boots fine, which is exactly why it is easy to miss.
 
+### Deploy behind a reverse proxy you already run
+
+On a host where Caddy, nginx or Traefik already owns 80 and 443:
+
+```bash
+cd deploy
+./gen-env.sh --behind-proxy \
+  --domain plane.example.dev --gateway-domain mcp.example.dev
+docker compose up -d
+./provision.sh
+```
+
+This binds the whole stack to **loopback only** — Plane on `127.0.0.1:8090`, the
+gateway on `127.0.0.1:8787` — and leaves TLS to the proxy in front. It also writes
+`deploy/Caddyfile.sync`, two blocks to import from your existing Caddyfile:
+
+```caddy
+plane.example.dev  { reverse_proxy 127.0.0.1:8090 }
+mcp.example.dev    { reverse_proxy 127.0.0.1:8787 { flush_interval -1 } }
+```
+
+Three things this mode gets right that setting the ports by hand does not:
+
+- **`GATEWAY_PUBLIC_URL` is written.** It is the OAuth issuer and the base of every
+  endpoint the gateway advertises. Behind a proxy the request arrives on plain HTTP
+  at a loopback port, so anything inferred from it advertises an address no client
+  can reach, and sign-in fails in a way that looks like a client bug.
+- **`WEB_URL` and `CORS_ALLOWED_ORIGINS` become `https://`.** Plane builds sign-in
+  redirects from `WEB_URL`; an `http://` value behind an `https://` front end drops
+  users out of the secure origin mid-login.
+- **`SITE_ADDRESS` stays `:80`.** Plane's bundled proxy never asks for a
+  certificate. Two proxies answering ACME challenges for one name fail every
+  challenge and can burn the CA's rate limit for the domain.
+
+Plane's bundled proxy still runs, and should: it does Plane's internal path routing
+(`/god-mode/`, `/spaces/`, `/api/`, `/auth/`, `/live/`, uploads). That routing is
+upstream's and changes between releases, so pointing your proxy at the individual
+containers instead would break on the next version bump. It binds nothing public in
+this mode.
+
 ### Attach to a Plane you already run
 
 ```bash
