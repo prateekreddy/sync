@@ -165,9 +165,10 @@ export const SearchQuery = z.object({
     .boolean()
     .default(false)
     .describe(
-      'Search every project you can see instead of just yours. Titles only — Plane offers no ' +
-        'workspace-wide search over descriptions, and reading every project to do it here would ' +
-        'cost a request per project. Leave it off unless the work could be anywhere.',
+      'Search every project you can see instead of just yours, descriptions included. Costs one ' +
+        'request per project, from your own Plane budget — fine when you mean it, wasteful as a ' +
+        'default. Leave it off unless the work could be anywhere. A workspace with more projects ' +
+        'than this will read falls back to titles and says so in the reply.',
     ),
   limit: z.coerce.number().int().min(1).max(50).default(20),
 });
@@ -375,9 +376,10 @@ export const NATIVE_TOOLS: NativeTool[] = [
       'lead with behaviour. Use it before capturing, to check whether something is already ' +
       'written down, and to find an item a human referred to only by subject. A body hit says ' +
       'where=body and carries the surrounding text, so you can tell a real match from a passing ' +
-      'mention without opening it. Pass workspace:true to cross project boundaries; that path ' +
-      'searches titles only, and says so in the reply. Results are pointers — use find, tree or ' +
-      'why inside the project for more. Scoped to your own Plane access either way.',
+      'mention without opening it. Pass workspace:true to cross project boundaries — descriptions ' +
+      'included, at one request per project, and the reply says how many it read. Results are ' +
+      'pointers — use find, tree or why inside the project for more. Scoped to your own Plane ' +
+      'access either way.',
     schema: SearchQuery,
     method: 'GET',
     request: (a) => ({ path: q('/v1/search', a) }),

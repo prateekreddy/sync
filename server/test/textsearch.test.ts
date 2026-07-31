@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { plainText, searchItems } from '../src/textsearch.js';
+import { plainText, rankAcross, searchItems } from '../src/textsearch.js';
 import type { WorkItem } from '../src/plane.js';
 
 /**
@@ -126,5 +126,40 @@ describe('descriptions are HTML', () => {
   it('treats a missing or empty description as no body at all', () => {
     expect(plainText(undefined)).toBe('');
     expect(find([item({ description_html: '<p></p>' })], 'anything')).toEqual([]);
+  });
+});
+
+/**
+ * Workspace search sweeps one project at a time, so the ranking has to be redone
+ * over the union. Ranking inside each project and concatenating would let the
+ * order projects came back in decide the answer.
+ */
+describe('merging results across projects', () => {
+  const hit = (id: string, where: 'title' | 'body') => ({
+    workItemId: id,
+    readableId: `X-${id}`,
+    title: id,
+    projectId: 'p',
+    where,
+  });
+
+  it('puts every title hit above every body hit, whichever project it came from', () => {
+    const merged = rankAcross([
+      [hit('a-title', 'title'), hit('a-body', 'body')],
+      [hit('b-title', 'title'), hit('b-body', 'body')],
+    ]);
+    expect(merged.map((h) => h.workItemId)).toEqual(['a-title', 'b-title', 'a-body', 'b-body']);
+  });
+
+  it('does not let the first project monopolise the limit', () => {
+    // Concatenating per project would return two body hits from project A and
+    // never reach project B's title hit.
+    const merged = rankAcross([[hit('a1', 'body'), hit('a2', 'body')], [hit('b1', 'title')]], 2);
+    expect(merged.map((h) => h.workItemId)).toEqual(['b1', 'a1']);
+  });
+
+  it('handles projects that returned nothing', () => {
+    expect(rankAcross([[], [hit('only', 'title')], []]).map((h) => h.workItemId)).toEqual(['only']);
+    expect(rankAcross([])).toEqual([]);
   });
 });

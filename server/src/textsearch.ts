@@ -110,3 +110,18 @@ export function searchItems(
 
   return [...titleHits, ...bodyHits].slice(0, opts.limit ?? 20);
 }
+
+/**
+ * Merge per-project results, keeping the title-before-body rule across projects.
+ *
+ * Concatenating each project's already-ranked list would rank by project instead:
+ * every body hit from the first project would outrank a title hit from the
+ * second, so which project happened to be listed first would decide the answer.
+ */
+export function rankAcross(groups: TextHit[][], limit = 20): TextHit[] {
+  const all = groups.flat();
+  return [...all.filter((h) => h.where === 'title'), ...all.filter((h) => h.where === 'body')].slice(
+    0,
+    limit,
+  );
+}

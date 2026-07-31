@@ -45,7 +45,7 @@ import { find } from './find.js';
 import { tree } from './tree.js';
 import { parseFields } from './view.js';
 import { handleMcpHttp } from './mcphttp.js';
-import { searchItems } from './textsearch.js';
+import { rankAcross, searchItems } from './textsearch.js';
 import { callTool, listTools } from './tools.js';
 import {
   BoardQuery,
@@ -134,6 +134,16 @@ export function sizeSuffix(
   // echoing the value back adds nothing. Anything else, stay quiet.
   return '';
 }
+
+/**
+ * How many projects a workspace-wide search will read in full.
+ *
+ * The sweep is one request per project, spent from the *caller's* Plane budget
+ * rather than a shared one, and `workspace: true` is a flag someone set on
+ * purpose — so the bound exists to stop a pathological workspace, not to ration
+ * an ordinary one. Past it the search falls back to titles and says so.
+ */
+const WORKSPACE_SWEEP_LIMIT = 25;
 
 export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   const { pool, plane } = deps;
@@ -733,25 +743,60 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     const scoped = plane.as(actor.planeToken);
 
     if (s.workspace) {
-      const hits = await scoped.search(s.query);
+      const projects = await scoped.listProjects();
+
+      // Above the cap, fall back rather than sweep. Reading the first N projects
+      // would silently skip the one the caller wanted, and a search that quietly
+      // omits where the answer was is worse than one that says what it could not
+      // reach.
+      if (projects.length > WORKSPACE_SWEEP_LIMIT) {
+        const hits = await scoped.search(s.query);
+        return {
+          query: s.query,
+          scope: 'workspace',
+          matchedOn: `titles only — ${projects.length} projects is past the ${WORKSPACE_SWEEP_LIMIT} this will read for descriptions. Name a projectId to search its descriptions too`,
+          projectsSearched: projects.length,
+          // Pointers, not items. A hit may be in a project whose states and
+          // labels we have not loaded, and inventing a partial view of it would
+          // be worse than saying plainly "here is where it lives, look there".
+          results: hits.slice(0, s.limit).map((h) => ({
+            workItemId: h.id,
+            readableId: `${h.project__identifier}-${h.sequence_id}`,
+            title: h.name,
+            projectId: h.project_id,
+            where: 'title' as const,
+          })),
+          matched: hits.length,
+        };
+      }
+
+      // Concurrently: the sweep is one request per project, and doing them in
+      // series would make the wall-clock the sum rather than the slowest.
+      const perProject = await Promise.all(
+        projects.map(async (p) => {
+          const items = await scoped.listWorkItems(p.id).catch(() => null);
+          // A project that errors is reported, not silently treated as empty —
+          // "no results" and "could not look" are different answers.
+          if (!items) return { unreadable: p.identifier || p.id, hits: [] };
+          return {
+            hits: searchItems(items, s.query, { projectId: p.id, projectIdentifier: p.identifier }),
+          };
+        }),
+      );
+
+      // Title hits from every project before any body hit from any of them, or
+      // the order projects happened to be listed in decides the answer.
+      const results = rankAcross(perProject.map((r) => r.hits), s.limit);
+      const unreadable = perProject.flatMap((r) => ('unreadable' in r ? [r.unreadable] : []));
+
       return {
         query: s.query,
         scope: 'workspace',
-        // Said out loud rather than left to be discovered. Plane's search covers
-        // the workspace in one request precisely because it reads titles only,
-        // and a caller who assumes otherwise concludes the work does not exist.
-        matchedOn: 'titles only — Plane has no workspace-wide search over descriptions',
-        // Pointers, not items. A hit may be in a project whose states and labels
-        // we have not loaded, and inventing a partial view of it would be worse
-        // than saying plainly "here is where it lives, look there".
-        results: hits.slice(0, s.limit).map((h) => ({
-          workItemId: h.id,
-          readableId: `${h.project__identifier}-${h.sequence_id}`,
-          title: h.name,
-          projectId: h.project_id,
-          where: 'title' as const,
-        })),
-        matched: hits.length,
+        matchedOn: 'titles and descriptions',
+        projectsSearched: projects.length - unreadable.length,
+        ...(unreadable.length ? { unreadableProjects: unreadable } : {}),
+        results,
+        matched: results.length,
       };
     }
 

@@ -258,6 +258,21 @@ export class PlaneClient {
     return this.listAll<WorkItem>(`/projects/${projectId}/work-items/?fields=${fields}`);
   }
 
+  /**
+   * Every project this client's token can see, with the identifier a readable id
+   * needs.
+   *
+   * `visibleProjects()` in mint.ts answers the narrower question — is this one id
+   * allowed — and returns bare ids, which cannot build `SYNC-42`. Both survive
+   * because they authenticate differently: that one takes a raw Plane token
+   * before any agent exists, this one is a method on an already-scoped client.
+   */
+  listProjects(): Promise<Array<{ id: string; identifier: string; name: string }>> {
+    return this.listAll<{ id: string; identifier: string; name: string }>(
+      '/projects/?fields=id,identifier,name',
+    );
+  }
+
   getWorkItem(projectId: string, id: string): Promise<WorkItem> {
     return this.request<WorkItem>('GET', `/projects/${projectId}/work-items/${id}/`);
   }
