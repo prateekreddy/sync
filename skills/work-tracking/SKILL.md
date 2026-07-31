@@ -151,6 +151,14 @@ from `claim` when it:
 So: always give `body` enough for someone else to act without you — what, where, and how anyone
 would know it is done. Set `priority` honestly.
 
+**Title it in product terms.** The capability someone gains, or the behaviour that is wrong — not
+the function, file or parameter you expect to touch. `Tell an agent why it cannot claim an item`,
+not `why(workItemId): return the gate reasons`. The pull is toward the second, because the code is
+what is in your head at the moment you write it; the cost lands later, when the function has been
+renamed and the title now describes something that does not exist. Identifiers go in the body,
+where being wrong is cheap. The test: would someone who has never read this repo know what changes
+for them?
+
 **Placement is automatic now.** Whatever you capture lands in the module of its `parentId`, or
 failing that of the item you are holding, and the reply says `moduleInherited: true`. Pass
 `moduleId` only to put work somewhere neither would have chosen. If the source is in no module,
@@ -332,6 +340,7 @@ Every refusal carries a code and a recovery line. The ones that change what you 
 | `STALE_EPOCH` | **your lease lapsed and someone else reclaimed it** | **discard the work — do not submit it** — and claim fresh |
 | `LEASE_EXPIRED` | lapsed, nobody took it | claim it again before continuing |
 | `LEASE_ENDED` | already completed or released | terminal; do not re-submit, claim something else |
+| `INVALID` | a field did not match the schema | read the lines under the message — each names the field, the limit, and what you sent. `outcome` is capped at 2000 characters, which is the one most people meet |
 | `IDEMPOTENCY_MISMATCH` | that key was used with a different body | your bug — use a new key, do not retry the old one |
 | `FORBIDDEN` | your token lacks the capability | do not retry; ask the operator |
 | `UNAUTHENTICATED` | token missing, revoked, or replaced | stop — no tool will work; ask for a new token |

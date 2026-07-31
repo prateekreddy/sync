@@ -28,12 +28,38 @@ const fields = z
       'parentId, holder, expiresAt, updatedAt. workItemId is always returned.',
   );
 
+/**
+ * One title rule, applied wherever a title is written.
+ *
+ * Left to itself a fleet titles work after the code it will touch —
+ * `why(workItemId): return screen()'s reasons` — because that is what is in mind
+ * at the moment of writing. It reads fine on the day and is unreadable a month
+ * later: it names a function that may not survive, says nothing about what anyone
+ * gains, and makes the board a list of diffs rather than of intentions. The board
+ * outlives every one of those names.
+ *
+ * Shared by `capture` and `decompose` so the two cannot drift, and so a
+ * decomposition's children are held to the same bar as its parent.
+ */
+const titleField = z
+  .string()
+  .min(3)
+  .max(255)
+  .describe(
+    'One line, in product terms: the capability someone gains, or the behaviour that is ' +
+      'wrong. Not the function, file, parameter or endpoint that implements it. ' +
+      '"Tell an agent why it cannot claim an item", not "why(workItemId): return the ' +
+      'gate reasons". The test: would someone who has never read this codebase know ' +
+      'what changes for them? Identifiers belong in the body, where they can be wrong ' +
+      'without making the title a lie.',
+  );
+
 export const DEFAULT_TTL = 600;
 export const MAX_TTL = 3600;
 
 export const CaptureBody = z.object({
   projectId: uuid,
-  title: z.string().min(3).max(255).describe('One line. What needs doing.'),
+  title: titleField,
   body: z
     .string()
     .min(1)
@@ -108,7 +134,7 @@ export const DecomposeBody = z.object({
   children: z
     .array(
       z.object({
-        title: z.string().min(3).max(255),
+        title: titleField,
         body: z
           .string()
           .min(1)
