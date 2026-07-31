@@ -14,6 +14,7 @@ import { agentName, createRateLimiter, identify, visibleProjects } from './mint.
 import {
   assertSafeRedirect,
   authServerMetadata,
+  authorizeRedirect,
   consentPage,
   findClient,
   issueCode,
@@ -366,10 +367,17 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       Date.now(),
     );
 
-    const to = new URL(form.redirect_uri);
-    to.searchParams.set('code', code);
-    if (form.state) to.searchParams.set('state', form.state);
-    return reply.redirect(to.toString(), 302);
+    // `base(req)` is the same value `/.well-known/oauth-authorization-server`
+    // advertises as `issuer`, which is what makes the `iss` parameter checkable.
+    return reply.redirect(
+      authorizeRedirect({
+        redirectUri: form.redirect_uri,
+        code,
+        issuer: base(req),
+        state: form.state,
+      }),
+      302,
+    );
   });
 
   app.post('/oauth/token', async (req, reply) => {

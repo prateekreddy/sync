@@ -74,6 +74,37 @@ export function authServerMetadata(base: string) {
   };
 }
 
+/**
+ * Where to send the browser once the human has authorized.
+ *
+ * A function rather than three `searchParams.set` calls in the route because of
+ * `iss` (RFC 9207): its whole purpose is to match the `issuer` the client
+ * recorded from `authServerMetadata`, and a client that validates it — which the
+ * 2026-07-28 revision makes mandatory — fails the flow outright if the two
+ * disagree. Two call sites deriving the same value independently is exactly the
+ * shape that drifts, so both now take it from `base`, and a test pins that they
+ * agree.
+ *
+ * `iss` closes the mix-up attack that `state` and PKCE do not: both are
+ * per-flow, so neither notices a code from one authorization server being
+ * redeemed at another's token endpoint.
+ */
+export function authorizeRedirect(args: {
+  redirectUri: string;
+  code: string;
+  issuer: string;
+  state?: string | undefined;
+}): string {
+  const to = new URL(args.redirectUri);
+  to.searchParams.set('code', args.code);
+  // Only when the client sent one. RFC 6749 §4.1.2 requires it back exactly if
+  // it was present, and an empty `state=` is not the same as absent to a client
+  // comparing it against what it stored.
+  if (args.state) to.searchParams.set('state', args.state);
+  to.searchParams.set('iss', args.issuer);
+  return to.toString();
+}
+
 export interface RegisteredClient {
   clientId: string;
   redirectUris: string[];

@@ -5,6 +5,7 @@ import { GatewayError } from '../src/errors.js';
 import {
   assertSafeRedirect,
   authServerMetadata,
+  authorizeRedirect,
   findClient,
   issueCode,
   protectedResourceMetadata,
@@ -41,6 +42,48 @@ describe('metadata', () => {
     expect(m.code_challenge_methods_supported).toEqual(['S256']);
     expect(m.token_endpoint_auth_methods_supported).toEqual(['none']);
     expect(m.authorization_endpoint).toBe('https://mcp.example.dev/oauth/authorize');
+  });
+
+  /**
+   * RFC 9207, which MCP 2026-07-28 turns from an option into something clients
+   * MUST validate. The failure this guards is not a missing parameter — it is a
+   * present one that disagrees with the advertised issuer, which breaks the flow
+   * for exactly the clients that do the checking and for nobody else. So the
+   * assertion is that the two derive from one value, not that `iss` is there.
+   */
+  it('returns an `iss` the client can match against the advertised issuer', () => {
+    const headers = { host: 'mcp.example.dev', 'x-forwarded-proto': 'https' };
+    const base = publicBase(undefined, headers);
+
+    const to = new URL(
+      authorizeRedirect({ redirectUri: CB, code: 'abc', issuer: base, state: 's-1' }),
+    );
+
+    expect(to.searchParams.get('iss')).toBe(authServerMetadata(base).issuer);
+    expect(to.searchParams.get('code')).toBe('abc');
+    expect(to.searchParams.get('state')).toBe('s-1');
+  });
+
+  it('omits `state` entirely when the client sent none', () => {
+    // Absent and empty are different to a client comparing against what it
+    // stored, and RFC 6749 §4.1.2 only requires it back if it was sent.
+    const to = new URL(authorizeRedirect({ redirectUri: CB, code: 'abc', issuer: 'https://x.dev' }));
+    expect(to.searchParams.has('state')).toBe(false);
+  });
+
+  it('keeps query already present on the registered redirect_uri', () => {
+    // Claude Code's callback is a bare loopback path today, but a redirect_uri
+    // carrying its own query is legal and dropping it would break that client
+    // silently — the flow completes and the client cannot correlate it.
+    const to = new URL(
+      authorizeRedirect({
+        redirectUri: 'https://app.example/cb?tenant=acme',
+        code: 'abc',
+        issuer: 'https://x.dev',
+      }),
+    );
+    expect(to.searchParams.get('tenant')).toBe('acme');
+    expect(to.searchParams.get('code')).toBe('abc');
   });
 
   it('names the MCP endpoint as the protected resource', () => {
