@@ -211,21 +211,26 @@ outside this repo: keep. Internal and short-lived: put it in the body, where bei
 
 The test: would someone who has never read this repo know what changes for them?
 
-**The module is automatic. The parent is not — and that asymmetry is on you until it is fixed.**
-Whatever you capture lands in the module of its `parentId`, or failing that of the item you are
-holding, and the reply says `moduleInherited: true`. Pass `moduleId` only to put work somewhere
-neither would have chosen. If the source is in no module, nothing is invented.
+**Placement is automatic — both halves of it.** Whatever you capture lands in the module of its
+`parentId`, or failing that of the item you are holding, and the reply says `moduleInherited: true`.
+Pass `moduleId` only to put work somewhere neither would have chosen. If the source is in no module,
+nothing is invented.
 
-`parentId` has no such inheritance: omit it and the item is created at the root, filed in a module
-and hanging off nothing. Because the module is filled in for you, the board still *reports* as
-placed — so this decays silently, and measurably does. Measured 2026-07-31 on a board built by one
-planning session and then worked normally: every item from the planning session parented, every item
-captured afterwards an orphan. The planning session used `decompose`, which always sets a parent;
-ordinary work used `capture`, which never does.
+The parent is inherited too, and the shape matters: your capture becomes a **sibling** of the item
+you are holding — it takes that item's parent — and the reply says `parentInherited: true`. It never
+becomes a *child* of what you hold, because a parent with unfinished children stops being claimable,
+so that would block your own completion on a note you just wrote. If the item you hold has no parent
+there is nothing to be a sibling of, and nothing is invented.
 
-Until the gateway inherits it, **pass `parentId` yourself** whenever the work belongs under something
-— and check what you have written: `board` reports `parented` against `items`, and a gap between
-them is the shape of this problem.
+This was the asymmetry that used to make boards go flat: the module was filled in and the parent was
+not, so items *reported* as placed while hanging off nothing. Measured on a board built by one
+planning session and then worked normally — every item from the session parented, every item
+captured afterwards an orphan, because the session used `decompose` (which always sets a parent) and
+ordinary work used `capture` (which did not).
+
+Placement is not delivery. A sibling is no more visible to whoever claims the item next than an
+orphan was — that is what the `briefing` on `claim` is for. Filing something correctly does not mean
+anyone will read it.
 
 **Provenance is automatic too.** If you hold exactly one item in the project, whatever you capture
 is linked back to it and the reply says `discoveredFromInferred: true`. You do not have to remember

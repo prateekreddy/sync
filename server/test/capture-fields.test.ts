@@ -186,6 +186,136 @@ describe('capture carries what the caller sent through to Plane', () => {
 });
 
 /**
+ * Where a capture lands when nobody says.
+ *
+ * The module was made to inherit and the parent was not, and the asymmetry hid
+ * because it fails flatteringly: the module IS filled in, so the board reports
+ * the item as placed while it hangs off nothing.
+ *
+ * The rule is SIBLING, not child. A child would make the item the agent is
+ * holding unclaimable and uncompletable until the note it just wrote is done.
+ */
+describe('parent inheritance', () => {
+  const parse = (res: { content: Array<{ text: string }> }) =>
+    JSON.parse(res.content[0]?.text ?? '{}') as Record<string, unknown>;
+
+  async function withSource(source: { id: string; parent: string | null }) {
+    const { plane, sent } = recordingPlane();
+    Object.assign(plane, {
+      getWorkItem: async (_p: string, id: string) =>
+        id === source.id
+          ? { id: source.id, sequence_id: 1, name: 'held', state: 's', priority: 'none', labels: [], parent: source.parent, is_draft: false, created_at: '', updated_at: '' }
+          : null,
+    });
+
+    const app = Fastify();
+    registerRoutes(app, {
+      pool,
+      plane,
+      allowAgentClose: true,
+      evidencePolicy: 'warn',
+      planeMcp: null,
+      planeBaseUrl: 'http://plane.invalid',
+      workspaceSlug: 'ws',
+      github: null,
+      allowMinting: false,
+      mintRatePerMinute: 10,
+    });
+    await app.ready();
+
+    const name = `t-cap-${randomUUID().slice(0, 8)}/worker`;
+    const { token } = await issueToken(pool, { name, principal: 'human:t@example.com' });
+    const actor = await authenticate(pool, `Bearer ${token}`);
+
+    // A live lease is what makes the source discoverable without the caller
+    // naming it — the same mechanism provenance already rides on.
+    await pool.query(
+      `insert into lease (work_item_id, project_id, holder, holder_chain, state, epoch, claimed_at, expires_at, heartbeat_at)
+       values ($1, $2, $3, $4, 'held', 1, now(), now() + interval '10 minutes', now())
+       on conflict (work_item_id) do update set state = 'held', holder = excluded.holder,
+         expires_at = excluded.expires_at`,
+      [source.id, PROJECT, actor.holder, [actor.holder]],
+    );
+
+    return {
+      sent,
+      app,
+      cleanup: async () => {
+        await pool.query('delete from lease where work_item_id = $1', [source.id]);
+        await app.close();
+      },
+      call: (args: Record<string, unknown>) =>
+        callTool({ app, pool, plane: null }, actor, `Bearer ${token}`, 'capture', args),
+    };
+  }
+
+  it('files the capture as a sibling of the item being held', async () => {
+    const grandparent = randomUUID();
+    const h = await withSource({ id: randomUUID(), parent: grandparent });
+
+    const out = parse(
+      await h.call({ projectId: PROJECT, title: `sibling ${randomUUID()}`, body: 'x' }),
+    );
+
+    // The source's PARENT, never the source itself.
+    expect(h.sent.created[0]?.['parent']).toBe(grandparent);
+    expect(out['parentInherited']).toBe(true);
+    await h.cleanup();
+  });
+
+  it('never makes the capture a child of the item being held', async () => {
+    // The failure this design exists to prevent: a child would make the held
+    // item unclaimable and uncompletable until this note is done.
+    const held = randomUUID();
+    const h = await withSource({ id: held, parent: randomUUID() });
+
+    await h.call({ projectId: PROJECT, title: `not a child ${randomUUID()}`, body: 'x' });
+
+    expect(h.sent.created[0]?.['parent']).not.toBe(held);
+    await h.cleanup();
+  });
+
+  it('invents nothing when the held item has no parent of its own', async () => {
+    // Nothing to be a sibling of. Attaching to the held item here would convert a
+    // claimable leaf into a container as a side effect of writing a note.
+    const h = await withSource({ id: randomUUID(), parent: null });
+
+    const out = parse(
+      await h.call({ projectId: PROJECT, title: `rootless ${randomUUID()}`, body: 'x' }),
+    );
+
+    expect(h.sent.created[0]?.['parent']).toBeUndefined();
+    expect(out['parentInherited']).toBeUndefined();
+    await h.cleanup();
+  });
+
+  it('an explicit parentId still wins and is not reported as inherited', async () => {
+    const chosen = randomUUID();
+    const h = await withSource({ id: randomUUID(), parent: randomUUID() });
+
+    const out = parse(
+      await h.call({
+        projectId: PROJECT,
+        title: `explicit ${randomUUID()}`,
+        body: 'x',
+        parentId: chosen,
+      }),
+    );
+
+    expect(h.sent.created[0]?.['parent']).toBe(chosen);
+    expect(out['parentInherited']).toBeUndefined();
+    await h.cleanup();
+  });
+
+  it('infers nothing when the caller holds no lease at all', async () => {
+    const { call, sent, app } = await harness();
+    await call({ projectId: PROJECT, title: `no lease ${randomUUID()}`, body: 'x' });
+    expect(sent.created[0]?.['parent']).toBeUndefined();
+    await app.close();
+  });
+});
+
+/**
  * The reply has to be checkable against the request.
  *
  * Six captures in a row landed with the wrong priority and no labels because a

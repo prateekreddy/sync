@@ -90,7 +90,11 @@ export const CaptureBody = z.object({
     .describe(
       'Makes this a sub-item of that work item. Use for real decomposition, not for "related": ' +
         'a parent with unfinished sub-items stops being claimable, so nobody will pick it up ' +
-        'until every child is done.',
+        'until every child is done. Usually leave it out: if you hold an item that itself has a ' +
+        'parent, the capture is filed alongside it as a SIBLING and the reply says ' +
+        'parentInherited: true. It never becomes a child of what you are holding — that would ' +
+        'make your own item unclaimable until the note you just wrote is done. Pass it to place ' +
+        'work under something the gateway would not have chosen.',
     ),
   moduleId: uuid
     .optional()

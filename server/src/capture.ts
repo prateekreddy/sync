@@ -70,6 +70,16 @@ export interface CaptureResult {
    * agent should be able to see a placement it did not ask for.
    */
   moduleInherited?: boolean | undefined;
+  /**
+   * True when no parent was named and this became a SIBLING of the item the
+   * caller is holding — that is, took its parent.
+   *
+   * Reported for the same reason as `moduleInherited`: an agent should be able to
+   * see a placement it did not ask for, and move it in one call if the guess is
+   * wrong. Never means the item became a *child* of what you are holding; see
+   * `inheritParent` for why that would be the wrong default.
+   */
+  parentInherited?: boolean | undefined;
   /** The item this was linked back to, whether stated or derived from the lease. */
   discoveredFrom?: string | undefined;
   /**
@@ -188,6 +198,56 @@ async function inheritModule(
   return found ? { id: found, inherited: true } : null;
 }
 
+/**
+ * Which parent this belongs under, when nobody said.
+ *
+ * The module was made to inherit and the parent was not, and the asymmetry was
+ * invisible because it fails in the flattering direction: the module *is* filled
+ * in, so `board` reports the item as placed while it hangs off nothing. Measured
+ * on a board built by one planning session and then worked normally — every item
+ * from the planning session parented, every item captured afterwards an orphan.
+ * The session used `decompose`, which always sets a parent; ordinary work uses
+ * `capture`, which never did. Structure was being built only by the tool nobody
+ * calls after day one.
+ *
+ * This inherits the source's **parent**, not the source — the capture becomes a
+ * SIBLING of the item being worked, not its child. That distinction is the whole
+ * design:
+ *
+ * - A child would make the source item unclaimable and uncompletable until the
+ *   new item is done, so an agent recording a tangential discovery would block
+ *   its own completion. Structure is not worth that.
+ * - A child would also convert a claimable leaf into a container, changing what
+ *   the fleet may pick up as a side effect of someone writing a note.
+ *
+ * A sibling does neither, and matches what "I noticed this while doing X" usually
+ * means: same workstream as X, not X is incomplete without it. When the source
+ * has no parent there is nothing to be a sibling of, and this infers nothing
+ * rather than inventing a hierarchy.
+ *
+ * Note what this deliberately does NOT claim to fix: a sibling is no more visible
+ * to whoever claims the source than an orphan was. Delivery is a separate
+ * problem, solved by the briefing `claim` returns. This one is about whether the
+ * board describes a plan.
+ */
+async function inheritParent(
+  plane: PlaneClient,
+  input: CaptureInput,
+  source: { id: string } | null,
+): Promise<{ id: string; inherited: boolean } | null> {
+  if (input.parentId) return { id: input.parentId, inherited: false };
+  if (!source) return null;
+
+  // Bounded for the same reason as the module lookup: capture must stay trivial,
+  // and an unreachable Plane must cost a missing convenience rather than
+  // PlaneClient's full retry ladder on every capture an agent makes.
+  const src = await Promise.race([
+    plane.getWorkItem(input.projectId, source.id).catch(() => null),
+    new Promise<null>((r) => setTimeout(() => r(null), INHERIT_DEADLINE_MS).unref?.()),
+  ]);
+  return src?.parent ? { id: src.parent, inherited: true } : null;
+}
+
 export async function capture(
   plane: PlaneClient,
   pool: Pool,
@@ -282,6 +342,13 @@ export async function capture(
       ? await resolveLabels(plane, input.projectId, input.labels)
       : [];
 
+    // Inferred only on this branch. The dedup path deliberately does not adopt an
+    // item into a *guessed* parent: re-parenting somebody else's existing work on
+    // the strength of what this caller happened to be holding rearranges a board
+    // nobody asked to have rearranged. An explicit `parentId` still adopts an
+    // orphan, below, because that is a stated intention rather than an inference.
+    const parent = await inheritParent(plane, input, source);
+
     const created = await plane.createWorkItem(input.projectId, {
       name: input.title,
       description_html: `<p>${escapeHtml(input.body)}</p>`,
@@ -289,7 +356,7 @@ export async function capture(
       ...(labelIds.length ? { labels: labelIds } : {}),
       // Plane models a sub-item as a plain `parent` uuid on the work item — there
       // is no separate sub-issue resource — so decomposition costs nothing extra.
-      ...(input.parentId ? { parent: input.parentId } : {}),
+      ...(parent ? { parent: parent.id } : {}),
     });
     result = {
       workItemId: created.id,
@@ -298,6 +365,7 @@ export async function capture(
       deduped: false,
       replayed: false,
       ...(created.parent ? { parentId: created.parent } : {}),
+      ...(parent?.inherited ? { parentInherited: true } : {}),
       // Echoed from what was sent rather than read back off `created`: Plane's
       // create response is the same object we posted, so reading it there would
       // prove only that we can quote ourselves. The value here is that the
