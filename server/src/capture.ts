@@ -80,6 +80,29 @@ export interface CaptureResult {
   discoveredFromInferred?: boolean | undefined;
   /** Set when the item was created but could not be put in the module. */
   moduleError?: string | undefined;
+  /**
+   * What this call actually applied — echoed so the caller can check it against
+   * what it sent.
+   *
+   * Added after six consecutive captures landed with the wrong priority and no
+   * labels and nothing in any reply said so. That particular fault was a
+   * malformed call on the client side, not a defect here, but it ran six times
+   * because the reply carried nothing to compare against the request. A write
+   * primitive that does not report what it wrote cannot be checked by its own
+   * caller, and agents are exactly the callers who never see the board
+   * afterwards.
+   */
+  priority?: string | undefined;
+  /** Label names actually on the item after this call. */
+  labels?: string[] | undefined;
+  /**
+   * Parts of the request that did NOT take effect, named individually.
+   *
+   * Only the dedup path produces these: an existing item is returned untouched,
+   * so a priority or label the caller asked for was silently ignored. Absence of
+   * a field is not a report — saying which parts were dropped is.
+   */
+  notApplied?: string[] | undefined;
 }
 
 /**
@@ -234,6 +257,14 @@ export async function capture(
         parent = existing.parent;
       }
     }
+    // An existing item is handed back untouched, so anything the caller asked to
+    // set on it did not happen. Naming those parts is the point: `deduped: true`
+    // says a different item came back, not that a priority was dropped on the
+    // floor.
+    const notApplied = [
+      ...(input.priority && input.priority !== 'none' ? ['priority'] : []),
+      ...(input.labels?.length ? ['labels'] : []),
+    ];
     result = {
       workItemId: dupe.id,
       readableId: `${dupe.project__identifier}-${dupe.sequence_id}`,
@@ -241,6 +272,7 @@ export async function capture(
       deduped: true,
       replayed: false,
       ...(parent ? { parentId: parent } : {}),
+      ...(notApplied.length ? { notApplied } : {}),
     };
   } else {
     // Names in, ids out — Plane's API takes only uuids, and every caller writes
@@ -266,6 +298,12 @@ export async function capture(
       deduped: false,
       replayed: false,
       ...(created.parent ? { parentId: created.parent } : {}),
+      // Echoed from what was sent rather than read back off `created`: Plane's
+      // create response is the same object we posted, so reading it there would
+      // prove only that we can quote ourselves. The value here is that the
+      // caller can compare it with its own request.
+      priority: input.priority ?? 'none',
+      ...(input.labels?.length ? { labels: input.labels } : {}),
     };
 
     // Provenance. Plane has no `discovered_from` relation type, so this is

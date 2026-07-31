@@ -169,6 +169,13 @@ as a comment. `replayed: true` means the same `idempotencyKey` returned a stored
 different parent, and was **not** re-parented — the fleet is not rearranged behind your back, so
 your decomposition is one child short and you have to notice.
 
+**Check `priority` and `labels` in the reply against what you sent.** They are echoed for exactly
+that purpose. On a dedup, `notApplied` names the parts of your request that did not happen — an
+existing item is handed back untouched, so a priority or a label you asked for was ignored, and
+`deduped: true` on its own does not tell you that. This is worth the two seconds: six captures in a
+row once landed with the wrong priority and no labels at all, and every reply looked fine, because
+the reply carried nothing to compare against the request.
+
 A capture is only useful if an agent can later pick it up. The readiness gate **withholds** an item
 from `claim` when it:
 

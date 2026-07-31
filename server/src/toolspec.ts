@@ -292,7 +292,9 @@ export const NATIVE_TOOLS: NativeTool[] = [
       'while working another item, the link back to it is made automatically from your lease. ' +
       'To break a large item into sub-items, use decompose rather than calling this once per ' +
       'child: the plan becomes claimable at its FIRST child, so written one call at a time it is ' +
-      'open to another agent before you have finished writing it.',
+      'open to another agent before you have finished writing it. The reply echoes the priority ' +
+      'and labels it applied, and on a dedup lists in notApplied the parts of your request that ' +
+      'did not happen — compare them with what you sent rather than assuming the call landed.',
     schema: CaptureBody,
     method: 'POST',
     request: (a) => ({ path: '/v1/capture', body: a }),
