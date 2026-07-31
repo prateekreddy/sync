@@ -109,11 +109,17 @@ work looks empty:
   from the lease table: `any` shows what the fleet is working on, `none` shows what is free.
   `ready: true` applies the same gate `claim` uses. The reply carries `matched` — the number of hits
   *before* `limit` — so you can tell a complete answer from a first page.
-- **`search`** — titles across every project you can see, and the only tool here that crosses
-  project boundaries. Use it before capturing, to find out whether something is already written
-  down, and to resolve an item a human named rather than numbered. Results are pointers — id,
-  readable id, title, project — so follow up with `find`, `tree` or `why` inside that project.
-  Scoped to your own Plane access, so it cannot show you a project you could not open yourself.
+- **`search`** — text, across **titles and descriptions**, in your own project by default. That
+  second half matters: titles lead with behaviour, so the file names, error strings and env vars
+  you would actually type live in the body. A body hit says `where: "body"` and carries the
+  surrounding text, so you can tell a real match from a passing mention without opening it; title
+  hits sort first. Use it before capturing, to find out whether something is already written down,
+  and to resolve an item a human named rather than numbered. Pass `workspace: true` to cross
+  project boundaries — that path searches **titles only**, because Plane offers no workspace-wide
+  search over descriptions and reading every project to fake one would cost a request each; the
+  reply says so rather than leaving you to conclude the work does not exist. Results are pointers,
+  so follow up with `find`, `tree` or `why` inside that project. Scoped to your own Plane access
+  either way.
 - **`board`** — where the whole project stands: per module, the total, done, held, ready and blocked
   counts, which add up because an item is in exactly one bucket, plus every live lease. `ready` is
   the number Plane cannot produce on its own — it needs the readiness gate *and* the lease table.
@@ -151,13 +157,19 @@ from `claim` when it:
 So: always give `body` enough for someone else to act without you — what, where, and how anyone
 would know it is done. Set `priority` honestly.
 
-**Title it in product terms.** The capability someone gains, or the behaviour that is wrong — not
-the function, file or parameter you expect to touch. `Tell an agent why it cannot claim an item`,
-not `why(workItemId): return the gate reasons`. The pull is toward the second, because the code is
-what is in your head at the moment you write it; the cost lands later, when the function has been
-renamed and the title now describes something that does not exist. Identifiers go in the body,
-where being wrong is cheap. The test: would someone who has never read this repo know what changes
-for them?
+**Title it in product terms.** Lead with the capability someone gains or the behaviour that is
+wrong, not with the code you expect to touch. `Tell an agent why it cannot claim an item`, not
+`why(workItemId): return the gate reasons` — the second names a function and a payload, and never
+says what is wrong or what anyone gets. The pull is toward it, because the code is what is in your
+head at the moment you write it.
+
+An identifier is welcome where it is the most precise short way to say what you mean:
+`GITHUB_WEBHOOK_SECRET is unset in production` beats any paraphrase. What to avoid is the
+*volatile* kind — a function, parameter or internal helper that will be renamed long before the
+item is read, leaving a title describing something that no longer exists. Stable and meaningful
+outside this repo: keep. Internal and short-lived: put it in the body, where being wrong is cheap.
+
+The test: would someone who has never read this repo know what changes for them?
 
 **Placement is automatic now.** Whatever you capture lands in the module of its `parentId`, or
 failing that of the item you are holding, and the reply says `moduleInherited: true`. Pass

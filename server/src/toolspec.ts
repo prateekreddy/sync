@@ -46,12 +46,13 @@ const titleField = z
   .min(3)
   .max(255)
   .describe(
-    'One line, in product terms: the capability someone gains, or the behaviour that is ' +
-      'wrong. Not the function, file, parameter or endpoint that implements it. ' +
-      '"Tell an agent why it cannot claim an item", not "why(workItemId): return the ' +
-      'gate reasons". The test: would someone who has never read this codebase know ' +
-      'what changes for them? Identifiers belong in the body, where they can be wrong ' +
-      'without making the title a lie.',
+    'One line that leads with the capability someone gains, or the behaviour that is wrong. ' +
+      '"Tell an agent why it cannot claim an item", not "why(workItemId): return the gate ' +
+      'reasons" — the second names a function and never says what is wrong or what anyone ' +
+      'gets. An identifier is welcome where it is the most precise short way to say what you ' +
+      'mean ("GITHUB_WEBHOOK_SECRET is unset in production"); avoid the volatile kind — a ' +
+      'function or parameter that will be renamed before the item is read. The test: would ' +
+      'someone who has never read this codebase know what changes for them?',
   );
 
 export const DEFAULT_TTL = 600;
@@ -149,7 +150,25 @@ export const DecomposeBody = z.object({
 });
 
 export const SearchQuery = z.object({
-  query: z.string().min(2).max(200).describe('Text to look for in work item titles.'),
+  query: z
+    .string()
+    .min(2)
+    .max(200)
+    .describe(
+      'Text to look for. Every word must appear, in any order — two words narrow, they do ' +
+        'not widen.',
+    ),
+  projectId: uuid
+    .optional()
+    .describe('Defaults to your own project. Only a project you can see in Plane.'),
+  workspace: z.coerce
+    .boolean()
+    .default(false)
+    .describe(
+      'Search every project you can see instead of just yours. Titles only — Plane offers no ' +
+        'workspace-wide search over descriptions, and reading every project to do it here would ' +
+        'cost a request per project. Leave it off unless the work could be anywhere.',
+    ),
   limit: z.coerce.number().int().min(1).max(50).default(20),
 });
 
@@ -349,14 +368,16 @@ export const NATIVE_TOOLS: NativeTool[] = [
   },
   {
     name: 'search',
-    title: 'Find work anywhere in the workspace',
+    title: 'Find work already written down',
     description:
-      'Search work item titles across every project you can see — the only tool here that ' +
-      'crosses project boundaries. Use it to check whether something is already written down ' +
-      'before capturing it, or to locate an item a human referred to by name. Results are ' +
-      'pointers, not full items: they carry the id, readable id, title and project, and you ' +
-      'then use find, tree or why inside that project for anything more. Scoped to your own ' +
-      'Plane access, so it can never show you a project you could not open yourself.',
+      'Search work by text. Your own project by default, matching titles AND descriptions — ' +
+      'which is where the file names, error strings and identifiers usually are, since titles ' +
+      'lead with behaviour. Use it before capturing, to check whether something is already ' +
+      'written down, and to find an item a human referred to only by subject. A body hit says ' +
+      'where=body and carries the surrounding text, so you can tell a real match from a passing ' +
+      'mention without opening it. Pass workspace:true to cross project boundaries; that path ' +
+      'searches titles only, and says so in the reply. Results are pointers — use find, tree or ' +
+      'why inside the project for more. Scoped to your own Plane access either way.',
     schema: SearchQuery,
     method: 'GET',
     request: (a) => ({ path: q('/v1/search', a) }),

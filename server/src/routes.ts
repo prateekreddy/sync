@@ -45,6 +45,7 @@ import { find } from './find.js';
 import { tree } from './tree.js';
 import { parseFields } from './view.js';
 import { handleMcpHttp } from './mcphttp.js';
+import { searchItems } from './textsearch.js';
 import { callTool, listTools } from './tools.js';
 import {
   BoardQuery,
@@ -716,27 +717,62 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     const actor = await actorOf(req);
     const s = SearchQuery.parse(req.query);
 
-    if (!actor.planeToken) {
+    // Crossing project boundaries is the only part that needs the agent's own
+    // Plane identity — inside its own project the token's binding already grants
+    // the access.
+    const needsOwnIdentity = s.workspace || (s.projectId && s.projectId !== actor.defaultProjectId);
+    if (needsOwnIdentity && !actor.planeToken) {
       throw new GatewayError(
         'FORBIDDEN',
-        'search reaches every project you can see, so it needs this agent to have its own ' +
-          'Plane identity. Ask your operator to re-issue the token with --plane-token.',
+        'Searching outside your own project reaches work Plane decides you can see, so it ' +
+          'needs this agent to have its own Plane identity. Ask your operator to re-issue the ' +
+          'token with --plane-token, or search your own project instead.',
       );
     }
 
-    const hits = await plane.as(actor.planeToken).search(s.query);
+    const scoped = plane.as(actor.planeToken);
+
+    if (s.workspace) {
+      const hits = await scoped.search(s.query);
+      return {
+        query: s.query,
+        scope: 'workspace',
+        // Said out loud rather than left to be discovered. Plane's search covers
+        // the workspace in one request precisely because it reads titles only,
+        // and a caller who assumes otherwise concludes the work does not exist.
+        matchedOn: 'titles only — Plane has no workspace-wide search over descriptions',
+        // Pointers, not items. A hit may be in a project whose states and labels
+        // we have not loaded, and inventing a partial view of it would be worse
+        // than saying plainly "here is where it lives, look there".
+        results: hits.slice(0, s.limit).map((h) => ({
+          workItemId: h.id,
+          readableId: `${h.project__identifier}-${h.sequence_id}`,
+          title: h.name,
+          projectId: h.project_id,
+          where: 'title' as const,
+        })),
+        matched: hits.length,
+      };
+    }
+
+    const projectId = s.projectId ?? actor.defaultProjectId;
+    if (!projectId) {
+      throw new GatewayError(
+        'INVALID',
+        'No project to search: this token is not bound to one. Pass projectId, or workspace: ' +
+          'true to search titles across every project you can see.',
+      );
+    }
+
+    const items = await scoped.listWorkItems(projectId);
+    const results = searchItems(items, s.query, { projectId, limit: s.limit });
     return {
       query: s.query,
-      // Pointers, not items. A hit may be in a project whose states and labels we
-      // have not loaded, and inventing a partial view of it would be worse than
-      // saying plainly "here is where it lives, look there".
-      results: hits.slice(0, s.limit).map((h) => ({
-        workItemId: h.id,
-        readableId: `${h.project__identifier}-${h.sequence_id}`,
-        title: h.name,
-        projectId: h.project_id,
-      })),
-      matched: hits.length,
+      scope: 'project',
+      projectId,
+      matchedOn: 'titles and descriptions',
+      results,
+      matched: results.length,
     };
   });
 
