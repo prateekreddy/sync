@@ -112,6 +112,18 @@ export async function listTools(deps: ToolDeps): Promise<ToolCatalogue[]> {
       source: 'plane',
     });
   }
+  // Ours first, then Plane's in the order its server registered them — stable
+  // across restarts, because `NATIVE_TOOLS` is a literal array and the child
+  // registers through a fixed sequence the SDK keeps in insertion order.
+  // Measured, not assumed: two cold starts of plane-mcp-server 0.1.5 returned
+  // the same 47 names in the same order.
+  //
+  // Deterministic order is a SHOULD in MCP 2026-07-28, and the reason is prompt
+  // caching: a list that reshuffles costs nothing visible and invalidates the
+  // cache for every agent on its next call. Deliberately not sorted — that would
+  // also be deterministic, and would bury `claim` between `add_cycle_issues` and
+  // `create_label`. Position in this list is attention. Pinned in
+  // test/catalogue.test.ts.
   return [...native, ...proxied];
 }
 
