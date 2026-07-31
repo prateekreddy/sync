@@ -25,8 +25,10 @@ After a restart, call `held` first to find out what you were in the middle of.
 Never take work by editing assignees or state in Plane directly. The gateway
 refuses it, and the reason it refuses is in `docs/architecture.md`.
 
-To break a large item up, call `capture` once per child with `parentId` set to the
-large item. A parent with unfinished children is deliberately unclaimable.
+To break a large item up, call `decompose` once with every child, not `capture`
+per child. A parent with unfinished children is deliberately unclaimable, so the
+plan goes live at its *first* child: written one call at a time, another agent can
+start work under a decomposition you have not finished writing.
 
 ## How to build here
 

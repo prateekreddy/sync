@@ -10,7 +10,7 @@ already decided it was relevant is a rule that does not fire. `docs/architecture
 
 What is left over is the part a skill is actually for: **which tool answers which
 question**, across a surface too large to hold in context and too rarely needed to earn a
-place there. Fifty-six tools, most of them Plane's own, and an agent needs maybe six of
+place there. Sixty-two tools, most of them Plane's own, and an agent needs maybe six of
 them on any given item — and the count moves on a gateway deploy, which is why the
 skill tells you to trust the tool list you were handed over anything written here.
 
