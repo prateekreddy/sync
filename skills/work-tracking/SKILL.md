@@ -8,7 +8,7 @@ user-invocable: true
 
 Two halves live on one MCP server. Do not confuse them:
 
-- **Coordination tools** — 15 of them — exist because Plane has no equivalent. They are the only
+- **Coordination tools** — 18 of them — exist because Plane has no equivalent. They are the only
   safe way to take work.
 
   | | Answers |
@@ -17,7 +17,8 @@ Two halves live on one MCP server. Do not confuse them:
   | `next` `find` `search` `board` | what is there — ready, filtered, workspace-wide, rolled up |
   | `why` `tree` `history` | why not this one; what is under it; has it been tried before |
   | `claim` `heartbeat` `complete` `release` | the loop |
-  | `link` `held` | typed edges; what am I holding |
+  | `link` `unlink` `constrain` | typed edges; take a blocker back; a requirement on existing work |
+  | `held` | what am I holding |
 
 - **Plane's own tools** — currently 47 — are a faithful wrapper over Plane's API and have **no
   notion of a lease**. Everything below the coordination loop is theirs.
@@ -336,6 +337,14 @@ at once is the mistake — that is what labels are for.
   a comment on the item saying so, and records who decided and why — `reason` is required. Plane's
   UI will still draw the edge until a human deletes it there. Retract when a dependency stops being
   true, not to hurry past one you find inconvenient; `reinstate: true` puts it back.
+
+### What you can see
+
+Your token is scoped to the projects **your own Plane user** is a member of. `find`, `next`,
+`board`, `tree`, `why`, `history`, `search` and `claim` all refuse a project you are not in, and the
+refusal names the projects you *can* see — so if you get a `FORBIDDEN`, read the list rather than
+guessing at ids. Before 2026-08-03 most of these read any project in the workspace; if a gateway
+still does, it predates that.
 
 ## Use the rest of Plane
 

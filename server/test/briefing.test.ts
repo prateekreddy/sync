@@ -290,7 +290,13 @@ describe('claim hands the briefing over with the lease', () => {
         updateWorkItem: async () => items[target],
       },
     ) as unknown as PlaneClient;
-    Object.assign(plane, { as: () => plane });
+    // Since SYNC-64 every project-scoped route checks the caller's Plane access
+    // first, so a fake that cannot answer "which projects can you see" now gets
+    // refused before the route under test runs.
+    Object.assign(plane, {
+      as: () => plane,
+      listProjects: async () => [{ id: projectId, identifier: 'T', name: 'Test' }],
+    });
 
     const app = Fastify();
     registerRoutes(app, {
@@ -308,7 +314,15 @@ describe('claim hands the briefing over with the lease', () => {
     await app.ready();
 
     const name = `t-brief-${randomUUID().slice(0, 8)}/worker`;
-    const { token } = await issueToken(pool, { name, principal: 'human:t@example.com' });
+    // Needs a Plane identity: since SYNC-64 a token without one is refused
+    // rather than silently downgraded to the workspace-wide service account,
+    // which is the same choice `search` has always made.
+    process.env.GATEWAY_TOKEN_KEY ??= 'a'.repeat(64);
+    const { token } = await issueToken(pool, {
+      name,
+      principal: 'human:t@example.com',
+      planeToken: 'plane_pat_test',
+    });
 
     const res = await app.inject({
       method: 'POST',

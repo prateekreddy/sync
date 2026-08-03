@@ -842,6 +842,54 @@ concurrently, and accepted because the failure is additive — a lost criterion,
 never a corrupted description — which is not a trade that would be acceptable on
 the lease.
 
+### What an agent token can read (SYNC-64)
+
+**Decision: agent tokens are scoped to what their own Plane user can see.**
+
+A token's `default_project_id` was a convenience default and never a boundary, and
+the read tools imposed none either — `find`, `tree`, `board`, `next`, `why` and
+`history` all called the gateway's service account, which can see every project in
+the workspace. Naming any project id returned its items, titles, descriptions and
+lease state. `search` was the lone exception, and its comment already contained the
+reasoning that had not been applied to the rest.
+
+What made this worth deciding rather than just patching: both answers are
+defensible. What is not defensible is one tool enforcing one and five enforcing the
+other, so the effective policy was whichever tool a caller reached for.
+
+Scoped wins because minting *derives* an agent token from a human's Plane token and
+only ever reduces privilege. Reads bypassing that made the reduction cosmetic: a
+token minted from a limited member could read everything the service account could.
+It also costs the current fleet nothing — measured before deciding, all active
+tokens carry a Plane identity, and a token minted from an owner's Plane user still
+sees everything that owner sees.
+
+**The check is at the door, not in the tools.** The obvious implementation — swap
+`plane` for `plane.as(actor.planeToken)` in each tool — is wrong, and the item
+flagged why: the same service account underpins the readiness gate, which must see
+blockers and children in projects the caller cannot read. Scope the gate and an
+unreadable blocker becomes *no* blocker, so it fails open on exactly the items it
+exists to withhold. Separating "what the gate must evaluate" from "what the caller
+may be told" makes both correct: authority is checked once per request, and past
+that check the caller is entitled to the contents, so which client fetches them
+stops mattering.
+
+Three consequences worth stating plainly:
+
+- **No Plane identity means refused, not downgraded.** A token with no Plane user
+  has nothing to check against, and the only available fallback is the service
+  account — the exact privilege this removes. Same choice `search` already made.
+- **It fails closed.** If Plane cannot answer "which projects can you see", the
+  request is refused rather than falling through. An access check that fails open
+  does nothing on the day it matters.
+- **`claim` is checked too**, though it is a write. The lease is gateway-side, so
+  without it an agent knowing an id could take work in a project it cannot see and
+  block whoever can.
+
+The project list is cached per agent for 60s, since this now sits in front of every
+project-scoped read. The bounded failure is an agent removed from a project keeping
+read access for up to a minute; `revoke` kills a token outright and is not cached.
+
 ## Settled
 
 - **Agents close their own work**, humans audit afterwards (`ALLOW_AGENT_CLOSE`).

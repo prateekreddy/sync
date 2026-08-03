@@ -29,6 +29,7 @@ import {
   redeemCode,
   registerClient,
 } from './oauth.js';
+import { assertCanRead } from './access.js';
 import { board } from './board.js';
 import { capture } from './capture.js';
 import { constrain } from './constrain.js';
@@ -177,6 +178,19 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
 
   const actorOf = (req: { headers: Record<string, unknown> }): Promise<Actor> =>
     authenticate(pool, req.headers['authorization'] as string | undefined);
+
+  /**
+   * Refuse a project this caller's own Plane user cannot see (SYNC-64).
+   *
+   * At the door, and deliberately not by swapping the service account out of the
+   * tools themselves: the readiness gate needs the workspace-wide view to see
+   * blockers in projects the caller cannot read, and scoping it would make an
+   * unreadable blocker look like no blocker. Past this check the caller is
+   * entitled to the project's contents, so which client fetches them stops
+   * mattering. See access.ts.
+   */
+  const canRead = (actor: Actor, projectId: string): Promise<void> =>
+    assertCanRead(plane, actor, projectId);
 
   app.setErrorHandler((err: unknown, req, reply) => {
     if (err instanceof GatewayError) {
@@ -717,6 +731,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   app.get('/v1/next', async (req) => {
     const actor = await actorOf(req);
     const q = NextQuery.parse(req.query);
+    await canRead(actor, q.projectId);
 
     const candidates = await readyCandidates(plane, pool, {
       projectId: q.projectId,
@@ -732,6 +747,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   app.get('/v1/why', async (req) => {
     const actor = await actorOf(req);
     const q = WhyQuery.parse(req.query);
+    await canRead(actor, q.projectId);
     return explain(plane, pool, {
       projectId: q.projectId,
       workItemId: q.workItemId,
@@ -743,6 +759,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   app.get('/v1/tree', async (req) => {
     const query = TreeQuery.parse(req.query);
     const actor = await actorOf(req);
+    await canRead(actor, query.projectId);
     const { fields: rawFields, ...rest } = query;
     return tree(plane, pool, {
       ...rest,
@@ -755,6 +772,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   app.get('/v1/board', async (req) => {
     const actor = await actorOf(req);
     const b = BoardQuery.parse(req.query);
+    await canRead(actor, b.projectId);
     return board(plane, pool, {
       projectId: b.projectId,
       ...(b.moduleId ? { moduleId: b.moduleId } : {}),
@@ -872,6 +890,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   app.get('/v1/find', async (req) => {
     const actor = await actorOf(req);
     const f = FindQuerySchema.parse(req.query);
+    await canRead(actor, f.projectId);
     return find(plane, pool, {
       projectId: f.projectId,
       ...(f.labels ? { labels: f.labels.split(',') } : {}),
@@ -891,8 +910,12 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
 
   // ── history (read-only) ──────────────────────────────────────────────────
   app.get('/v1/history', async (req) => {
-    await actorOf(req);
+    const actor = await actorOf(req);
     const q = HistoryQuery.parse(req.query);
+    // `projectId` was required by the schema and then used for nothing, so an
+    // agent could read any item's claim history and citations by id alone. The
+    // parameter was already there; only the check was missing.
+    await canRead(actor, q.projectId);
     const [leaseRecord, evidence] = await Promise.all([
       lease.record(pool, q.workItemId),
       citationsFor(pool, q.workItemId),
@@ -910,6 +933,10 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   app.post('/v1/claim', async (req) => {
     const actor = await actorOf(req);
     const b = ClaimBody.parse(req.body);
+    // Checked here too, though claim is a write: the lease is gateway-side, so
+    // without this an agent knowing an id could take work in a project it cannot
+    // see and block whoever can.
+    await canRead(actor, b.projectId);
     const chain = chainFor(actor, b.spawnedBy);
 
     if (b.workItemId) {
