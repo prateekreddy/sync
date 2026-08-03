@@ -68,18 +68,43 @@ async function pooled<T, R>(items: T[], n: number, fn: (t: T) => Promise<R>): Pr
  * to be a fetch per blocker into none at all for the ordinary case, where a
  * blocker lives in the same project as the thing it blocks.
  */
+export interface BlockerContext {
+  /**
+   * The project's item list, when the caller already has one. Plane's relations
+   * payload carries ids but no state, so a blocker's state has to come from
+   * somewhere; taking it from a listing in hand turns what used to be a fetch per
+   * blocker into none at all for the ordinary case, where a blocker lives in the
+   * same project as the thing it blocks.
+   */
+  known?: Map<string, WorkItem> | undefined;
+  /**
+   * `item|blocker` keys the gate has been told to disregard — see retraction.ts.
+   * Plane cannot delete a relation, so a dependency that turns out not to be real
+   * is retracted here rather than removed there.
+   */
+  retracted?: Set<string> | undefined;
+}
+
 export async function openBlockers(
   plane: PlaneClient,
   projectId: string,
+  workItemId: string,
   rel: Relations,
   groupOf: Map<string, State['group']>,
-  known: Map<string, WorkItem> = new Map(),
+  ctx: BlockerContext = {},
 ): Promise<string[]> {
+  const known = ctx.known ?? new Map<string, WorkItem>();
   // Not `rel.blocked_by.length`. Plane is not obliged to send a bucket it has
   // nothing to put in, and an absent one used to be unreachable — this ran only
   // for items someone had already linked. Now it runs across a whole board, so
   // the first project with no relations at all would have thrown on every browse.
-  const edges = Array.isArray(rel?.blocked_by) ? rel.blocked_by : [];
+  const all = Array.isArray(rel?.blocked_by) ? rel.blocked_by : [];
+
+  // Retractions are applied before anything is fetched, so a disregarded edge
+  // costs no request either.
+  const edges = ctx.retracted?.size
+    ? all.filter((b) => !ctx.retracted!.has(`${workItemId}|${b.issue_id}`))
+    : all;
   if (edges.length === 0) return [];
 
   const blockers = await Promise.all(
@@ -115,10 +140,10 @@ export async function blockersOf(
   projectId: string,
   workItemId: string,
   groupOf: Map<string, State['group']>,
-  known?: Map<string, WorkItem>,
+  ctx: BlockerContext = {},
 ): Promise<string[]> {
   const rel = await plane.relations(projectId, workItemId);
-  return openBlockers(plane, projectId, rel, groupOf, known);
+  return openBlockers(plane, projectId, workItemId, rel, groupOf, ctx);
 }
 
 export interface BlockerPass {
@@ -147,7 +172,7 @@ export async function blockerPass(
   projectId: string,
   candidates: WorkItem[],
   groupOf: Map<string, State['group']>,
-  known: Map<string, WorkItem>,
+  ctx: BlockerContext,
   budget = BROWSE_BUDGET,
 ): Promise<BlockerPass> {
   const within = candidates.slice(0, budget);
@@ -159,7 +184,7 @@ export async function blockerPass(
     // browse path did before this existed and leaves claim to be the strict one.
     const rel = await plane.relations(projectId, item.id).catch(() => null);
     if (!rel) return [item.id, [] as string[]] as const;
-    return [item.id, await openBlockers(plane, projectId, rel, groupOf, known)] as const;
+    return [item.id, await openBlockers(plane, projectId, item.id, rel, groupOf, ctx)] as const;
   });
 
   for (const [id, why] of found) if (why.length) reasons.set(id, why);

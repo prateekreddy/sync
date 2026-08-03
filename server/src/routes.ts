@@ -43,6 +43,8 @@ import { ABSENT_LABEL, absent, checkEvidence, type GitHubConfig } from './ghchec
 import { decompose } from './decompose.js';
 import { GatewayError, HTTP_STATUS, RECOVERY } from './errors.js';
 import * as lease from './lease.js';
+import { escapeHtml } from './html.js';
+import { reinstate, retract } from './retraction.js';
 import { mirrorClaim, mirrorComplete, mirrorReturn } from './mirror.js';
 import type { PlaneClient } from './plane.js';
 import type { PlaneMcp } from './planemcp.js';
@@ -63,6 +65,7 @@ import {
   HeartbeatBody,
   HistoryQuery,
   LinkBody,
+  UnlinkBody,
   FindQuerySchema,
   NextQuery,
   TreeQuery,
@@ -910,6 +913,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     if (b.workItemId) {
       const blockers = await verifyClaimable(plane, b.projectId, b.workItemId, {
         checkChildren: true,
+        pool,
       });
       if (blockers.length) {
         throw new GatewayError('NOT_CLAIMABLE', `Not ready: ${blockers.join('; ')}`, {
@@ -959,7 +963,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     });
 
     for (const c of candidates) {
-      if ((await verifyClaimable(plane, b.projectId, c.workItemId)).length) continue;
+      if ((await verifyClaimable(plane, b.projectId, c.workItemId, { pool })).length) continue;
       const l = await lease.claim(pool, {
         workItemId: c.workItemId,
         // The candidate came from a project-scoped query, so the project is the
@@ -1133,12 +1137,117 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   });
 
   // ── link ─────────────────────────────────────────────────────────────────
+  // `ok: true` used to mean "the POST did not throw", which is not what anyone
+  // read it as. Plane stores relations as (issue, related_issue, relation_type)
+  // rows and bulk-creates with ignore_conflicts, so re-linking a pair with a
+  // different type ADDS a row and leaves the first one in force. An agent
+  // correcting a wrong `blocked_by` by re-linking as `relates_to` got `ok: true`
+  // and a still-blocked item (SYNC-66).
+  //
+  // So the reply now says what is actually true of each pair. The four types are
+  // mutually exclusive readings of the same pair, so an existing different type
+  // is reported as a conflict rather than quietly stacked.
   app.post('/v1/link', async (req) => {
     const actor = await actorOf(req);
     const b = LinkBody.parse(req.body);
+    const as = plane.as(actor.planeToken);
 
-    await plane.as(actor.planeToken).relate(b.projectId, b.workItemId, b.relation, b.targets);
-    return { ok: true };
+    const before = await as.relations(b.projectId, b.workItemId).catch(() => null);
+    const existing = new Map<string, string>();
+    if (before) {
+      for (const kind of ['blocking', 'blocked_by', 'duplicate', 'relates_to'] as const) {
+        for (const ref of before[kind] ?? []) existing.set(ref.issue_id, kind);
+      }
+    }
+
+    await as.relate(b.projectId, b.workItemId, b.relation, b.targets);
+
+    const already: string[] = [];
+    const conflicts: Array<{ target: string; existing: string }> = [];
+    for (const t of b.targets) {
+      const had = existing.get(t);
+      if (!had) continue;
+      if (had === b.relation) already.push(t);
+      else conflicts.push({ target: t, existing: had });
+    }
+
+    return {
+      ok: true,
+      relation: b.relation,
+      created: b.targets.filter((t) => !existing.has(t)),
+      ...(already.length ? { alreadyLinked: already } : {}),
+      // Named loudly because this is the case that used to look like success.
+      // Plane keeps both edges; if the old one is `blocked_by` it is still
+      // gating, and `unlink` is how it stops.
+      ...(conflicts.length
+        ? {
+            conflicts,
+            warning:
+              `Plane keeps both relations for a pair rather than replacing one. ` +
+              `${conflicts.length} target(s) already had a different relation, which is still in ` +
+              `force — call unlink to stop a stale blocked_by gating the item.`,
+          }
+        : {}),
+      // Honest about a degraded answer rather than reporting a clean create.
+      ...(before ? {} : { warning: 'Could not read existing relations, so this reply cannot say which targets were already linked.' }),
+    };
+  });
+
+  // ── unlink ───────────────────────────────────────────────────────────────
+  //
+  // Plane's public API cannot delete a relation: the relations endpoint is
+  // `["get", "post"]` at v1.3.1, the version we run, and still on `preview`. The
+  // remaining ways to remove the row are Plane's own UI, which an agent does not
+  // have, and Plane's database, which this gateway deliberately cannot reach.
+  //
+  // So this retracts rather than deletes — the readiness gate is the gateway's
+  // rule, and it stops honouring the edge. The edge stays visible in Plane, so
+  // the decision is written there as a comment too; a divergence nobody can see
+  // would be its own silent failure.
+  app.post('/v1/unlink', async (req) => {
+    const actor = await actorOf(req);
+    const b = UnlinkBody.parse(req.body);
+    const as = plane.as(actor.planeToken);
+
+    const rel = await as.relations(b.projectId, b.workItemId).catch(() => null);
+    const present = new Set((rel?.blocked_by ?? []).map((r) => r.issue_id));
+
+    const results = await Promise.all(
+      b.targets.map(async (target) => {
+        if (b.reinstate) {
+          const undone = await reinstate(pool, { workItemId: b.workItemId, blockerId: target });
+          return { target, reinstated: undone };
+        }
+        await retract(pool, {
+          projectId: b.projectId,
+          workItemId: b.workItemId,
+          blockerId: target,
+          reason: b.reason,
+          actor: actor.holder,
+        });
+        return { target, retracted: true, presentInPlane: present.has(target) };
+      }),
+    );
+
+    // Written to Plane so a human reading the item sees why an edge Plane still
+    // draws is not being enforced. Fire-and-forget for the same reason the claim
+    // mirror is: the decision is recorded in the gateway, which is what the gate
+    // reads, and Plane being unreachable must not fail the call.
+    if (!b.reinstate) {
+      void as
+        .comment(
+          b.projectId,
+          b.workItemId,
+          `<p>${escapeHtml(actor.holder)} retracted ${b.targets.length} <code>blocked_by</code> ` +
+            `relation(s) as not real dependencies: ${escapeHtml(b.reason)}</p>` +
+            `<p>Plane cannot delete a relation through its API, so the edge is still drawn here. ` +
+            `The gateway's readiness gate no longer honours it. Delete it in Plane's UI to make ` +
+            `the two agree.</p>`,
+        )
+        .catch(() => {});
+    }
+
+    return { ok: true, results };
   });
 
   // ── what am I holding? (agents restart) ──────────────────────────────────

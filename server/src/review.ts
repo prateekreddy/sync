@@ -1,6 +1,7 @@
 import { rootlessOpenOf } from './board.js';
 import { resolveLabels } from './labels.js';
 import type { PlaneClient, State, WorkItem } from './plane.js';
+import { escapeHtml } from './html.js';
 
 /**
  * The periodic structural review.
@@ -98,9 +99,6 @@ export function assess(
 
 /** How many offenders to name. Enough to act on, short of pasting the board back. */
 const NAMED = 12;
-
-const escapeHtml = (s: string) =>
-  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 function body(a: Assessment): string {
   const named = a.rootless.slice(0, NAMED);

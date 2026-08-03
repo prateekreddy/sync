@@ -4,6 +4,10 @@ import { PlaneClient } from '../src/plane.js';
 import { NO_RELATIONS } from './relations.js';
 import type { Label, State, WorkItem } from '../src/plane.js';
 import { createPool } from '../src/db.js';
+import { randomUUID } from 'node:crypto';
+
+/** A real uuid: project_id is a uuid column, and the retraction lookup casts it. */
+const PROJECT = randomUUID();
 
 /**
  * The cheap half of the readiness gate is a pure function, so it belongs in a unit
@@ -16,7 +20,7 @@ import { createPool } from '../src/db.js';
 const item = (over: Partial<WorkItem> = {}): WorkItem => ({
   id: 'i',
   sequence_id: 1,
-  project: 'p',
+  project: PROJECT,
   name: 'Do the thing',
   description_html: '<p>Clear enough to act on.</p>',
   state: 's',
@@ -135,7 +139,7 @@ describe('readyCandidates', () => {
     const got = await readyCandidates(
       fakePlane([ready({ labels: ['lbl-uuid-1'] })], [{ id: 'lbl-uuid-1', name: 'needs-human' }]),
       pool,
-      { projectId: 'p' },
+      { projectId: PROJECT },
     );
     expect(got).toEqual([]);
   });
@@ -144,7 +148,7 @@ describe('readyCandidates', () => {
     const got = await readyCandidates(
       fakePlane([ready({ labels: ['l'] })], [{ id: 'l', name: 'Needs-Refinement' }]),
       pool,
-      { projectId: 'p' },
+      { projectId: PROJECT },
     );
     expect(got).toEqual([]);
   });
@@ -153,7 +157,7 @@ describe('readyCandidates', () => {
     const got = await readyCandidates(
       fakePlane([ready({ labels: ['l'] })], [{ id: 'l', name: 'backend' }]),
       pool,
-      { projectId: 'p' },
+      { projectId: PROJECT },
     );
     expect(got.map((c) => c.title)).toEqual(['Do the thing']);
   });
@@ -171,7 +175,7 @@ describe('readyCandidates', () => {
       { id: 'l-fe', name: 'frontend' },
     ];
     const got = await readyCandidates(fakePlane(items, labels), pool, {
-      projectId: 'p',
+      projectId: PROJECT,
       capabilities: ['backend'],
     });
     expect(got.map((c) => c.workItemId)).toEqual(['a']);
@@ -182,7 +186,7 @@ describe('readyCandidates', () => {
     // Falling back to the id means it matches no blocking label and no
     // capability — it must not crash the browse for everyone else.
     const got = await readyCandidates(fakePlane([ready({ labels: ['unknown'] })], []), pool, {
-      projectId: 'p',
+      projectId: PROJECT,
     });
     expect(got.map((c) => c.title)).toEqual(['Do the thing']);
   });

@@ -3,6 +3,7 @@ import type { Pool } from './db.js';
 import { GatewayError } from './errors.js';
 import type { PlaneClient, State, WorkItem } from './plane.js';
 import { resolve } from './query.js';
+import { retractedIn } from './retraction.js';
 import { viewOf, type WorkItemView } from './view.js';
 
 /**
@@ -197,7 +198,10 @@ export async function verifyClaimable(
   plane: PlaneClient,
   projectId: string,
   workItemId: string,
-  opts: { checkChildren?: boolean } = {},
+  // `pool` is required rather than optional on purpose. Retractions are part of
+  // the gate, and an optional correctness input is a caller that can silently get
+  // a different answer — which is exactly what SYNC-65 was.
+  opts: { checkChildren?: boolean; pool: Pool },
 ): Promise<string[]> {
   const reasons: string[] = [];
 
@@ -225,5 +229,10 @@ export async function verifyClaimable(
   // blocked for a second or so after its blocker finishes. That lag is in the
   // safe direction (briefly withholding work, never double-issuing it), so it is
   // left alone rather than papered over with a read of the lease table.
-  return [...reasons, ...(await blockersOf(plane, projectId, workItemId, groupOf))];
+  // Retractions apply here exactly as they do on the browse path. Omitting them
+  // would put claim back into disagreeing with find — the shape of SYNC-65, in a
+  // new place, and this time refusing work the board says is ready.
+  const retracted = await retractedIn(opts.pool, projectId);
+
+  return [...reasons, ...(await blockersOf(plane, projectId, workItemId, groupOf, { retracted }))];
 }

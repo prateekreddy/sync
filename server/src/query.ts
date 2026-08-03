@@ -1,4 +1,5 @@
 import { blockerPass, BROWSE_BUDGET } from './blockers.js';
+import { retractedIn } from './retraction.js';
 import type { Pool } from './db.js';
 import type { PlaneClient, State, WorkItem } from './plane.js';
 import { countOpenChildren, screen } from './readiness.js';
@@ -183,7 +184,9 @@ export async function resolve(
         p.projectId,
         needsBlockers,
         groupOf,
-        byId,
+        // One query for the project's retractions, not one per item — this sits
+        // in the path of every find, next and board.
+        { known: byId, retracted: await retractedIn(pool, p.projectId) },
         p.blockerBudget ?? BROWSE_BUDGET,
       )
     : { reasons: new Map<string, string[]>(), checked: 0, unchecked: 0 };

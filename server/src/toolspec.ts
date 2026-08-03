@@ -258,6 +258,25 @@ export const LinkBody = z.object({
   targets: z.array(uuid).min(1).max(20),
 });
 
+/**
+ * Retracting a blocker, not deleting it.
+ *
+ * Plane's relations endpoint is `["get", "post"]` — measured at v1.3.1, the
+ * version we run, and still true on `preview`. There is no delete to call, so
+ * this stops the readiness gate honouring the edge instead. See retraction.ts.
+ */
+export const UnlinkBody = z.object({
+  projectId: uuid,
+  workItemId: uuid,
+  targets: z.array(uuid).min(1).max(20),
+  // Required, and deliberately not defaulted. Removing a dependency is a
+  // judgement someone will want to audit, and "" would be the value every caller
+  // in a hurry left behind.
+  reason: z.string().min(3).max(500),
+  /** Put the dependency back under the gate. */
+  reinstate: z.boolean().optional(),
+});
+
 export const HeldQuery = z.object({});
 
 export interface NativeTool {
@@ -477,10 +496,27 @@ export const NATIVE_TOOLS: NativeTool[] = [
     description:
       'Create a typed relation between work items. blocked_by is load-bearing: an item with an ' +
       'unfinished blocker cannot be claimed, so use it to stop other agents starting work that ' +
-      'cannot succeed yet.',
+      'cannot succeed yet. Plane keeps every relation on a pair rather than replacing one, so ' +
+      'linking a pair a second time with a different type ADDS it and leaves the first in force ' +
+      '— the reply names any it found under `conflicts`. To undo a blocked_by, call unlink; ' +
+      're-linking as relates_to does not remove it.',
     schema: LinkBody,
     method: 'POST',
     request: (a) => ({ path: '/v1/link', body: a }),
+  },
+  {
+    name: 'unlink',
+    title: 'This dependency is not real',
+    description:
+      'Stop the readiness gate honouring a blocked_by relation, so work it was wrongly gating ' +
+      'can be claimed again. Use it when a dependency stops being true — the scope changed, or ' +
+      'the edge was a mistake. `reason` is required and is recorded against the decision. ' +
+      'Note what this does NOT do: Plane\'s API cannot delete a relation, so the edge stays ' +
+      'visible in Plane and a comment is written on the item saying it is no longer enforced. ' +
+      'Delete it in Plane\'s UI to make the two agree. Pass reinstate: true to put it back.',
+    schema: UnlinkBody,
+    method: 'POST',
+    request: (a) => ({ path: '/v1/unlink', body: a }),
   },
   {
     name: 'held',

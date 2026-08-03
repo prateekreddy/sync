@@ -149,9 +149,9 @@ describe('the browse path applies the blocker gate', () => {
     for (const item of listed.items) {
       // Anything a browse called ready must survive the gate that hands it out.
       // Before this change `gated` appeared above and failed here.
-      expect(await verifyClaimable(plane, PROJECT, item.workItemId)).toEqual([]);
+      expect(await verifyClaimable(plane, PROJECT, item.workItemId, { pool })).toEqual([]);
     }
-    expect(await verifyClaimable(plane, PROJECT, id('gated'))).toEqual([
+    expect(await verifyClaimable(plane, PROJECT, id('gated'), { pool })).toEqual([
       `blocked by #${BOARD[1]!.sequence_id}`,
     ]);
   });
@@ -168,7 +168,7 @@ describe('the browse path applies the blocker gate', () => {
     const plane = fakePlane();
     const got = await explain(plane, pool, { projectId: PROJECT, workItemId: id('gated') });
     expect(got.claimable).toBe(false);
-    expect(got.reasons).toEqual(await verifyClaimable(plane, PROJECT, id('gated')));
+    expect(got.reasons).toEqual(await verifyClaimable(plane, PROJECT, id('gated'), { pool }));
   });
 
   it('names the blocker only once, rather than twice for the two halves', async () => {
@@ -241,7 +241,7 @@ describe('what a blocker lookup costs', () => {
       edges: { gated: { blocked_by: [{ project_id: OTHER_PROJECT, issue_id: id('elsewhere') }] } },
     });
     // Not in BOARD, so the fetch fails and the blocker counts as open.
-    expect(await verifyClaimable(plane, PROJECT, id('gated'))).toEqual([
+    expect(await verifyClaimable(plane, PROJECT, id('gated'), { pool })).toEqual([
       'blocked by an unreadable item',
     ]);
     expect(itemFetches).toEqual([id('elsewhere')]);
@@ -253,7 +253,7 @@ describe('when Plane is unwell', () => {
     // Refusing work that might be blocked costs a pause. Dispatching an agent at
     // work that cannot succeed costs a run and something a human has to review.
     const plane = fakePlane({ missing: ['open-blocker'] });
-    const got = await verifyClaimable(plane, PROJECT, id('gated'));
+    const got = await verifyClaimable(plane, PROJECT, id('gated'), { pool });
     expect(got.length).toBe(1);
   });
 

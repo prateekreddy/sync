@@ -5,6 +5,7 @@ import { heldBy } from './lease.js';
 import { GatewayError } from './errors.js';
 import { resolveLabels } from './labels.js';
 import type { PlaneClient } from './plane.js';
+import { escapeHtml } from './html.js';
 
 /**
  * Capture — the write-first primitive.
@@ -435,5 +436,3 @@ export async function capture(
   return result;
 }
 
-const escapeHtml = (s: string) =>
-  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

@@ -316,6 +316,16 @@ at once is the mistake — that is what labels are for.
 - **`link`** records `blocking`, `blocked_by`, `duplicate`, `relates_to`. Plane's vocabulary is
   `blocking`, not "blocks" — anything else is accepted and then silently ignored. Link a blocker the
   moment you find one; the readiness gate reads it and will stop another agent burning a run on it.
+- **`unlink`** is how you take a `blocked_by` back. Read the reply to `link`: Plane keeps *every*
+  relation on a pair rather than replacing one, so re-linking the same pair as `relates_to` adds an
+  edge and leaves the `blocked_by` gating. `link` names those under `conflicts` — before this it
+  returned `ok` and an agent correcting a mistake believed it had.
+
+  What `unlink` does **not** do is delete the edge, because Plane's API has no way to: the relations
+  endpoint is get and post only, at every version. It stops the readiness gate honouring it, writes
+  a comment on the item saying so, and records who decided and why — `reason` is required. Plane's
+  UI will still draw the edge until a human deletes it there. Retract when a dependency stops being
+  true, not to hurry past one you find inconvenient; `reinstate: true` puts it back.
 
 ## Use the rest of Plane
 

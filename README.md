@@ -252,6 +252,7 @@ heartbeat → keep the claim alive    (or it returns to the pool)
 complete  → finish, with evidence   (epoch required)
 release   → hand it back
 link      → blocked_by / duplicate / relates_to
+unlink    → that dependency is not real (retracts; Plane cannot delete)
 held      → what am I holding? (call after a restart)
 history   → has this been attempted? (claims, expiries, how it ended)
 ```

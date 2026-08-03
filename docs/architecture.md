@@ -207,7 +207,48 @@ Two smaller things worth keeping:
   return `blockersUnchecked`. A cap that quietly stopped checking would read
   exactly like a clean pass — the same failure in a subtler form.
 
-## Agent surface (15 tools)
+### A relation you cannot delete
+
+`blocked_by` makes an item unclaimable, so a wrong one gates real work forever.
+Plane offers no way to remove it. Measured at v1.3.1, the version we run, and
+still true on `preview`:
+
+```python
+"workspaces/<slug>/projects/<project_id>/work-items/<issue_id>/relations/",
+IssueRelationListCreateAPIEndpoint.as_view(http_method_names=["get", "post"])
+```
+
+Nor does re-linking the pair replace anything. Plane stores relations as
+`(issue, related_issue, relation_type)` rows and bulk-creates with
+`ignore_conflicts=True`, so a second type is a second **row** and the first keeps
+gating. That made the reported failure worse than a missing feature: `link`
+returned `ok: true`, and an agent correcting a mistake had every reason to believe
+it had (SYNC-66).
+
+The other two routes out are both closed. Plane's UI works, but an agent does not
+have one — and "ask a human to click something" is the coordination problem this
+gateway exists to remove. Plane's database would work, and reaching into it would
+dissolve the boundary that currently makes it *impossible* for the gateway to read
+Plane's tables even by accident.
+
+So the gateway **retracts** rather than deletes. This is not a workaround for
+lacking authority: the readiness gate is the gateway's own rule, the same one by
+which a lease or a `needs-human` label withholds an item. Plane holds the
+relation; the gateway decides what it means.
+
+The honest cost is a divergence — Plane's UI still draws an edge that is no longer
+enforced. Left implicit that is another silent failure, so it is made loud in
+three places: `unlink` comments on the work item, the row records who decided and
+why (`reason` is required, and deliberately not defaulted), and retractions are
+reversible with `reinstate` while the row survives, because "who decided this
+dependency was not real" is exactly what gets asked after work ships that should
+have waited.
+
+`link` was also made to stop lying. Its reply now separates `created`,
+`alreadyLinked` and `conflicts`, and says plainly that a conflicting relation is
+still in force and that `unlink` is what removes it.
+
+## Agent surface (16 tools)
 
 | Tool | Why it exists |
 |---|---|
@@ -222,6 +263,7 @@ Two smaller things worth keeping:
 | `release` | Back to the pool, with a reason. Requires epoch. |
 | `complete` | Terminal, with outcome + refs. Requires epoch. |
 | `link` | Typed edge over Plane's own vocabulary — `blocking`, `blocked_by`, `duplicate`, `relates_to`. Plane accepts anything else and silently ignores it, so the set is fixed here rather than passed through. |
+| `unlink` | Takes a `blocked_by` back. Plane's API cannot delete a relation at any version, so this retracts: the gate stops honouring the edge, Plane keeps drawing it, and a comment on the item says so. See "A relation you cannot delete". |
 | `held` | What am I holding? The first call after a restart, so a resumed agent does not re-claim. |
 | `why` | The gate's own reasons for withholding an item. The reasons were always computed and thrown away, which made "`next` returned nothing" unanswerable. |
 | `tree` | The sub-tree with lease state. Plane holds the parent links and the gateway holds the leases, so only here can "what is left" mean "not done *and* not already being worked". |
