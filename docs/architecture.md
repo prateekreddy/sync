@@ -167,6 +167,46 @@ look identical from the inside.
 `readyCandidates` now resolves ids once per browse from a per-project cache, and
 both consumers go through a single helper so they cannot drift apart again.
 
+### A cost split is not a definition
+
+The gate has two halves. `screen()` is everything one list call can decide.
+`blocked_by` needs a request per item, because Plane's relations live behind their
+own endpoint and carry ids without state.
+
+That split was a cost decision, and it silently became a definition. The browse
+path called `screen()` alone and reported the result as "what claim will accept",
+so `find(ready: true)` listed items `claim` refused and `board` counted them ready
+— on the reporting project, the items it failed open on were the irreversible
+mainnet seeding steps (SYNC-65). Three callers remembered to add the second half;
+the two that forgot were the two humans read.
+
+The fix was not to add the missing call at those two sites. It was to notice the
+cost argument had been wrong: *O(backlog)* assumed every item needs a lookup, when
+an item the screen already withholds stays withheld whatever its relations say,
+and a finished item is nobody's candidate. The bill is the size of the **ready
+set** — precisely the set `claim` would have verified one at a time anyway. On a
+34-item board that is around a dozen requests, run six at a time, and the answer
+is then correct for every caller rather than three of them.
+
+So `resolve` runs the blocker pass itself and exposes only the total. `screen()`
+is documented as callable from nowhere else. `verifyClaimable` survives — `claim`
+must re-read, since a browse may be minutes stale and it is the only check whose
+being wrong costs an agent run — but it now calls the same `openBlockers` rather
+than restating the rule.
+
+Two smaller things worth keeping:
+
+- **Agreement tests do not catch shared defects.** A suite existed specifically to
+  assert `find`, `next`, `why` and `tree` agree about readiness. It passed
+  throughout, because every fake Plane stubbed `relations` to return nothing: with
+  no item ever blocked, the half and the whole are the same function. `board`'s
+  count also matched `find`'s list — both were wrong by the same amount. Only
+  comparing against the *authoritative* gate finds this, which is what
+  `blockers.test.ts` does.
+- **The cap is reported.** Beyond `BROWSE_BUDGET` ready items, `find` and `board`
+  return `blockersUnchecked`. A cap that quietly stopped checking would read
+  exactly like a clean pass — the same failure in a subtler form.
+
 ## Agent surface (15 tools)
 
 | Tool | Why it exists |

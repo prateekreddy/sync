@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { explain } from '../src/readiness.js';
 import { PlaneClient } from '../src/plane.js';
+import { NO_RELATIONS } from './relations.js';
 import type { Label, Relations, State, WorkItem } from '../src/plane.js';
 import { createPool } from '../src/db.js';
 import { GatewayError } from '../src/errors.js';
@@ -53,16 +54,6 @@ const STATES: State[] = [
   { id: 'done-state', name: 'Done', group: 'completed', default: false },
 ];
 
-const NO_RELATIONS: Relations = {
-  blocking: [],
-  blocked_by: [],
-  duplicate: [],
-  relates_to: [],
-  start_after: [],
-  start_before: [],
-  finish_after: [],
-  finish_before: [],
-};
 
 const fakePlane = (
   items: WorkItem[],

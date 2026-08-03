@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { find } from '../src/find.js';
 import { PlaneClient } from '../src/plane.js';
+import { NO_RELATIONS } from './relations.js';
 import type { Label, State, WorkItem } from '../src/plane.js';
 import { createPool } from '../src/db.js';
 import * as lease from '../src/lease.js';
@@ -70,6 +71,9 @@ const fakePlane = (items: WorkItem[], moduleMembers?: string[]): PlaneClient =>
     states: async () => STATES,
     labels: async () => LABELS,
     moduleIssueIds: async () => new Set((moduleMembers ?? []).map(id)),
+    // Since SYNC-65 `ready` resolves blockers here rather than only at claim
+    // time; blocker behaviour is covered in blockers.test.ts.
+    relations: async () => NO_RELATIONS,
   });
 
 const BOARD = [

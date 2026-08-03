@@ -5,6 +5,7 @@ import { readyCandidates, explain } from '../src/readiness.js';
 import { find } from '../src/find.js';
 import { tree } from '../src/tree.js';
 import { PlaneClient } from '../src/plane.js';
+import { NO_RELATIONS } from './relations.js';
 import type { Label, Relations, State, WorkItem } from '../src/plane.js';
 import { createPool } from '../src/db.js';
 import * as lease from '../src/lease.js';
@@ -43,16 +44,6 @@ afterAll(async () => {
 
 const STATES: State[] = [{ id: 'backlog', name: 'Backlog', group: 'backlog', default: true }];
 const LABELS: Label[] = [{ id: 'l-be', name: 'backend' }];
-const NO_RELATIONS = {
-  blocking: [],
-  blocked_by: [],
-  duplicate: [],
-  relates_to: [],
-  start_after: [],
-  start_before: [],
-  finish_after: [],
-  finish_before: [],
-} as Relations;
 
 let seq = 0;
 const wi = (key: string, over: Partial<WorkItem> = {}): WorkItem => ({

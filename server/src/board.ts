@@ -96,6 +96,13 @@ export interface Board {
    * cannot see enough of the project to say.
    */
   structure?: Structure;
+  /**
+   * Set only when the blocker budget ran out, which takes an extraordinary
+   * number of simultaneously-ready items. It means `ready` is an upper bound and
+   * `blocked` a lower one, rather than a count. Absent is the normal case and
+   * means every bucket was decided.
+   */
+  blockersUnchecked?: number;
   /** Live leases, so "what is the fleet doing" is answered in the same call. */
   fleet: Array<{
     holder: string;
@@ -209,7 +216,7 @@ export async function board(
   pool: Pool,
   opts: { projectId: string; moduleId?: string | undefined; capabilities?: string[] | undefined },
 ): Promise<Board> {
-  const [{ all, ctx, groupOf, reasons }, modules] = await Promise.all([
+  const [{ all, ctx, groupOf, reasons, blockersUnchecked }, modules] = await Promise.all([
     resolve(plane, pool, {
       projectId: opts.projectId,
       ...(opts.capabilities?.length ? { capabilities: opts.capabilities } : {}),
@@ -262,6 +269,7 @@ export async function board(
     // alone, so every item outside it would be reported unplaced — a number that
     // is not merely incomplete but wrong.
     ...(opts.moduleId ? {} : { structure: structureOf(all, filed, groupOf) }),
+    ...(blockersUnchecked ? { blockersUnchecked } : {}),
     fleet: [...ctx.leases.entries()]
       .map(([id, l]) => {
         const item = byId.get(id);

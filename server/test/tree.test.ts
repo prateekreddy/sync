@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { tree } from '../src/tree.js';
 import { PlaneClient } from '../src/plane.js';
+import { NO_RELATIONS } from './relations.js';
 import type { State, WorkItem } from '../src/plane.js';
 import { createPool } from '../src/db.js';
 import { GatewayError } from '../src/errors.js';
@@ -76,6 +77,9 @@ const fakePlane = (items: WorkItem[]): PlaneClient =>
     // The shared view context resolves label ids to names, so every fake feeding
     // a read tool has to answer this or it falls through to a real fetch.
     labels: async () => [],
+    // Likewise since SYNC-65: the readiness gate resolves blockers on every
+    // browse, not only at claim time.
+    relations: async () => NO_RELATIONS,
   });
 
 const ask = (items: WorkItem[], key: string, depth?: number) =>

@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { readyCandidates, screen } from '../src/readiness.js';
 import { PlaneClient } from '../src/plane.js';
+import { NO_RELATIONS } from './relations.js';
 import type { Label, State, WorkItem } from '../src/plane.js';
 import { createPool } from '../src/db.js';
 
@@ -121,6 +122,10 @@ const fakePlane = (items: WorkItem[], labels: Label[] = []): PlaneClient =>
       { id: 's', name: 'Backlog', group: 'backlog', default: true },
     ],
     labels: async () => labels,
+    // Since SYNC-65 the gate resolves blockers on the browse path too, so an
+    // unstubbed fake reaches for the network. Blocker behaviour itself is
+    // covered in blockers.test.ts.
+    relations: async () => NO_RELATIONS,
   });
 
 describe('readyCandidates', () => {

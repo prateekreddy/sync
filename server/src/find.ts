@@ -46,6 +46,16 @@ export interface FindResult {
   items: WorkItemView[];
   /** Matches before `limit` was applied, so a truncated answer is visibly truncated. */
   matched: number;
+  /**
+   * Present only when the blocker budget ran out mid-answer, which takes an
+   * extraordinary number of simultaneously-ready items. It means `ready` here is
+   * an upper bound: some of these may still be blocked, and `claim` will say so.
+   *
+   * Reported rather than absorbed for the same reason `matched` is: a caller who
+   * cannot tell a complete answer from a truncated one will treat the truncated
+   * one as complete, and that specific mistake is what SYNC-65 was.
+   */
+  blockersUnchecked?: number;
 }
 
 export async function find(plane: PlaneClient, pool: Pool, q: FindQuery): Promise<FindResult> {
@@ -55,7 +65,7 @@ export async function find(plane: PlaneClient, pool: Pool, q: FindQuery): Promis
     ? await plane.moduleIssueIds(q.projectId, q.moduleId)
     : undefined;
 
-  const { items, matched, ctx } = await resolve(plane, pool, {
+  const { items, matched, ctx, blockersUnchecked } = await resolve(plane, pool, {
     projectId: q.projectId,
     ...(q.labels ? { labels: q.labels } : {}),
     ...(q.priority ? { priority: q.priority } : {}),
@@ -69,5 +79,9 @@ export async function find(plane: PlaneClient, pool: Pool, q: FindQuery): Promis
     ...(q.fields ? { fields: q.fields } : {}),
   });
 
-  return { matched, items: items.map((i) => viewOf(i, ctx)) };
+  return {
+    matched,
+    items: items.map((i) => viewOf(i, ctx)),
+    ...(blockersUnchecked ? { blockersUnchecked } : {}),
+  };
 }

@@ -1,3 +1,4 @@
+import { blockersOf } from './blockers.js';
 import type { Pool } from './db.js';
 import { GatewayError } from './errors.js';
 import type { PlaneClient, State, WorkItem } from './plane.js';
@@ -37,10 +38,15 @@ export interface NotReady {
 /**
  * The cheap predicate — everything decidable from a single list call.
  *
- * Deliberately does NOT check `blocked_by` relations: that needs one API call per
- * item, which would make browsing cost O(backlog) against a shared rate limit.
- * Blockers are verified at claim time instead, where correctness actually matters.
- * See verifyClaimable().
+ * Does NOT check `blocked_by`, which needs a request per item; see blockers.ts.
+ * That split is a cost decision and nothing more. It is emphatically not a
+ * definition of readiness, and reading it as one is what SYNC-65 was: the browse
+ * path called this and reported the result as "what claim will accept", so items
+ * with unfinished blockers were listed as ready and `board` counted them so.
+ *
+ * Nothing outside `resolve` should call this. `resolve` composes it with the
+ * blocker pass and hands out only the total, which is the shape that keeps the
+ * two halves from being mistaken for each other again.
  */
 export function screen(
   item: WorkItem,
@@ -154,9 +160,11 @@ export async function explain(
     });
   }
 
-  // The cheap reasons come from the shared predicate; blockers cost an API call
-  // per item, so they are only paid for when someone asks about one item.
-  const why = [...reasons(item), ...(await verifyClaimable(plane, opts.projectId, opts.workItemId))];
+  // Blockers included: the predicate resolved them for the one item this query
+  // selected. It used to add `verifyClaimable` on top, which was correct and is
+  // now double-counting — the reason this reads as a simplification is that the
+  // gap it was compensating for is closed.
+  const why = reasons(item);
 
   return { item: viewOf(item, ctx), claimable: why.length === 0, reasons: why };
 }
@@ -177,10 +185,13 @@ export function countOpenChildren(
 }
 
 /**
- * The expensive half of the gate, run only for the item actually being claimed.
+ * The last word before an item is handed out.
  *
- * An item with an unfinished `blocked_by` is not workable no matter how well it
- * is written, and handing it to an agent guarantees wasted tokens.
+ * Deliberately re-reads rather than trusting a browse: `claim` may be minutes
+ * behind whatever listing suggested the item, and this is the only check whose
+ * being wrong costs an agent run. It is also unbudgeted — one item, so there is
+ * nothing to ration — which is the one real difference between it and the pass
+ * `resolve` runs. The rule they apply is the same function.
  */
 export async function verifyClaimable(
   plane: PlaneClient,
@@ -205,25 +216,8 @@ export async function verifyClaimable(
     }
   }
 
-  const [rel, states] = await Promise.all([
-    plane.relations(projectId, workItemId),
-    plane.states(projectId),
-  ]);
-  if (rel.blocked_by.length === 0) return reasons;
-
+  const states = await plane.states(projectId);
   const groupOf = new Map(states.map((s) => [s.id, s.group]));
-
-  // Plane's relations payload carries ids only — no state — so each blocker has
-  // to be fetched to find out whether it is finished. Skipping this and treating
-  // every relation as open would strand an item permanently the moment anyone
-  // linked a blocker, even after that blocker was completed.
-  const blockers = await Promise.all(
-    rel.blocked_by.map((b) =>
-      plane
-        .getWorkItem(b.project_id ?? projectId, b.issue_id)
-        .catch(() => null),
-    ),
-  );
 
   // Note this reads Plane, which `complete` updates asynchronously — the lease is
   // the source of truth and Plane is a mirror, so a completion is never made to
@@ -231,16 +225,5 @@ export async function verifyClaimable(
   // blocked for a second or so after its blocker finishes. That lag is in the
   // safe direction (briefly withholding work, never double-issuing it), so it is
   // left alone rather than papered over with a read of the lease table.
-  const open = blockers.filter((b) => {
-    // A blocker we cannot read is treated as open: refusing work that might be
-    // blocked is cheaper than dispatching an agent at work that cannot succeed.
-    if (!b) return true;
-    const g = groupOf.get(b.state);
-    return g !== 'completed' && g !== 'cancelled';
-  });
-
-  if (open.length === 0) return reasons;
-
-  const names = open.map((b) => (b ? `#${b.sequence_id}` : 'an unreadable item')).join(', ');
-  return [...reasons, `blocked by ${names}`];
+  return [...reasons, ...(await blockersOf(plane, projectId, workItemId, groupOf))];
 }

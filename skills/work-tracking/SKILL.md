@@ -201,7 +201,12 @@ from `claim` when it:
 - is a **draft**;
 - has **unfinished sub-items** (the work is in the children — claim those);
 - carries a blocking label: `needs-human`, `needs-refinement`, `blocked`, `wontfix`;
-- is blocked by unfinished work (checked at claim time, not while browsing).
+- is blocked by an unfinished `blocked_by` item.
+
+Browsing and claiming apply all of these. Until 2026-08-03 the last one was checked only at claim
+time, so `find(ready: true)` listed work that `claim` then refused and `board` counted it ready —
+if you are talking to a gateway older than that, treat a `ready` row as a candidate rather than a
+promise, and believe `why` over any listing.
 
 So: always give `body` enough for someone else to act without you — what, where, and how anyone
 would know it is done. Set `priority` honestly.

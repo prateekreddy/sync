@@ -1,3 +1,4 @@
+import { blockerPass, BROWSE_BUDGET } from './blockers.js';
 import type { Pool } from './db.js';
 import type { PlaneClient, State, WorkItem } from './plane.js';
 import { countOpenChildren, screen } from './readiness.js';
@@ -45,6 +46,16 @@ export interface Predicate {
   capabilities?: string[] | undefined;
   limit?: number | undefined;
   fields?: string[] | undefined;
+  /**
+   * Look up `blocked_by` for the items that survive the cheap screen.
+   *
+   * On by default, because off by default is what SYNC-65 was: every caller that
+   * forgot to ask got a looser gate than `claim` enforces and no sign of it. Turn
+   * it off only where readiness is not being reported at all, and say why.
+   */
+  blockers?: boolean | undefined;
+  /** Relation lookups this query may spend. See BROWSE_BUDGET. */
+  blockerBudget?: number | undefined;
 }
 
 export interface Resolved {
@@ -59,8 +70,19 @@ export interface Resolved {
   /**
    * Every reason this item is not claimable right now. Empty means claimable.
    * The single definition of readiness — `ready` filters on it, `why` prints it.
+   *
+   * Includes unfinished `blocked_by`, which is why this is worth having rather
+   * than each caller composing its own: the blocker lookups are already done and
+   * memoised into the answer by the time `resolve` returns, so reading them stays
+   * synchronous and no caller can get the cheap half by accident.
    */
   reasons: (item: WorkItem) => string[];
+  /**
+   * Screen-passing items whose blockers were not looked up, because the budget
+   * ran out. Zero for every ordinary board. Non-zero means `ready` is an upper
+   * bound rather than an answer, and whoever displays it should say so.
+   */
+  blockersUnchecked: number;
 }
 
 const PRIORITY_RANK: Record<Priority, number> = {
@@ -86,7 +108,10 @@ export async function resolve(
   const openChildren = countOpenChildren(all, groupOf);
   const wanted = (p.capabilities ?? []).map((c) => c.toLowerCase());
 
-  const reasons = (item: WorkItem): string[] => {
+  // The cheap half: everything one list call can decide. Never returned to a
+  // caller on its own — `reasons` below is what anyone gets — so there is no
+  // shape of this function that reads like a readiness answer.
+  const screened = (item: WorkItem): string[] => {
     const out = screen(item, groupOf.get(item.state), ctx.labelNames, openChildren.get(item.id) ?? 0);
 
     // A live lease is not a defect in the item, which is why the gate keeps it
@@ -110,7 +135,10 @@ export async function resolve(
 
   const labels = (p.labels ?? []).map((l) => l.trim().toLowerCase()).filter(Boolean);
 
-  const matches = all.filter((i) => {
+  // Split from `ready` deliberately. Everything here is decidable from data
+  // already in hand, so it runs first and narrows what the blocker pass has to
+  // pay for — a query for one item costs one relation lookup, not the project's.
+  const selects = (i: WorkItem): boolean => {
     if (p.workItemId && i.id !== p.workItemId) return false;
     if (p.parentId && i.parent !== p.parentId) return false;
     if (p.priority && i.priority !== p.priority) return false;
@@ -131,9 +159,41 @@ export async function resolve(
       if (p.holder !== 'none' && p.holder !== 'any' && held !== p.holder) return false;
     }
 
-    if (p.ready && reasons(i).length) return false;
     return true;
-  });
+  };
+
+  const selected = all.filter(selects);
+
+  // Pay for blockers only where the answer turns on them: an item the screen
+  // already withholds stays withheld whatever its relations say, and a finished
+  // one is nobody's candidate. On a healthy board this is the ready set, which is
+  // the same set `claim` would have verified one at a time anyway.
+  const needsBlockers =
+    p.blockers === false
+      ? []
+      : selected.filter((i) => {
+          const g = groupOf.get(i.state);
+          return g !== 'completed' && g !== 'cancelled' && screened(i).length === 0;
+        });
+
+  const byId = new Map(all.map((i) => [i.id, i]));
+  const pass = needsBlockers.length
+    ? await blockerPass(
+        plane,
+        p.projectId,
+        needsBlockers,
+        groupOf,
+        byId,
+        p.blockerBudget ?? BROWSE_BUDGET,
+      )
+    : { reasons: new Map<string, string[]>(), checked: 0, unchecked: 0 };
+
+  const reasons = (item: WorkItem): string[] => [
+    ...screened(item),
+    ...(pass.reasons.get(item.id) ?? []),
+  ];
+
+  const matches = p.ready ? selected.filter((i) => reasons(i).length === 0) : selected;
 
   // Claim order, always. `next` and `find` differing on it would be one more way
   // for two views of the same question to disagree.
@@ -150,5 +210,6 @@ export async function resolve(
     ctx,
     groupOf,
     reasons,
+    blockersUnchecked: pass.unchecked,
   };
 }

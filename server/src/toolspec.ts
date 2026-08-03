@@ -364,7 +364,9 @@ export const NATIVE_TOOLS: NativeTool[] = [
       'Progress per module — the epic layer — plus every live lease, in one call. Each module ' +
       'reports total, done, held, ready and blocked, which add up: an item is in exactly one ' +
       'bucket. `ready` is the number Plane cannot produce, because it needs the readiness gate ' +
-      'and the lease table. Use it to decide whether to finish something nearly done rather ' +
+      'and the lease table; `blocked` holds everything the gate withholds — no description, ' +
+      'drafts, unfinished sub-items, human flags, and items waiting on an unfinished blocked_by. ' +
+      'Use it to decide whether to finish something nearly done rather ' +
       'than start something new, and to see what the rest of the fleet is holding. ' +
       '`structure` says whether the board has any shape at all: how many items are filed in a ' +
       'module, have a parent, or are containers, how deep the hierarchy goes, and how many are ' +
@@ -403,7 +405,8 @@ export const NATIVE_TOOLS: NativeTool[] = [
       'before `limit`. Plane\'s own list tools cannot filter at all, so use this rather than ' +
       'listing the project and sifting it yourself. `holder` is unique to this tool: it comes ' +
       'from the lease table, so \'any\' shows what the fleet is working on and \'none\' shows ' +
-      'what is free. `ready: true` applies the same gate claim uses.',
+      'what is free. `ready: true` applies the same gate claim uses — including unfinished ' +
+      'blocked_by, so an item listed ready will not then be refused.',
     schema: FindQuerySchema,
     method: 'GET',
     request: (a) => ({ path: q('/v1/find', a) }),
