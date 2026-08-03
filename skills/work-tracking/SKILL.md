@@ -179,6 +179,16 @@ carefully — only by deliberately feeding the guard bad input, which is real wo
 own item. When the wrong version *does* look wrong, the acceptance criterion alone is enough and a
 second item is landfill.
 
+**`constrain` does both halves in one call**, and is what to reach for once you have triaged this
+way. Give it the items the requirement applies to and the requirement itself; add `proof` only when
+the looks-right test says the residue is separate work, and it is opened `blocked_by` everything it
+verifies. One call because the requirement and its proof drifting apart is what produced the orphans
+— written separately, the proof lands and the criterion does not.
+
+It writes into items other agents may be holding, and says so: `heldBy` in the reply names anyone
+mid-run, and they get a comment, because the description they were handed at claim time is already
+stale in their context and they will not re-read it.
+
 **Read what it returns.** `deduped: true` means you did not create anything — your text was dropped
 and an existing item was handed back, so if your body carried something the original lacks, add it
 as a comment. `replayed: true` means the same `idempotencyKey` returned a stored answer. A

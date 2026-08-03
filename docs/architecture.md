@@ -248,7 +248,7 @@ have waited.
 `alreadyLinked` and `conflicts`, and says plainly that a conflicting relation is
 still in force and that `unlink` is what removes it.
 
-## Agent surface (16 tools)
+## Agent surface (17 tools)
 
 | Tool | Why it exists |
 |---|---|
@@ -263,6 +263,7 @@ still in force and that `unlink` is what removes it.
 | `release` | Back to the pool, with a reason. Requires epoch. |
 | `complete` | Terminal, with outcome + refs. Requires epoch. |
 | `link` | Typed edge over Plane's own vocabulary — `blocking`, `blocked_by`, `duplicate`, `relates_to`. Plane accepts anything else and silently ignores it, so the set is fixed here rather than passed through. |
+| `constrain` | A discovery that is a requirement on existing work, not new work. Writes it into the named items' acceptance criteria and optionally opens the proof `blocked_by` them. See "Discoveries are usually constraints". |
 | `unlink` | Takes a `blocked_by` back. Plane's API cannot delete a relation at any version, so this retracts: the gate stops honouring the edge, Plane keeps drawing it, and a comment on the item says so. See "A relation you cannot delete". |
 | `held` | What am I holding? The first call after a restart, so a resumed agent does not re-claim. |
 | `why` | The gate's own reasons for withholding an item. The reasons were always computed and thrown away, which made "`next` returned nothing" unanswerable. |
@@ -751,6 +752,95 @@ Y" flattens to "X relates to Y". The edge keeps the pair navigable and the
 completion text beside it keeps the meaning; the causality is not queryable. And
 modules do not nest — `parent` is silently dropped — so the epic layer is exactly
 one level deep, with the work-item parent chain below it.
+
+#### Decision: the flattening is accepted (SYNC-44)
+
+Flagged three times while building this module and left undecided, which is worse
+than either answer — an undecided constraint gets rediscovered rather than
+designed around. Three options were on the table; the choice is **accept it**, and
+these are the reasons, so the next person to notice the loss does not reopen it.
+
+The alternatives are worse than the loss:
+
+- **Put the kind in a label** (`supersedes`, `caused-by`) was the only queryable
+  option and it is fatally ambiguous: labels are per *item*, not per *edge*, so an
+  item with two differently-shaped relations cannot say which label belongs to
+  which. Worse, labels are already load-bearing — four of them drive the readiness
+  gate — so this would put edge semantics and claimability in one namespace, where
+  a typo in either reads as the other.
+- **Put the kind in a comment** is what already happens: `capture` writes an
+  explicit provenance comment beside the `relates_to` it creates, and `complete`
+  writes the outcome text beside the reference edges. So this is not a third
+  option, it is a description of the current design. Naming it that way is the
+  point — the meaning is deliberately in prose *adjacent* to the edge, not encoded
+  in it.
+
+Since SYNC-66 there is a fourth reason, and it is the strongest: **a relation
+cannot be deleted.** Plane's API is get and post only, at every version. Any
+richer edge scheme would multiply state that can never be removed, only retracted
+— so an elaborate typed-edge convention would make every mistake permanent.
+
+The binding constraint this leaves behind, which matters more than the decision:
+**nothing downstream may infer causality from `relates_to`.** A flat edge means
+"these two are related" and nothing else. Reading "X superseded Y" out of it would
+be a wrong answer built on a flat one, which is worse than no answer. `briefing`
+is the only consumer today and it reports the kind Plane gave it, without
+interpretation.
+
+One dependency dissolved rather than satisfied. SYNC-57 was recorded as needing
+this decided, on the grounds that a *constrains* edge arriving as a flat
+`relates_to` would be noise. Working the design through, `constrain` does not want
+an edge at all: a requirement belongs **in** the constrained item's acceptance
+criteria, and the proof task hangs off `blocked_by`, which Plane has natively. The
+shape that needed a new edge kind was the worse shape. See "Discoveries are
+usually constraints" below.
+
+### Discoveries are usually constraints (SYNC-57)
+
+Diagnosed by the box that hit it, reviewing its own board: *"I treated 'I
+discovered something' as 'there is a new task.' It usually isn't."*
+
+`capture` offered exactly one shape — "there is a new item" — so an agent that
+found a *requirement* on work that already had an item filed it as a sibling. The
+constraint then sits **next to** the work rather than **in** it, the claimer never
+sees it, and the work completes honestly while the constraint stays open beside
+something already wrong. Re-parenting does not save it: a sibling is exactly as
+unreachable as an orphan. Two items on one board in a day, same shape.
+
+**Decision: the gateway gets the primitive**, not guidance alone. The guidance
+shipped first and is necessary — the triage is a judgement no tool can make — but
+the same argument that put module inheritance and lease-derived provenance in
+`capture` applies here. An agent under context pressure will not reliably
+decompose a discovery into "edit these three items, then file a fourth blocked on
+them" as four separate calls; and written separately, the halves drift. That drift
+*is* the bug.
+
+Three things about the shape are load-bearing:
+
+- **It is not a relation.** A `constrains` edge would put the requirement one hop
+  from the work — the same failure with better labelling. The requirement goes
+  into the item's acceptance criteria, as text, because `claim` hands over the
+  description and that is the one thing the claimer certainly reads. This is why
+  SYNC-44 stopped blocking it: the shape that needed a new edge kind was the worse
+  shape.
+- **The proof is optional and gated on a sharp test** — *does the wrong
+  implementation look right?* A rate limit on the wrong side compiles and passes a
+  naive test; an address copied across chains reads as symmetric and never fails
+  in normal use. Those need a proof someone can claim, opened `blocked_by` the
+  work it verifies so it cannot pass against nothing. When the wrong version looks
+  wrong, the criterion is enough and a second item is landfill.
+- **Held items get told.** `constrain` writes into work other agents may be
+  running. The holder was handed the description at claim time and will not
+  re-read it, so a comment is the only thing Plane will surface to them; the reply
+  names them in `heldBy`. Appending silently to work in flight would be a new
+  silent failure introduced by a fix for a silent failure.
+
+The read-modify-write on the description is the one soft spot: Plane offers no
+append and no precondition, so two concurrent `constrain` calls on the same item
+can lose one. Mitigated by writing items in series within a call rather than
+concurrently, and accepted because the failure is additive — a lost criterion,
+never a corrupted description — which is not a trade that would be acceptable on
+the lease.
 
 ## Settled
 

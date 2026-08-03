@@ -237,6 +237,34 @@ export const complete = (
   args: { workItemId: string; holder: string; epoch: number; reason?: string },
 ) => end(pool, 'completed', args);
 
+/**
+ * Who holds these items right now, by work item id. Absent means nobody.
+ *
+ * "Live" is `state = 'held' and expires_at > now()`, and that predicate belongs
+ * in exactly one place. It was written inline in the view builder and was about
+ * to be written a third time; a lease that one caller counts as live and another
+ * does not is two agents believing different things about the same item, which is
+ * the one failure this table exists to prevent.
+ *
+ * Pass no ids for every live lease — what the view builder wants — or a list to
+ * scope it.
+ */
+export async function liveHolders(
+  pool: Pool,
+  workItemIds?: string[],
+): Promise<Map<string, { holder: string; expiresAt: Date }>> {
+  const scoped = workItemIds !== undefined;
+  if (scoped && workItemIds.length === 0) return new Map();
+
+  const { rows } = await pool.query<{ work_item_id: string; holder: string; expires_at: Date }>(
+    `select work_item_id, holder, expires_at from lease
+      where state = 'held' and expires_at > now()
+      ${scoped ? 'and work_item_id = any($1::uuid[])' : ''}`,
+    scoped ? [workItemIds] : [],
+  );
+  return new Map(rows.map((r) => [r.work_item_id, { holder: r.holder, expiresAt: r.expires_at }]));
+}
+
 /** What this agent currently holds — used when an agent restarts mid-task. */
 export async function heldBy(pool: Pool, holder: string): Promise<Lease[]> {
   const { rows } = await pool.query<Row>(

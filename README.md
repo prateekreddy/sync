@@ -251,6 +251,7 @@ claim     → take it atomically      (returns an epoch — keep it)
 heartbeat → keep the claim alive    (or it returns to the pool)
 complete  → finish, with evidence   (epoch required)
 release   → hand it back
+constrain → a requirement on work that already exists (not a new task)
 link      → blocked_by / duplicate / relates_to
 unlink    → that dependency is not real (retracts; Plane cannot delete)
 held      → what am I holding? (call after a restart)

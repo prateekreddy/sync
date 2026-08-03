@@ -277,6 +277,24 @@ export const UnlinkBody = z.object({
   reinstate: z.boolean().optional(),
 });
 
+/**
+ * A discovery that constrains work which already exists.
+ *
+ * No relation type here, deliberately: the requirement goes INTO the constrained
+ * items' acceptance criteria rather than one hop away on an edge. See SYNC-44.
+ */
+export const ConstrainBody = z.object({
+  projectId: uuid,
+  workItemIds: z.array(uuid).min(1).max(20),
+  requirement: z.string().min(10).max(1000),
+  proof: z
+    .object({
+      title: z.string().min(3).max(255),
+      body: z.string().min(1),
+    })
+    .optional(),
+});
+
 export const HeldQuery = z.object({});
 
 export interface NativeTool {
@@ -503,6 +521,25 @@ export const NATIVE_TOOLS: NativeTool[] = [
     schema: LinkBody,
     method: 'POST',
     request: (a) => ({ path: '/v1/link', body: a }),
+  },
+  {
+    name: 'constrain',
+    title: 'This is a requirement on work that already exists',
+    description:
+      'Most discoveries are not new tasks. When you find a requirement on work that already has ' +
+      'an item, this writes it INTO those items as an acceptance criterion, so whoever claims ' +
+      'them sees it — capture would file it as a sibling, where the claimer never looks. Say the ' +
+      'requirement specifically enough that it cannot be paraphrased into vagueness: name the ' +
+      'exact input to test against, not "handle this carefully". ' +
+      'Pass `proof` only when the residue is genuinely separate work, and use this test to ' +
+      'decide: does the WRONG implementation look right? A rate limit on the wrong side compiles ' +
+      'and passes a naive test; an address copied across chains reads as symmetric and never ' +
+      'fails in normal use. Those need a proof someone can claim, and it is opened blocked_by ' +
+      'the work it verifies. If the wrong version looks obviously wrong, the criterion is enough ' +
+      'and a second item is landfill.',
+    schema: ConstrainBody,
+    method: 'POST',
+    request: (a) => ({ path: '/v1/constrain', body: a }),
   },
   {
     name: 'unlink',

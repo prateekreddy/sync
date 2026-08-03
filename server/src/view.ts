@@ -1,5 +1,6 @@
 import type { Pool } from './db.js';
 import type { PlaneClient, WorkItem } from './plane.js';
+import { liveHolders } from './lease.js';
 
 /**
  * The one agent-facing representation of a work item.
@@ -70,20 +71,15 @@ export async function viewContext(
   const [states, labelNames, leaseRows] = await Promise.all([
     plane.states(projectId),
     plane.labelNames(projectId),
-    pool.query<{ work_item_id: string; holder: string; expires_at: Date }>(
-      `select work_item_id, holder, expires_at from lease
-        where state = 'held' and expires_at > now()`,
-    ),
+    // From the shared definition of "live", not a second copy of the predicate.
+    liveHolders(pool),
   ]);
 
   return {
     stateNames: new Map(states.map((s) => [s.id, s.name])),
     labelNames,
     leases: new Map(
-      leaseRows.rows.map((r) => [
-        r.work_item_id,
-        { holder: r.holder, expiresAt: r.expires_at.toISOString() },
-      ]),
+      [...leaseRows].map(([id, l]) => [id, { holder: l.holder, expiresAt: l.expiresAt.toISOString() }]),
     ),
     ...(fields?.length ? { fields: new Set(fields) } : {}),
   };

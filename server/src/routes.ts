@@ -31,6 +31,7 @@ import {
 } from './oauth.js';
 import { board } from './board.js';
 import { capture } from './capture.js';
+import { constrain } from './constrain.js';
 import { citationsFor, recordCitations } from './citation.js';
 import { linkReferences } from './references.js';
 import {
@@ -64,6 +65,7 @@ import {
   CompleteBody,
   HeartbeatBody,
   HistoryQuery,
+  ConstrainBody,
   LinkBody,
   UnlinkBody,
   FindQuerySchema,
@@ -1191,6 +1193,18 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       // Honest about a degraded answer rather than reporting a clean create.
       ...(before ? {} : { warning: 'Could not read existing relations, so this reply cannot say which targets were already linked.' }),
     };
+  });
+
+  // ── constrain ────────────────────────────────────────────────────────────
+  //
+  // The write-first discipline had exactly one shape — "there is a new item" — so
+  // a requirement on existing work became a sibling of the thing it constrains,
+  // and the claimer never saw it. This puts it in the item instead. See
+  // constrain.ts for why it is not a relation.
+  app.post('/v1/constrain', async (req) => {
+    const actor = await actorOf(req);
+    const b = ConstrainBody.parse(req.body);
+    return constrain(plane.as(actor.planeToken), pool, actor, b);
   });
 
   // ── unlink ───────────────────────────────────────────────────────────────
