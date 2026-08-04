@@ -57,6 +57,7 @@ const item = (over: Partial<WorkItem> & { id: string }): WorkItem => ({
   labels: [],
   parent: null,
   is_draft: false,
+  assignees: [],
   created_at: '',
   updated_at: '',
   ...over,

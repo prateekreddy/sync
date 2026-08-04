@@ -43,6 +43,8 @@ export async function tree(
   pool: Pool,
   opts: {
     projectId: string;
+    /** The caller's Plane user id; see `Predicate.viewer`. */
+    viewer: string | null;
     workItemId: string;
     depth?: number;
     fields?: string[] | undefined;
@@ -57,6 +59,7 @@ export async function tree(
   // links, even the ones a `ready` filter would exclude from its own nodes.
   const { all: items, ctx, groupOf, reasons } = await resolve(plane, pool, {
     projectId: opts.projectId,
+    viewer: opts.viewer,
     ...(opts.fields ? { fields: opts.fields } : {}),
     ...(opts.capabilities?.length ? { capabilities: opts.capabilities } : {}),
   });

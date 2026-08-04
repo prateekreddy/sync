@@ -23,6 +23,7 @@ const workItem = (over: Record<string, unknown> = {}) => ({
   labels: ['l1'],
   parent: null,
   is_draft: false,
+  assignees: [],
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
   created_by: 'u1',
@@ -37,6 +38,10 @@ describe('projecting a list', () => {
   it('keeps what an agent chooses work with', () => {
     const [got] = projectPayload([workItem()]) as Array<Record<string, unknown>>;
     expect(Object.keys(got ?? {}).sort()).toEqual([
+      // Since SYNC-70: an agent that is refused an item for being assigned to
+      // someone else can see that from the listing, rather than only from the
+      // refusal. The reason string names the person; this carries the raw ids.
+      'assignees',
       'id',
       'is_draft',
       'labels',

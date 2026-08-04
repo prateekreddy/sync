@@ -1,0 +1,389 @@
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import Fastify from 'fastify';
+import { issueToken } from '../src/auth.js';
+import type { Actor } from '../src/auth.js';
+import {
+  foreignAssignees,
+  nameOf,
+  principalPlaneUser,
+  recordAssignment,
+} from '../src/assignment.js';
+import { createPool } from '../src/db.js';
+import { forgetAccess } from '../src/access.js';
+import { PlaneClient } from '../src/plane.js';
+import type { Member, State, WorkItem } from '../src/plane.js';
+import { mirrorComplete } from '../src/mirror.js';
+import { registerRoutes } from '../src/routes.js';
+import { NO_RELATIONS } from './relations.js';
+
+/**
+ * SYNC-70: work a human had assigned was offered to agents as if it were free.
+ *
+ * The lease was enforced and the assignee was not, so `find(ready: true)` listed
+ * it, `board` counted it, `next` offered it and `claim` handed it over.
+ *
+ * The rule these tests pin down, decided with the project owner:
+ *
+ *   nobody assigned            -> free
+ *   assigned to the caller     -> free; a name on an item is a work order
+ *   assigned to anyone else    -> withheld, until a human says otherwise, per item
+ *   assigned by us, lease over -> residue from a failed mirror write; free
+ *
+ * The fourth case is the one with teeth. `mirrorClaim` puts an assignee on every
+ * claim, so most names in Plane were written by the gateway — a gate that could
+ * not tell its own writes from a human's would either withhold every item any
+ * agent had ever touched, or honour nothing at all.
+ *
+ * These drive the real router wherever they can. The defect was never inside a
+ * function: every one of these tools did exactly what it said, and the gate simply
+ * had no opinion about a field that was sitting right there.
+ */
+const pool = createPool(
+  process.env.GATEWAY_DATABASE_URL ?? 'postgres://agent_gw:agent_gw_dev@localhost:15432/gateway',
+);
+
+const PROJECT = randomUUID();
+const ME = randomUUID();
+const DANA = randomUUID();
+
+const FREE = randomUUID();
+const MINE = randomUUID();
+const THEIRS = randomUUID();
+const RESIDUE = randomUUID();
+
+const STATES: State[] = [{ id: 'backlog', name: 'Backlog', group: 'backlog', default: true }];
+
+const MEMBERS: Member[] = [
+  { id: ME, name: 'Prateek', email: 'me@example.com' },
+  { id: DANA, name: 'Dana', email: 'dana@example.com' },
+];
+
+const wi = (id: string, name: string, assignees: string[]): WorkItem => ({
+  id,
+  sequence_id: 1,
+  project: PROJECT,
+  name,
+  description_html: '<p>enough to act on</p>',
+  state: 'backlog',
+  priority: 'medium',
+  assignees,
+  labels: [],
+  parent: null,
+  is_draft: false,
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+});
+
+const BOARD = (): WorkItem[] => [
+  wi(FREE, 'nobody assigned', []),
+  wi(MINE, 'assigned to me', [ME]),
+  wi(THEIRS, "assigned to Dana", [DANA]),
+  wi(RESIDUE, 'left assigned by a failed mirror write', [DANA]),
+];
+
+let updates: Array<{ id: string; body: Record<string, unknown> }> = [];
+let created: Array<Record<string, unknown>> = [];
+
+function fakePlane(): PlaneClient {
+  const items = BOARD();
+  const plane = Object.assign(new PlaneClient('http://plane.invalid', 'k', 'ws'), {
+    as: () => plane,
+    listProjects: async () => [{ id: PROJECT, identifier: 'P', name: 'Project' }],
+    listWorkItems: async () => items,
+    getWorkItem: async (_p: string, id: string) => items.find((i) => i.id === id),
+    states: async () => STATES,
+    labels: async () => [],
+    labelNames: async () => new Map(),
+    modules: async () => [],
+    moduleIssueIds: async () => new Set<string>(),
+    relations: async () => NO_RELATIONS,
+    members: async () => MEMBERS,
+    stateByGroup: async () => STATES[0],
+    updateWorkItem: async (_p: string, id: string, body: Record<string, unknown>) => {
+      updates.push({ id, body });
+      return items.find((i) => i.id === id)!;
+    },
+    comment: async () => ({}),
+    createWorkItem: async (_p: string, body: Record<string, unknown>) => {
+      created.push(body);
+      return { ...wi(randomUUID(), String(body['name']), []), ...body };
+    },
+    search: async () => [],
+  }) as unknown as PlaneClient;
+  return plane;
+}
+
+async function harness() {
+  const app = Fastify();
+  registerRoutes(app, {
+    pool,
+    plane: fakePlane(),
+    allowAgentClose: true,
+    evidencePolicy: 'warn',
+    planeMcp: null,
+    planeBaseUrl: 'http://plane.invalid',
+    workspaceSlug: 'ws',
+    github: null,
+    allowMinting: false,
+    mintRatePerMinute: 10,
+  });
+  await app.ready();
+
+  process.env.GATEWAY_TOKEN_KEY ??= 'a'.repeat(64);
+  const name = `t-asg-${randomUUID().slice(0, 8)}/worker`;
+  const { token } = await issueToken(pool, {
+    name,
+    principal: 'human:me@example.com',
+    planeToken: 'plane_pat_test',
+    planeUserId: ME,
+  });
+
+  const get = (path: string) =>
+    app.inject({ method: 'GET', url: path, headers: { authorization: `Bearer ${token}` } });
+  const post = (path: string, body: unknown) =>
+    app.inject({ method: 'POST', url: path, headers: { authorization: `Bearer ${token}` }, body });
+
+  return { app, get, post };
+}
+
+const idsIn = (body: { items: Array<{ workItemId: string }> }) => body.items.map((i) => i.workItemId);
+
+beforeEach(async () => {
+  forgetAccess();
+  updates = [];
+  created = [];
+  await pool.query('truncate lease');
+  await pool.query('delete from assignment_write');
+  await pool.query('delete from takeover_approval');
+});
+
+afterAll(async () => {
+  await pool.query("delete from agent_token where name like 't-asg-%/worker'");
+  await pool.query('truncate lease');
+  await pool.query('delete from assignment_write');
+  await pool.query('delete from takeover_approval');
+  await pool.end();
+});
+
+describe('the rule', () => {
+  it('leaves unassigned work claimable', () => {
+    expect(foreignAssignees({ id: FREE, assignees: [] }, ME, new Map())).toEqual([]);
+  });
+
+  it('treats a name that is your own as a work order, not a barrier', () => {
+    expect(foreignAssignees({ id: MINE, assignees: [ME] }, ME, new Map())).toEqual([]);
+  });
+
+  it('withholds work assigned to somebody else', () => {
+    expect(foreignAssignees({ id: THEIRS, assignees: [DANA] }, ME, new Map())).toEqual([DANA]);
+  });
+
+  it('ignores a name the gateway wrote itself', () => {
+    // The residue case. Without this, every item any agent ever claimed reads as
+    // assigned-by-a-human the moment its lease ends and the mirror fails to clear.
+    const wrote = new Map([[RESIDUE, DANA]]);
+    expect(foreignAssignees({ id: RESIDUE, assignees: [DANA] }, ME, wrote)).toEqual([]);
+  });
+
+  it('reports an absent field as unknown, never as unassigned', () => {
+    // Treating "we were not told" as "nobody is assigned" is a gate that fails
+    // open on exactly the items it exists to withhold.
+    expect(foreignAssignees({ id: FREE, assignees: undefined }, ME, new Map())).toBeNull();
+  });
+
+  it('withholds from an agent with no Plane identity of its own', () => {
+    expect(foreignAssignees({ id: MINE, assignees: [ME] }, null, new Map())).toEqual([ME]);
+  });
+});
+
+describe('browsing agrees with claiming', () => {
+  it('omits work assigned to someone else from find(ready: true)', async () => {
+    const { app, get } = await harness();
+    const body = await get(`/v1/find?projectId=${PROJECT}&ready=true`).then((r) => r.json());
+    expect(idsIn(body)).toContain(FREE);
+    expect(idsIn(body)).toContain(MINE);
+    expect(idsIn(body)).not.toContain(THEIRS);
+    await app.close();
+  });
+
+  it('still shows it when not asked for ready, because you may want to link it', async () => {
+    const { app, get } = await harness();
+    const body = await get(`/v1/find?projectId=${PROJECT}`).then((r) => r.json());
+    expect(idsIn(body)).toContain(THEIRS);
+    await app.close();
+  });
+
+  it('never offers it through next', async () => {
+    const { app, get } = await harness();
+    const body = await get(`/v1/next?projectId=${PROJECT}`).then((r) => r.json());
+    const ids = body.candidates.map((c: { workItemId: string }) => c.workItemId);
+    expect(ids).toContain(FREE);
+    expect(ids).not.toContain(THEIRS);
+    await app.close();
+  });
+
+  it('names the person in why, rather than printing a uuid at you', async () => {
+    const { app, get } = await harness();
+    const body = await get(`/v1/why?projectId=${PROJECT}&workItemId=${THEIRS}`).then((r) => r.json());
+    expect(body.claimable).toBe(false);
+    expect(body.reasons.join(' ')).toContain('Dana');
+    await app.close();
+  });
+
+  it('offers an item whose only assignee is our own residue', async () => {
+    await recordAssignment(pool, RESIDUE, DANA, 1);
+    const { app, get } = await harness();
+    const body = await get(`/v1/find?projectId=${PROJECT}&ready=true`).then((r) => r.json());
+    expect(idsIn(body)).toContain(RESIDUE);
+    await app.close();
+  });
+});
+
+describe('claim', () => {
+  it('refuses an item assigned to someone else', async () => {
+    const { app, post } = await harness();
+    const res = await post('/v1/claim', { projectId: PROJECT, workItemId: THEIRS });
+    expect(res.statusCode).toBeGreaterThanOrEqual(400);
+    expect(res.json().message).toContain('Dana');
+    await app.close();
+  });
+
+  it('allows an item assigned to the caller', async () => {
+    const { app, post } = await harness();
+    const res = await post('/v1/claim', { projectId: PROJECT, workItemId: MINE });
+    expect(res.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it('never picks an assigned item when told to choose', async () => {
+    const { app, post } = await harness();
+    for (let i = 0; i < 3; i++) {
+      const res = await post('/v1/claim', { projectId: PROJECT });
+      if (res.statusCode !== 200) break;
+      expect(res.json().lease.workItemId).not.toBe(THEIRS);
+    }
+    await app.close();
+  });
+
+  it('refuses a takeover that names no item', async () => {
+    // A human approved taking a specific piece of work off someone, not whatever
+    // the gateway happens to pick next.
+    const { app, post } = await harness();
+    const res = await post('/v1/claim', { projectId: PROJECT, takeover: true });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().message).toContain('one named item');
+    await app.close();
+  });
+});
+
+describe('takeover', () => {
+  it('lets an approved claim through', async () => {
+    const { app, post } = await harness();
+    const res = await post('/v1/claim', {
+      projectId: PROJECT,
+      workItemId: THEIRS,
+      takeover: true,
+    });
+    expect(res.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it('records the approval against the item, so nobody has to ask twice', async () => {
+    // Recorded rather than remembered: a compaction, a restart, or a different
+    // agent picking the work up would otherwise lose the human's answer.
+    const { app, post } = await harness();
+    await post('/v1/claim', { projectId: PROJECT, workItemId: THEIRS, takeover: true });
+    const { rows } = await pool.query<{ approved_by: string; taken_from: string }>(
+      'select approved_by, taken_from from takeover_approval where work_item_id = $1',
+      [THEIRS],
+    );
+    expect(rows[0]?.approved_by).toBe('human:me@example.com');
+    expect(rows[0]?.taken_from).toBe(DANA);
+    await app.close();
+  });
+
+  it('leaves the item claimable afterwards without repeating the approval', async () => {
+    const { app, post } = await harness();
+    await post('/v1/claim', { projectId: PROJECT, workItemId: THEIRS, takeover: true });
+    await post('/v1/release', { workItemId: THEIRS, epoch: 1, reason: 'handing back' });
+
+    const { app: app2, post: post2 } = await harness();
+    const again = await post2('/v1/claim', { projectId: PROJECT, workItemId: THEIRS });
+    expect(again.statusCode).toBe(200);
+    await app.close();
+    await app2.close();
+  });
+});
+
+describe('who the item ends up with', () => {
+  it('moves an approved takeover to the human who authorised it', async () => {
+    // Their decision, so their name on it — the agent executing it is what the
+    // lease is for.
+    const { app, post } = await harness();
+    await post('/v1/claim', { projectId: PROJECT, workItemId: THEIRS, takeover: true });
+    await new Promise((r) => setImmediate(r));
+    const assign = updates.find((u) => u.id === THEIRS && 'assignees' in u.body);
+    expect(assign?.body['assignees']).toEqual([ME]);
+    await app.close();
+  });
+
+  it('resolves the approving human against the workspace', () => {
+    const actor = { principal: 'human:dana@example.com' } as Actor;
+    expect(principalPlaneUser(actor, MEMBERS)).toBe(DANA);
+  });
+
+  it('gives up on a principal that is not an email rather than guessing', () => {
+    const actor = { principal: 'human:prateek' } as Actor;
+    expect(principalPlaneUser(actor, MEMBERS)).toBeNull();
+  });
+
+  it('falls back to the raw id when a member is unknown', () => {
+    expect(nameOf(MEMBERS, DANA)).toBe('Dana');
+    expect(nameOf(MEMBERS, 'not-a-member')).toBe('not-a-member');
+    expect(nameOf(MEMBERS, null)).toBe('nobody');
+  });
+});
+
+describe('finishing work', () => {
+  it('clears the assignee on complete, as release already did', async () => {
+    // An assignee means somebody is on this, and once the work is reported done
+    // nobody is. Leaving it made every finished item read as assigned-to-a-human,
+    // which under this rule would withhold it forever.
+    const plane = fakePlane();
+    await recordAssignment(pool, MINE, ME, 1);
+    await mirrorComplete(plane, pool, {
+      projectId: PROJECT,
+      workItemId: MINE,
+      actor: { holder: 'agent:t', principal: 'human:me@example.com', planeUserId: ME } as Actor,
+      outcome: 'done',
+      close: true,
+    });
+    expect(updates.find((u) => u.id === MINE)?.body['assignees']).toEqual([]);
+
+    // And our record of the write goes with it, so the name cannot later be read
+    // back as residue for an item that no longer carries one.
+    const { rows } = await pool.query('select 1 from assignment_write where work_item_id = $1', [
+      MINE,
+    ]);
+    expect(rows).toHaveLength(0);
+  });
+});
+
+describe('marking what an agent wrote', () => {
+  it('stamps a capture with the agent, since created_by records the human', async () => {
+    // An agent minted from a personal token authenticates AS its owner, so Plane
+    // records that person as created_by for everything the agent captures. This is
+    // the only field that can say a machine wrote it. Informational: it gates
+    // nothing.
+    const { app, post } = await harness();
+    const res = await post('/v1/capture', {
+      projectId: PROJECT,
+      title: 'something an agent noticed',
+      body: 'enough for someone else to act on it without me',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(String(created[0]?.['external_source'])).toMatch(/^agent:t-asg-/);
+    await app.close();
+  });
+});

@@ -57,6 +57,7 @@ function fakePlane(): PlaneClient & { rec: Recorder } {
       labels: [],
       parent: (body['parent'] as string | undefined) ?? null,
       is_draft: false,
+      assignees: [],
       created_at: '',
       updated_at: '',
     }),

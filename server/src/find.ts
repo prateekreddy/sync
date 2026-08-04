@@ -28,6 +28,8 @@ import { viewOf, type WorkItemView } from './view.js';
 
 export interface FindQuery {
   projectId: string;
+  /** The caller's Plane user id; see `Predicate.viewer`. */
+  viewer: string | null;
   labels?: string[] | undefined;
   priority?: WorkItem['priority'] | undefined;
   stateGroup?: State['group'] | undefined;
@@ -67,6 +69,7 @@ export async function find(plane: PlaneClient, pool: Pool, q: FindQuery): Promis
 
   const { items, matched, ctx, blockersUnchecked } = await resolve(plane, pool, {
     projectId: q.projectId,
+    viewer: q.viewer,
     ...(q.labels ? { labels: q.labels } : {}),
     ...(q.priority ? { priority: q.priority } : {}),
     ...(q.stateGroup ? { stateGroup: q.stateGroup } : {}),

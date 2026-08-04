@@ -96,15 +96,18 @@ describe('the fields we ask Plane for', () => {
       'is_draft',
       'created_at',
       'updated_at',
+      // Requested since SYNC-70. The readiness gate withholds work assigned to
+      // someone else, and a gate the browse path cannot evaluate is one that
+      // `find` and `claim` disagree about — which is what SYNC-65 was.
+      'assignees',
     ] as const) {
       expect(item[key], `${key} is declared on WorkItem but not requested`).toBeDefined();
     }
     expect('parent' in item).toBe(true); // nullable, so presence is the check
 
-    // `project` and `assignees` are deliberately NOT requested — nothing reads
-    // them off a list, and both are optional on WorkItem so the type stays honest.
+    // `project` is still deliberately NOT requested — nothing reads it off a
+    // list, and it stays optional on WorkItem so the type remains honest.
     expect(item.project).toBeUndefined();
-    expect(item.assignees).toBeUndefined();
   });
 
   it('actually drops the bulk of the payload', () => {

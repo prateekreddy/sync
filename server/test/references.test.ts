@@ -73,6 +73,7 @@ function fakePlane(opts: { known?: number[]; relateFails?: boolean; listFails?: 
         labels: [],
         parent: null,
         is_draft: false,
+        assignees: [],
         created_at: '',
         updated_at: '',
       }));

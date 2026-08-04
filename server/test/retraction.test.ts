@@ -70,6 +70,7 @@ const wi = (key: string, over: Partial<WorkItem> = {}): WorkItem => ({
   labels: [],
   parent: null,
   is_draft: false,
+  assignees: [],
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
   ...over,
@@ -225,7 +226,12 @@ describe('cost', () => {
         return BOARD.find((x) => x.id === i)!;
       },
     });
-    await verifyClaimable(plane, PROJECT, id('gated'), { pool });
-    expect(fetched).toBe(0);
+    await verifyClaimable(plane, PROJECT, id('gated'), { pool, viewer: null });
+    // One read, and it is not a blocker read: since SYNC-70 the claim path fetches
+    // the item under consideration to see who it is assigned to. The point of this
+    // test is that the retracted edge itself costs nothing, so the blocker is what
+    // is counted — anything beyond the item under test would mean the retraction
+    // was looked up rather than honoured from the table.
+    expect(fetched).toBe(1);
   });
 });

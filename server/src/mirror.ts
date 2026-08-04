@@ -1,5 +1,11 @@
 import type { Pool } from './db.js';
 import type { Actor } from './auth.js';
+import {
+  forgetAssignment,
+  nameOf,
+  principalPlaneUser,
+  recordAssignment,
+} from './assignment.js';
 import { UNVERIFIED_LABEL } from './evidence.js';
 import { resolveLabels } from './labels.js';
 import { log } from './log.js';
@@ -110,22 +116,53 @@ export async function actorNote(plane: PlaneClient, actor: Actor, body: string):
 export async function mirrorClaim(
   plane: PlaneClient,
   pool: Pool,
-  args: { projectId: string; workItemId: string; actor: Actor; epoch: number; expiresAt: Date },
+  args: {
+    projectId: string;
+    workItemId: string;
+    actor: Actor;
+    epoch: number;
+    expiresAt: Date;
+    /**
+     * Set when a human approved taking this item off its assignee.
+     *
+     * The item then moves to *them* rather than to the agent executing it: taking
+     * work off someone was their decision, and the board should name the person
+     * who made it. Falls back to the agent when the principal is not a Plane user
+     * we can resolve — an unresolvable approver is a reason to record the takeover
+     * differently, not to leave the item on the person it was taken from.
+     */
+    takeover?: { takenFrom: string | null } | undefined;
+  },
 ): Promise<void> {
   return serial(args.workItemId, async () => {
     try {
+      const members = args.takeover ? await plane.members() : [];
+      const assignee = args.takeover
+        ? (principalPlaneUser(args.actor, members) ?? args.actor.planeUserId)
+        : args.actor.planeUserId;
       const started = await plane.stateByGroup(args.projectId, 'started');
       await plane.updateWorkItem(args.projectId, args.workItemId, {
         ...(started ? { state: started.id } : {}),
-        ...(args.actor.planeUserId ? { assignees: [args.actor.planeUserId] } : {}),
+        ...(assignee ? { assignees: [assignee] } : {}),
       });
+      // Recorded only after Plane accepted the write, and recorded at all so the
+      // gate can later tell this name from one a person put there. Without it,
+      // every item any agent has ever claimed reads as assigned-by-a-human — see
+      // assignment.ts.
+      if (assignee) await recordAssignment(pool, args.workItemId, assignee, args.epoch);
       await plane.comment(
         args.projectId,
         args.workItemId,
         await actorNote(
           plane,
           args.actor,
-          `Claimed (epoch ${args.epoch}). Lease expires ${args.expiresAt.toISOString()}.`,
+          `Claimed (epoch ${args.epoch}). Lease expires ${args.expiresAt.toISOString()}.` +
+            // Said on the item, not just in a transcript: the person it was taken
+            // from is the one who most needs to know, and they are not in the
+            // conversation where it was agreed.
+            (args.takeover
+              ? ` Taken over from ${nameOf(members, args.takeover.takenFrom)}, approved by ${args.actor.principal}.`
+              : ''),
         ),
       );
       await pool.query('update lease set mirrored = true where work_item_id = $1', [args.workItemId]);
@@ -160,10 +197,17 @@ export async function mirrorComplete(
 ): Promise<void> {
   return serial(args.workItemId, async () => {
     try {
-      if (args.close) {
-        const done = await plane.stateByGroup(args.projectId, 'completed');
-        if (done) await plane.updateWorkItem(args.projectId, args.workItemId, { state: done.id });
-      }
+      // The assignee goes whether or not the item closes, and it is one write
+      // with the state rather than two. An assignee means "somebody is on this",
+      // and once the work is reported finished nobody is — leaving the name
+      // behind is what made every completed item read as assigned-to-a-human,
+      // which under the SYNC-70 rule would withhold it forever.
+      const done = args.close ? await plane.stateByGroup(args.projectId, 'completed') : undefined;
+      await plane.updateWorkItem(args.projectId, args.workItemId, {
+        ...(done ? { state: done.id } : {}),
+        assignees: [],
+      });
+      await forgetAssignment(pool, args.workItemId);
       await plane.comment(
         args.projectId,
         args.workItemId,
@@ -221,6 +265,10 @@ export async function mirrorReturn(
         ...(todo ? { state: todo.id } : {}),
         assignees: [],
       });
+      // After the clear, never before: dropping the record first would turn a
+      // failed clear into a name the gate no longer recognises as ours, which it
+      // would then honour as a human's and withhold the item indefinitely.
+      await forgetAssignment(pool, args.workItemId);
 
       const repeat =
         args.expiryCount && args.expiryCount >= 3

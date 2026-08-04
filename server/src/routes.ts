@@ -30,6 +30,7 @@ import {
   registerClient,
 } from './oauth.js';
 import { assertCanRead } from './access.js';
+import { approveTakeover } from './assignment.js';
 import { board } from './board.js';
 import { buildIdentity, schemaLevel } from './build.js';
 import { capture } from './capture.js';
@@ -745,6 +746,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
 
     const candidates = await readyCandidates(plane, pool, {
       projectId: q.projectId,
+      viewer: actor.planeUserId,
       ...(actor.capabilities.length ? { capabilities: actor.capabilities } : {}),
       limit: q.limit,
       ...(parseFields(q.fields) ? { fields: parseFields(q.fields) } : {}),
@@ -760,6 +762,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     await canRead(actor, q.projectId);
     return explain(plane, pool, {
       projectId: q.projectId,
+      viewer: actor.planeUserId,
       workItemId: q.workItemId,
       ...(actor.capabilities.length ? { capabilities: actor.capabilities } : {}),
     });
@@ -773,6 +776,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     const { fields: rawFields, ...rest } = query;
     return tree(plane, pool, {
       ...rest,
+      viewer: actor.planeUserId,
       ...(parseFields(rawFields) ? { fields: parseFields(rawFields) } : {}),
       ...(actor.capabilities.length ? { capabilities: actor.capabilities } : {}),
     });
@@ -785,6 +789,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     await canRead(actor, b.projectId);
     return board(plane, pool, {
       projectId: b.projectId,
+      viewer: actor.planeUserId,
       ...(b.moduleId ? { moduleId: b.moduleId } : {}),
       ...(actor.capabilities.length ? { capabilities: actor.capabilities } : {}),
     });
@@ -903,6 +908,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     await canRead(actor, f.projectId);
     return find(plane, pool, {
       projectId: f.projectId,
+      viewer: actor.planeUserId,
       ...(f.labels ? { labels: f.labels.split(',') } : {}),
       ...(f.priority ? { priority: f.priority } : {}),
       ...(f.stateGroup ? { stateGroup: f.stateGroup } : {}),
@@ -949,10 +955,39 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     await canRead(actor, b.projectId);
     const chain = chainFor(actor, b.spawnedBy);
 
+    if (b.takeover && !b.workItemId) {
+      throw new GatewayError(
+        'INVALID',
+        'takeover applies to one named item. A human approved taking a specific piece of ' +
+          'work from its assignee, not whatever the gateway happens to pick.',
+      );
+    }
+
     if (b.workItemId) {
+      // Recorded BEFORE the gate runs, because it is an input to the gate rather
+      // than an override of it: `verifyClaimable` reads the approval table and
+      // stops reporting the assignee once permission is on record. That ordering
+      // is also what makes the permission outlive this call — a compaction between
+      // the human's yes and the claim would otherwise lose it.
+      let takenFrom: string | null = null;
+      if (b.takeover) {
+        // Read before the claim, because claiming overwrites it. Who the work was
+        // taken from is the one fact this exchange is about, and it would
+        // otherwise be gone by the time anyone asked.
+        const current = await plane.getWorkItem(b.projectId, b.workItemId).catch(() => null);
+        takenFrom = current?.assignees?.[0] ?? null;
+        await approveTakeover(pool, {
+          workItemId: b.workItemId,
+          approvedBy: actor.principal,
+          takenFrom,
+          reason: `approved for ${actor.holder}`,
+        });
+      }
+
       const blockers = await verifyClaimable(plane, b.projectId, b.workItemId, {
         checkChildren: true,
         pool,
+        viewer: actor.planeUserId,
       });
       if (blockers.length) {
         throw new GatewayError('NOT_CLAIMABLE', `Not ready: ${blockers.join('; ')}`, {
@@ -978,6 +1013,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         actor,
         epoch: l.epoch,
         expiresAt: l.expiresAt,
+        ...(b.takeover ? { takeover: { takenFrom: takenFrom ?? null } } : {}),
       });
       // Handed over WITH the lease rather than left for the agent to go and ask
       // for. An agent that must remember to call tree, history and get_issue
@@ -997,12 +1033,17 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     // wasted agent run.
     const candidates = await readyCandidates(plane, pool, {
       projectId: b.projectId,
+      viewer: actor.planeUserId,
       ...(actor.capabilities.length ? { capabilities: actor.capabilities } : {}),
       limit: 10,
     });
 
     for (const c of candidates) {
-      if ((await verifyClaimable(plane, b.projectId, c.workItemId, { pool })).length) continue;
+      if (
+        (await verifyClaimable(plane, b.projectId, c.workItemId, { pool, viewer: actor.planeUserId }))
+          .length
+      )
+        continue;
       const l = await lease.claim(pool, {
         workItemId: c.workItemId,
         // The candidate came from a project-scoped query, so the project is the

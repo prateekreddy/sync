@@ -67,6 +67,7 @@ function recordingPlane(): { plane: PlaneClient; sent: Sent } {
         labels: (body['labels'] as string[]) ?? [],
         parent: (body['parent'] as string | undefined) ?? null,
         is_draft: false,
+        assignees: [],
         created_at: '',
         updated_at: '',
       };
@@ -204,7 +205,7 @@ describe('parent inheritance', () => {
     Object.assign(plane, {
       getWorkItem: async (_p: string, id: string) =>
         id === source.id
-          ? { id: source.id, sequence_id: 1, name: 'held', state: 's', priority: 'none', labels: [], parent: source.parent, is_draft: false, created_at: '', updated_at: '' }
+          ? { id: source.id, sequence_id: 1, name: 'held', state: 's', priority: 'none', labels: [], parent: source.parent, is_draft: false, assignees: [], created_at: '', updated_at: '' }
           : null,
     });
 

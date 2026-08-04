@@ -1,3 +1,12 @@
+import {
+  approvedTakeovers,
+  assigneePass,
+  assigneeReason,
+  foreignAssignees,
+  gatewayWrites,
+  needsAssignees,
+  UNKNOWN_ASSIGNEE_REASON,
+} from './assignment.js';
 import { blockerPass, BROWSE_BUDGET } from './blockers.js';
 import { retractedIn } from './retraction.js';
 import type { Pool } from './db.js';
@@ -23,6 +32,16 @@ export type Priority = WorkItem['priority'];
 
 export interface Predicate {
   projectId: string;
+  /**
+   * The caller's Plane user id, or null if their token carries no Plane identity.
+   *
+   * Required rather than optional, and required even where readiness is not being
+   * asked for, because the assignee rule needs it to tell "assigned to you" from
+   * "assigned to someone else" — and a caller that omitted it would get a stricter
+   * gate than `claim` applies, silently. An optional correctness input is a caller
+   * that can quietly get a different answer, which is what SYNC-65 was.
+   */
+  viewer: string | null;
   /** Exactly this item. */
   workItemId?: string | undefined;
   /** Direct children of this item. */
@@ -93,6 +112,62 @@ const PRIORITY_RANK: Record<Priority, number> = {
   low: 3,
   none: 4,
 };
+
+/**
+ * The assignee half of the gate, for the items whose answer turns on it.
+ *
+ * Kept out of `screen` on purpose. `screen` is "everything one list call can
+ * decide", and this needs the gateway's own record of which assignees it wrote —
+ * without that, a name Plane shows is unreadable: `mirrorClaim` puts one on every
+ * claim, so treating any name as a human's would withhold every item an agent has
+ * ever touched. See assignment.ts for the rule and SYNC-70 for why it is that one.
+ */
+async function assigneePassFor(
+  plane: PlaneClient,
+  pool: Pool,
+  p: Predicate,
+  candidates: WorkItem[],
+): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  if (candidates.length === 0) return out;
+
+  const ids = candidates.map((i) => i.id);
+  const [wrote, approved] = await Promise.all([
+    gatewayWrites(pool, ids),
+    approvedTakeovers(pool, ids),
+  ]);
+
+  // Normally does nothing: LIST_FIELDS asks Plane for assignees. It earns its
+  // keep only if Plane stops honouring that, which would otherwise turn this gate
+  // off silently rather than loudly.
+  const filled = candidates.some(needsAssignees)
+    ? await assigneePass(plane, p.projectId, candidates)
+    : { resolved: new Map<string, string[]>(), unchecked: 0 };
+
+  const foreignBy = new Map<string, string[]>();
+  for (const item of candidates) {
+    // A recorded approval is a human's answer to this exact question about this
+    // exact item, so it settles it. The reassignment happens inside `claim`.
+    if (approved.has(item.id)) continue;
+
+    const resolved = filled.resolved.get(item.id);
+    const foreign = foreignAssignees(
+      resolved ? { id: item.id, assignees: resolved } : item,
+      p.viewer,
+      wrote,
+    );
+    if (foreign === null) out.set(item.id, [UNKNOWN_ASSIGNEE_REASON]);
+    else if (foreign.length) foreignBy.set(item.id, foreign);
+  }
+
+  // Fetched only when there is a name to print. Resolving member names on every
+  // board read to render nothing would be a per-read Plane call for no answer.
+  if (foreignBy.size) {
+    const members = await plane.members();
+    for (const [id, foreign] of foreignBy) out.set(id, [assigneeReason(foreign, members)]);
+  }
+  return out;
+}
 
 export async function resolve(
   plane: PlaneClient,
@@ -169,13 +244,17 @@ export async function resolve(
   // already withholds stays withheld whatever its relations say, and a finished
   // one is nobody's candidate. On a healthy board this is the ready set, which is
   // the same set `claim` would have verified one at a time anyway.
-  const needsBlockers =
-    p.blockers === false
-      ? []
-      : selected.filter((i) => {
-          const g = groupOf.get(i.state);
-          return g !== 'completed' && g !== 'cancelled' && screened(i).length === 0;
-        });
+  const candidates = selected.filter((i) => {
+    const g = groupOf.get(i.state);
+    return g !== 'completed' && g !== 'cancelled' && screened(i).length === 0;
+  });
+
+  // Same reasoning as the blocker pass, one layer earlier: an item the screen
+  // already withholds stays withheld whatever its assignees say. See SYNC-70 for
+  // the rule itself; this is only where it is paid for.
+  const assigneeReasons = await assigneePassFor(plane, pool, p, candidates);
+
+  const needsBlockers = p.blockers === false ? [] : candidates;
 
   const byId = new Map(all.map((i) => [i.id, i]));
   const pass = needsBlockers.length
@@ -193,6 +272,7 @@ export async function resolve(
 
   const reasons = (item: WorkItem): string[] => [
     ...screened(item),
+    ...(assigneeReasons.get(item.id) ?? []),
     ...(pass.reasons.get(item.id) ?? []),
   ];
 

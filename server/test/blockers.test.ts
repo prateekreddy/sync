@@ -68,6 +68,7 @@ const wi = (key: string, over: Partial<WorkItem> = {}): WorkItem => ({
   labels: [],
   parent: null,
   is_draft: false,
+  assignees: [],
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
   ...over,
@@ -241,10 +242,13 @@ describe('what a blocker lookup costs', () => {
       edges: { gated: { blocked_by: [{ project_id: OTHER_PROJECT, issue_id: id('elsewhere') }] } },
     });
     // Not in BOARD, so the fetch fails and the blocker counts as open.
-    expect(await verifyClaimable(plane, PROJECT, id('gated'), { pool })).toEqual([
-      'blocked by an unreadable item',
-    ]);
-    expect(itemFetches).toEqual([id('elsewhere')]);
+    expect(
+      await verifyClaimable(plane, PROJECT, id('gated'), { pool, viewer: null }),
+    ).toEqual(['blocked by an unreadable item']);
+    // Blocker fetches only. The item under test is fetched too since SYNC-70, to
+    // read its assignees, and counting that here would hide the thing this
+    // measures — how many *blockers* had to be resolved.
+    expect(itemFetches.filter((f) => f !== id('gated'))).toEqual([id('elsewhere')]);
   });
 });
 

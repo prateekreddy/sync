@@ -1,3 +1,10 @@
+import {
+  approvedTakeovers,
+  assigneeReason,
+  foreignAssignees,
+  gatewayWrites,
+  UNKNOWN_ASSIGNEE_REASON,
+} from './assignment.js';
 import { blockersOf } from './blockers.js';
 import type { Pool } from './db.js';
 import { GatewayError } from './errors.js';
@@ -97,6 +104,8 @@ function labelsOf(item: WorkItem, labelNames: Map<string, string>): string[] {
 
 interface ReadyOpts {
   projectId: string;
+  /** The caller's Plane user id; see `Predicate.viewer`. Required for the same reason. */
+  viewer: string | null;
   capabilities?: string[];
   limit?: number;
   fields?: string[] | undefined;
@@ -117,6 +126,7 @@ export async function readyCandidates(
 ): Promise<Candidate[]> {
   const { items, ctx } = await resolve(plane, pool, {
     projectId: opts.projectId,
+    viewer: opts.viewer,
     ready: true,
     ...(opts.capabilities?.length ? { capabilities: opts.capabilities } : {}),
     limit: opts.limit ?? 20,
@@ -146,10 +156,11 @@ export interface Explanation {
 export async function explain(
   plane: PlaneClient,
   pool: Pool,
-  opts: { projectId: string; workItemId: string; capabilities?: string[] },
+  opts: { projectId: string; workItemId: string; viewer: string | null; capabilities?: string[] },
 ): Promise<Explanation> {
   const { items, ctx, reasons } = await resolve(plane, pool, {
     projectId: opts.projectId,
+    viewer: opts.viewer,
     workItemId: opts.workItemId,
     ...(opts.capabilities?.length ? { capabilities: opts.capabilities } : {}),
   });
@@ -201,7 +212,10 @@ export async function verifyClaimable(
   // `pool` is required rather than optional on purpose. Retractions are part of
   // the gate, and an optional correctness input is a caller that can silently get
   // a different answer — which is exactly what SYNC-65 was.
-  opts: { checkChildren?: boolean; pool: Pool },
+  // `viewer` is required for the same reason `pool` is: the assignee rule is part
+  // of the gate, and a caller that could omit it would get a different answer from
+  // the browse path without either side saying so.
+  opts: { checkChildren?: boolean; pool: Pool; viewer: string | null },
 ): Promise<string[]> {
   const reasons: string[] = [];
 
@@ -233,6 +247,22 @@ export async function verifyClaimable(
   // would put claim back into disagreeing with find — the shape of SYNC-65, in a
   // new place, and this time refusing work the board says is ready.
   const retracted = await retractedIn(opts.pool, projectId);
+
+  // Read from Plane rather than from the browse listing, for the same reason the
+  // rest of this function does: an item can be assigned in the seconds between a
+  // listing and a claim, and this is the check whose being wrong hands an agent
+  // work a person is already doing. The single-item read carries `assignees`
+  // whatever the list endpoint decides to do about `?fields=`.
+  const [item, wrote, approved] = await Promise.all([
+    plane.getWorkItem(projectId, workItemId),
+    gatewayWrites(opts.pool, [workItemId]),
+    approvedTakeovers(opts.pool, [workItemId]),
+  ]);
+  if (!approved.has(workItemId)) {
+    const foreign = foreignAssignees(item, opts.viewer, wrote);
+    if (foreign === null) reasons.push(UNKNOWN_ASSIGNEE_REASON);
+    else if (foreign.length) reasons.push(assigneeReason(foreign, await plane.members()));
+  }
 
   return [...reasons, ...(await blockersOf(plane, projectId, workItemId, groupOf, { retracted }))];
 }

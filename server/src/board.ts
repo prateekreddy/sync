@@ -214,11 +214,18 @@ const tally = (
 export async function board(
   plane: PlaneClient,
   pool: Pool,
-  opts: { projectId: string; moduleId?: string | undefined; capabilities?: string[] | undefined },
+  opts: {
+    projectId: string;
+    /** The caller's Plane user id; see `Predicate.viewer`. */
+    viewer: string | null;
+    moduleId?: string | undefined;
+    capabilities?: string[] | undefined;
+  },
 ): Promise<Board> {
   const [{ all, ctx, groupOf, reasons, blockersUnchecked }, modules] = await Promise.all([
     resolve(plane, pool, {
       projectId: opts.projectId,
+      viewer: opts.viewer,
       ...(opts.capabilities?.length ? { capabilities: opts.capabilities } : {}),
     }),
     plane.modules(opts.projectId).catch(() => []),

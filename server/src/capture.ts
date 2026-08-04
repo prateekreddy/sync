@@ -358,6 +358,13 @@ export async function capture(
       // Plane models a sub-item as a plain `parent` uuid on the work item — there
       // is no separate sub-issue resource — so decomposition costs nothing extra.
       ...(parent ? { parent: parent.id } : {}),
+      // Which agent wrote this down. `created_by` cannot answer it: an agent
+      // minted from a personal token authenticates AS that human, so Plane records
+      // the owner for everything its own agents capture — measured 2026-08-04.
+      // Plane's own field rather than a new label, and informational only: it
+      // gates nothing, it tells a reader whether to take the wording as a person's
+      // or as another agent's shorthand. Verified to persist through the API.
+      external_source: actor.holder,
     });
     result = {
       workItemId: created.id,

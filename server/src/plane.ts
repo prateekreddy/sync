@@ -21,6 +21,13 @@ export interface WorkItem {
   updated_at: string;
 }
 
+/** A workspace member, as much of one as the assignee rule needs. */
+export interface Member {
+  id: string;
+  name: string;
+  email: string;
+}
+
 export interface State {
   id: string;
   name: string;
@@ -83,6 +90,8 @@ export class PlaneClient {
   private labelCache = new Map<string, { at: number; labels: Label[] }>();
   /** Never expires: a project identifier is fixed at creation. */
   private identifierCache = new Map<string, string>();
+  /** Workspace-wide and slow-moving, so one entry rather than a map per project. */
+  private memberCache?: { at: number; members: Member[] };
   /**
    * item id -> module id, per project. Plane offers no reverse lookup.
    *
@@ -251,6 +260,13 @@ export class PlaneClient {
     'is_draft',
     'created_at',
     'updated_at',
+    // Asked for since SYNC-70: an item assigned to someone else is withheld, and
+    // a gate the browse path cannot evaluate is a gate `find` and `claim` disagree
+    // about. Costs nothing extra — it is one more name in a query string on a call
+    // already being made. If Plane ever stops honouring it the rows arrive without
+    // the key, which `assignment.ts` treats as unknown and resolves rather than
+    // reading as "nobody is assigned".
+    'assignees',
   ] as const;
 
   listWorkItems(projectId: string): Promise<WorkItem[]> {
@@ -331,6 +347,37 @@ export class PlaneClient {
    * find out whether an agent is writing as its own principal, which decides
    * whether provenance is worth printing at all.
    */
+  /**
+   * Workspace members as id -> display name, for turning an assignee uuid into
+   * something a person can act on.
+   *
+   * Best-effort by design: a failure here returns an empty map and the caller
+   * falls back to printing the uuid. Refusing a claim because we could not
+   * prettify the reason for refusing it would be absurd — and this is the only
+   * call in the gate whose failure has no bearing on whether the answer is right.
+   */
+  async members(ttlMs = 300_000): Promise<Member[]> {
+    const now = Date.now();
+    if (this.memberCache && now - this.memberCache.at < ttlMs) return this.memberCache.members;
+    const members: Member[] = [];
+    try {
+      // Shape varies: the members endpoint answers with a bare array where most
+      // list endpoints wrap in `results`. Handle both rather than picking one and
+      // having it silently yield nothing, which is how `moduleIssueIds` broke.
+      const json = await this.request<unknown>('GET', '/members/');
+      const rows = Array.isArray(json) ? json : ((json as { results?: unknown[] })?.results ?? []);
+      for (const r of rows as Array<{ id?: string; display_name?: string; email?: string }>) {
+        if (r?.id) members.push({ id: r.id, name: r.display_name || r.email || r.id, email: r.email ?? '' });
+      }
+    } catch {
+      // Not cached, so a transient failure is retried rather than remembered for
+      // five minutes as "this workspace has no members".
+      return members;
+    }
+    this.memberCache = { at: now, members };
+    return members;
+  }
+
   async me(): Promise<{ id: string; email: string }> {
     const res = await fetch(`${this.baseUrl.replace(/\/$/, '')}/api/v1/users/me/`, {
       headers: { 'X-API-Key': this.apiKey },

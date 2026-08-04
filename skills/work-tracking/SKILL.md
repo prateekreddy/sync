@@ -113,32 +113,43 @@ go-ahead before you start. A name on an item is usually the visible end of a con
 not part of, and the cost of asking is one message where the cost of guessing is duplicated work and
 a handover nobody knows was dropped.
 
-Nothing stops you mechanically. The readiness gate does not look at Plane's `assignees`, so
-`find(ready: true)` lists assigned work and `claim` accepts it. **The lease and the assignee are
-different things**: the lease is what the gateway enforces, and the assignee is what a human wrote
-down. Only one of them is checked for you.
+The gate enforces this, so you will meet it as a refusal rather than as a rule to remember:
+`find(ready: true)` omits assigned work, `board` stops counting it, `next` will not offer it, and
+`claim` refuses it and names the person. `why` says the same thing. Browsing without `ready` still
+shows it, on purpose — you may want to link it as a blocker.
 
-Assignees are on no listing — `find`, `next`, `board` and Plane's own `list_project_issues` all omit
-the field, and the last one says so in its reply. One item at a time is the only way to see it:
+**A name that is your own is a work order, not a barrier.** Assigning an item to the Plane user your
+token authenticates as hands it to you; the gate reads that as "take this" and lets you claim it.
+That is deliberate, and it has a consequence worth knowing: an agent minted from a personal token
+authenticates *as its owner*, so if you and your human share a Plane account, work they assign to
+themselves reads as assigned to you. On that setup a human cannot fend you off by assigning
+something to themselves — they have to say so.
 
-```
-get_issue_using_readable_identifier(project_identifier: "SYNC", issue_identifier: "36",
-                                    fields: ["id", "assignees"])
-```
+**Once they agree, `claim` with `takeover: true`.** It has to name a `workItemId`: they approved
+taking a specific piece of work off someone, not whatever the gateway picks next. One call does the
+lot — records the approval against the item, moves it to the human who authorised it, takes the
+lease, and comments on the item so the original assignee learns what happened and who decided. The
+approval is stored, not remembered, so a later claim of the same item does not ask again and a
+compaction cannot lose it.
 
-So, the same split as `history`: **naming an id, check before you claim; letting the gateway pick,
-check the item you were handed before doing any work** — and if it belongs to someone else,
-`release` it with that as the reason and go ask.
+Never pass `takeover` on your own initiative. The gateway cannot tell your word from your human's:
+that argument **is** the trust.
 
-An empty `assignees` is the normal case and needs nobody's permission. Non-empty means one of three
-things, and they are worth telling apart before you interrupt anyone:
+**Three things a name can mean**, and the gate already tells them apart, so read a refusal literally
+rather than second-guessing it:
 
-- **A person assigned it.** The case this rule is about. Ask.
-- **An agent is holding it right now.** `claim` sets the holder's Plane user, so this arrives with a
-  live lease and the gate already refuses you — `why` will say so. Nothing to ask about.
-- **A stale name with no live lease.** The mirror sets assignees on claim and clears them on release
-  or expiry, so a leftover one means that write failed. From here it is indistinguishable from a
-  human assignment, so treat it as one and say what you found rather than assuming it is free.
+- **A person assigned it.** Withheld. Ask.
+- **An agent is holding it right now.** A live lease, and `why` reports the lease rather than the
+  assignee. Nothing to ask about — wait or take something else.
+- **A name the gateway itself wrote, whose lease has ended.** Residue from a mirror write that
+  failed, so it is *not* treated as an assignment and the item stays claimable. You will not see it
+  as a refusal at all; it is here so that a name in Plane on work nobody is doing does not read to
+  you as a contradiction.
+
+**Who created an item never withholds it.** Only assignment does. Items an agent captured carry
+`external_source` naming that agent — `created_by` cannot tell you, because a self-minted agent
+writes as its human. Treat it as a reading instruction, not a permission: a human's wording is meant
+literally, where another agent's is often shorthand for something it had in context and you do not.
 
 ## Looking around
 
@@ -247,16 +258,13 @@ from `claim` when it:
 - is a **draft**;
 - has **unfinished sub-items** (the work is in the children — claim those);
 - carries a blocking label: `needs-human`, `needs-refinement`, `blocked`, `wontfix`;
-- is blocked by an unfinished `blocked_by` item.
+- is blocked by an unfinished `blocked_by` item;
+- is **assigned to somebody other than you** — see the section above.
 
 Browsing and claiming apply all of these. Until 2026-08-03 the last one was checked only at claim
 time, so `find(ready: true)` listed work that `claim` then refused and `board` counted it ready —
 if you are talking to a gateway older than that, treat a `ready` row as a candidate rather than a
 promise, and believe `why` over any listing.
-
-**An assignee is not on that list**, so "the gate let me claim it" is not evidence that the work is
-unspoken for — see *Work with someone's name on it is not yours to take*. Everything the gate
-withholds is a rule the gateway enforces; who a human meant to do the work is not one of them.
 
 So: always give `body` enough for someone else to act without you — what, where, and how anyone
 would know it is done. Set `priority` honestly.
