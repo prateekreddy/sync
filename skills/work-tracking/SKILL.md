@@ -105,6 +105,41 @@ held  →  claim  →  …work…  →  heartbeat every ~TTL/3  →  complete
    board, so a vague "done" or a half-remembered sha is not a way to move faster — it is a way to be
    marked in public. Push your commit *before* you complete, and paste the sha you actually pushed.
 
+## Work with someone's name on it is not yours to take
+
+**If an item is assigned to someone else, do not work it without explicit approval from the person
+you are working with.** Ask, and wait for the answer. Not a note in your summary afterwards — a
+go-ahead before you start. A name on an item is usually the visible end of a conversation you were
+not part of, and the cost of asking is one message where the cost of guessing is duplicated work and
+a handover nobody knows was dropped.
+
+Nothing stops you mechanically. The readiness gate does not look at Plane's `assignees`, so
+`find(ready: true)` lists assigned work and `claim` accepts it. **The lease and the assignee are
+different things**: the lease is what the gateway enforces, and the assignee is what a human wrote
+down. Only one of them is checked for you.
+
+Assignees are on no listing — `find`, `next`, `board` and Plane's own `list_project_issues` all omit
+the field, and the last one says so in its reply. One item at a time is the only way to see it:
+
+```
+get_issue_using_readable_identifier(project_identifier: "SYNC", issue_identifier: "36",
+                                    fields: ["id", "assignees"])
+```
+
+So, the same split as `history`: **naming an id, check before you claim; letting the gateway pick,
+check the item you were handed before doing any work** — and if it belongs to someone else,
+`release` it with that as the reason and go ask.
+
+An empty `assignees` is the normal case and needs nobody's permission. Non-empty means one of three
+things, and they are worth telling apart before you interrupt anyone:
+
+- **A person assigned it.** The case this rule is about. Ask.
+- **An agent is holding it right now.** `claim` sets the holder's Plane user, so this arrives with a
+  live lease and the gate already refuses you — `why` will say so. Nothing to ask about.
+- **A stale name with no live lease.** The mirror sets assignees on claim and clears them on release
+  or expiry, so a leftover one means that write failed. From here it is indistinguishable from a
+  human assignment, so treat it as one and say what you found rather than assuming it is free.
+
 ## Looking around
 
 Four tools answer four different questions, and reaching for the wrong one is how a project full of
@@ -218,6 +253,10 @@ Browsing and claiming apply all of these. Until 2026-08-03 the last one was chec
 time, so `find(ready: true)` listed work that `claim` then refused and `board` counted it ready —
 if you are talking to a gateway older than that, treat a `ready` row as a candidate rather than a
 promise, and believe `why` over any listing.
+
+**An assignee is not on that list**, so "the gate let me claim it" is not evidence that the work is
+unspoken for — see *Work with someone's name on it is not yours to take*. Everything the gate
+withholds is a rule the gateway enforces; who a human meant to do the work is not one of them.
 
 So: always give `body` enough for someone else to act without you — what, where, and how anyone
 would know it is done. Set `priority` honestly.
