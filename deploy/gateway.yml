@@ -47,11 +47,25 @@ services:
         psql -U "$$SUPERUSER" -d postgres -v ON_ERROR_STOP=1 -f /migrations/000_bootstrap.sql
         for f in /migrations/0*.sql; do
           case "$$f" in *000_bootstrap*) continue;; esac
-          echo "applying $$(basename "$$f")"
+          name=$$(basename "$$f" .sql)
+          echo "applying $$name"
           PGPASSWORD="$$GATEWAY_DB_PASSWORD" psql -U agent_gw -d gateway \
             -v ON_ERROR_STOP=1 -f "$$f"
+          # Recorded only after the file succeeds, so a half-applied migration
+          # is not reported as done. 001 creates this table, and every file
+          # re-runs on every deploy, so the insert is idempotent and the ledger
+          # backfills itself on a database that predates it.
+          # Fed on stdin rather than with -c: psql does not substitute :'n' in a
+          # -c string, and silently sends it to the server as a syntax error.
+          echo "insert into schema_migration (filename) values (:'n') on conflict (filename) do nothing" \
+            | PGPASSWORD="$$GATEWAY_DB_PASSWORD" psql -U agent_gw -d gateway -q \
+              -v ON_ERROR_STOP=1 -v n="$$name"
         done
         echo "migrations applied"
+        # Printed so `docker compose logs gateway-migrate` answers "how far did
+        # this database get" without a psql session.
+        PGPASSWORD="$$GATEWAY_DB_PASSWORD" psql -U agent_gw -d gateway -qtA \
+          -c "select 'schema level: ' || coalesce(max(filename), 'none') from schema_migration"
     networks: [plane]
 
   # ── the gateway ──────────────────────────────────────────────────────────
@@ -63,6 +77,13 @@ services:
   gateway:
     build:
       context: ../server
+      # Filled in by provision.sh, which reads them from the checkout it is
+      # deploying. Empty when Compose is run by hand or from a tarball with no
+      # git repo -- /healthz then reports sha: null, which is a true answer and
+      # a visible one, rather than a stale sha from some earlier build.
+      args:
+        GIT_SHA: ${GIT_SHA:-}
+        BUILD_TIME: ${BUILD_TIME:-}
     profiles: ["gateway"]
     # Plane's webhook SSRF allowlist matches on hostname, so this name has to
     # agree with WEBHOOK_ALLOWED_HOSTS.

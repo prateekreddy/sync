@@ -197,7 +197,27 @@ PY
 # that was exported before provisioning filled it in, and crash-loop.
 set -a; . ./.env; set +a
 
-echo "starting the gateway"
+# ── stamp the image with the commit it is built from ─────────────────────────
+#
+# So `curl <gateway>/healthz` answers "did my deploy take?" directly. Without
+# this the only checks available were probing a behaviour known to have changed,
+# or a shell on the host — and the first one produced a wrong answer, confidently
+# reported, on 2026-08-03.
+#
+# Not fatal when there is no repo (a tarball deploy, or .git excluded): the sha
+# is reported as null, which is at least true. Exported because Compose reads
+# build args from the shell environment.
+export GIT_SHA BUILD_TIME
+GIT_SHA=$(git -C .. rev-parse HEAD 2>/dev/null || echo "")
+BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+if [ -n "$GIT_SHA" ] && [ -n "$(git -C .. status --porcelain 2>/dev/null)" ]; then
+  # Said out loud rather than encoded in the sha, because a "-dirty" suffix does
+  # not compare equal to anything and the check below would report a mismatch
+  # for a deploy that is working exactly as asked.
+  echo "note: the working tree has uncommitted changes, so the image will not match $GIT_SHA exactly" >&2
+fi
+
+echo "starting the gateway${GIT_SHA:+ at ${GIT_SHA:0:7}}"
 dc up -d --build gateway
 
 # Same reasoning as the Plane poll above: GATEWAY_LISTEN_PORT is what Compose was
@@ -206,13 +226,37 @@ dc up -d --build gateway
 # credentials and should not be answering on a public port.
 GW="${PROVISION_GATEWAY_URL:-}"; GW="${GW%/}"
 gw_ok=0
+health=""
 for i in $(seq 1 60); do
   [ -n "$GW" ] || GW=$(service_base gateway 8787 || true)
-  if [ -n "$GW" ] && curl -fsS -o /dev/null "${GW}/healthz" 2>/dev/null; then
+  if [ -n "$GW" ] && health=$(curl -fsS "${GW}/healthz" 2>/dev/null); then
     gw_ok=1; break
   fi
   sleep 2
 done
+
+# ── did the deploy take? ─────────────────────────────────────────────────────
+#
+# The whole point of stamping the image: compare what we just built against what
+# is now answering, without inferring it from behaviour. A container that failed
+# to replace its predecessor keeps serving, and every other signal here — the
+# health poll, `docker compose ps` — reports success while the old code runs.
+if [ "$gw_ok" = 1 ] && [ -n "$GIT_SHA" ]; then
+  live=$(printf '%s' "$health" | sed -n 's/.*"sha":"\([0-9a-f]*\)".*/\1/p')
+  if [ "$live" = "$GIT_SHA" ]; then
+    echo "gateway is live at ${GIT_SHA:0:7}"
+  elif [ -z "$live" ]; then
+    # Two causes, and they are worth telling apart: a gateway older than this
+    # feature has no build key at all, whereas a current one built without the
+    # arg reports it as null.
+    case "$health" in
+      *'"build"'*) echo "warning: gateway reports no commit sha — built without GIT_SHA" >&2 ;;
+      *) echo "warning: gateway does not report a build identity, so it predates this deploy script" >&2 ;;
+    esac
+  else
+    echo "warning: gateway is serving ${live:0:7}, not the ${GIT_SHA:0:7} just built — the old container may still be up" >&2
+  fi
+fi
 # Not fatal — token issuance below goes through `docker compose exec`, not HTTP,
 # so it can still succeed. But say so, because the previous version of this loop
 # fell through silently and left a dead gateway looking like a clean install.

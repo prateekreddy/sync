@@ -14,6 +14,19 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY migrations ./migrations
 
+# Which commit this image is, reported unauthenticated by /healthz so a deploy
+# can be checked without shell access on the host. Baked in at build time rather
+# than read from .git at runtime: there is no repo in the container, and a sha
+# the image cannot have got from anywhere but its own build is the point.
+#
+# Declared here, after npm ci, so changing it does not invalidate the dependency
+# layer. Both default to empty, and empty is reported as null rather than as a
+# missing field -- see server/src/build.ts.
+ARG GIT_SHA=""
+ARG BUILD_TIME=""
+ENV GIT_SHA=$GIT_SHA \
+    BUILD_TIME=$BUILD_TIME
+
 # Runs unprivileged; nothing here needs root.
 USER node
 EXPOSE 8787

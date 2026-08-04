@@ -6,6 +6,33 @@
 -- anyway -- and never task data.
 
 -- ---------------------------------------------------------------------------
+-- Which migrations this database has had.
+--
+-- Lives here, in the first migration, rather than in a later one of its own: the
+-- runner records each file as it applies it, so the ledger has to exist before
+-- the first row is written. Every migration re-runs on every deploy, so this is
+-- created idempotently like the rest.
+--
+-- Read by /healthz, which reports the highest filename. That is the answer to
+-- "does this host have 006 yet, or will `unlink` fail on it" -- a question that
+-- previously needed psql on the box, and so was usually answered by guessing.
+--
+-- Deliberately not a gate: nothing refuses to start because the ledger is behind.
+-- It records what happened; it does not enforce.
+-- ---------------------------------------------------------------------------
+
+create table if not exists schema_migration (
+  -- Basename without .sql, e.g. '006_relation_retraction'. The zero-padded
+  -- prefix means max(filename) is the newest, with no version column to keep
+  -- in sync with the filename it would duplicate.
+  filename   text        primary key,
+  applied_at timestamptz not null default now()
+);
+
+comment on table schema_migration is
+  'Migrations applied to this database, recorded by the runner in deploy/gateway.yml. Reported by /healthz so a deployment can be checked without shell access.';
+
+-- ---------------------------------------------------------------------------
 -- Lease: the primitive Plane lacks.
 --
 -- Plane's API has no optimistic concurrency -- no If-Match, no ETag, no version

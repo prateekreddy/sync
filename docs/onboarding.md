@@ -168,7 +168,8 @@ gone rather than two thirds of it. `issue-token`, `list-tokens` and
 | You cannot remember what an agent was called, so you cannot revoke it | Nothing wrong — names are yours to choose and easy to lose | `GET /v1/agent-tokens` with your Plane token lists every agent you own, active or not |
 | HTTP 429 | 10 mints/minute per address | Wait a minute |
 | `refusing to send a token unencrypted` | Gateway URL is `http://` on a remote host | Use `https://`, or a localhost address |
-| `claude mcp list` shows `✘ Failed to connect` | Wrong URL, or the gateway is down | `curl https://<gateway-host>/healthz` should return `{"ok":true}` |
+| `claude mcp list` shows `✘ Failed to connect` | Wrong URL, or the gateway is down | `curl https://<gateway-host>/healthz` should return `{"ok":true,…}` |
+| A tool is missing, or behaves like an older version | The host is running an older build than you think | `curl https://<gateway-host>/healthz` reports `build.sha` — compare it with `git rev-parse HEAD`. `schema.level` is the highest migration that host's database has had |
 | Connects, but the agent has no `capture`/`claim` tools | Registered against the wrong server name, or an old stdio config is shadowing it | `claude mcp remove sync` then re-add |
 | `UNAUTHENTICATED` on every tool call | Token revoked, or replaced by a later mint with the same agent name | Mint again and re-run `claude mcp add` |
 | `next` returns nothing | Nothing is ready | Call `why` on the item you expected to see. It answers with the reasons the gate itself used, rather than leaving you to guess |

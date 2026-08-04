@@ -31,6 +31,7 @@ import {
 } from './oauth.js';
 import { assertCanRead } from './access.js';
 import { board } from './board.js';
+import { buildIdentity, schemaLevel } from './build.js';
 import { capture } from './capture.js';
 import { constrain } from './constrain.js';
 import { citationsFor, recordCitations } from './citation.js';
@@ -238,7 +239,16 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     return reply.status(500).send({ error: 'INTERNAL', message: 'Internal error' });
   });
 
-  app.get('/healthz', async () => ({ ok: true }));
+  // Unauthenticated, and says which build it is. See build.ts for why that is
+  // worth the sha being public. `ok` stays first and stays a boolean: the
+  // Docker HEALTHCHECK reads the status code, and bin/onboard.sh substring-
+  // matches on `"ok"` before it will send a token anywhere.
+  const build = buildIdentity();
+  app.get('/healthz', async () => ({
+    ok: true,
+    build,
+    schema: await schemaLevel(deps.pool),
+  }));
 
   // ── self-service onboarding ──────────────────────────────────────────────
   //

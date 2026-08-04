@@ -285,6 +285,23 @@ this while working on that", which constrains nothing.
 
 ## Operating notes
 
+**Which build is running.** `curl <gateway>/healthz` — no token needed, because the
+question comes up before you have one:
+
+```json
+{"ok":true,
+ "build":{"sha":"082ba9e…","builtAt":"2026-08-04T06:55:00Z"},
+ "schema":{"level":"006_relation_retraction","count":6,"appliedAt":"…"}}
+```
+
+`build.sha` is a Docker build arg stamped in by `provision.sh` from the checkout it
+deployed; compare it with `git rev-parse HEAD`. `schema.level` is the highest
+migration *that host's database* has had, which is the other half — a current image
+against a database that never got its migration fails only on the feature that needed
+it. `null` means the value is unknown; a reply with no `build` key at all is a gateway
+older than this feature. `provision.sh` compares the two after deploying and warns
+when the container answering is not the one it just built.
+
 **Lease TTL.** Default 600s. Set it to your slowest realistic task, and have agents
 heartbeat at roughly TTL/3. Too short and healthy agents lose work mid-task; too long
 and a dead agent's item sits idle.
