@@ -420,7 +420,7 @@ If Plane holds nothing worth keeping, `docker compose down && docker volume rm
 ## Tests
 
 ```bash
-cd server && npm test          # 310 unit tests: lease semantics (20-way contention),
+cd server && npm test          # 439 unit tests: lease semantics (20-way contention),
                                # readiness screening, sub-item counting, tool policy,
                                # token ownership, evidence checking, reference linking,
                                # and that the skill still names every tool that exists
@@ -437,6 +437,28 @@ edits still work, and that attribution survives the proxy.
 
 The unit tests need Postgres. `deploy/docker-compose.yml` provides it; point
 `GATEWAY_DATABASE_URL` at it if it is not on `localhost:15432`.
+
+Without a stack — a fresh checkout, or a box where Plane is not running — one
+container is enough:
+
+```bash
+docker run -d --name sync-test-db -p 127.0.0.1:15432:5432 \
+  -e POSTGRES_USER=plane -e POSTGRES_PASSWORD=plane -e POSTGRES_DB=plane \
+  postgres:15.7-alpine
+docker cp server/migrations sync-test-db:/migrations
+docker exec -e PGPASSWORD=plane sync-test-db \
+  psql -h /var/run/postgresql -U plane -d postgres -f /migrations/000_bootstrap.sql
+for f in 001_init 002_agent_default_project 003_oauth_client \
+         004_attestation 005_citation 006_relation_retraction; do
+  docker exec -e PGPASSWORD=agent_gw_dev sync-test-db \
+    psql -h /var/run/postgresql -U agent_gw -d gateway -v ON_ERROR_STOP=1 -f "/migrations/$f.sql"
+done
+```
+
+`POSTGRES_DB=plane` is not decoration: `000_bootstrap.sql` revokes `CONNECT` on
+Plane's own database, and fails if there is no such database to revoke it on.
+`psql` inside the container needs `-h /var/run/postgresql` — the image's default
+host is a TCP loopback that is not listening.
 
 ## Known gaps
 
