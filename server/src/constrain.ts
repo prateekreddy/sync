@@ -5,6 +5,7 @@ import { GatewayError } from './errors.js';
 import { escapeHtml } from './html.js';
 import * as lease from './lease.js';
 import type { PlaneClient, WorkItem } from './plane.js';
+import { readableId } from './view.js';
 
 /**
  * Record that a discovery constrains work that already exists.
@@ -119,6 +120,7 @@ export async function constrain(
 
   const constrained: ConstrainResult['constrained'] = [];
   const failed: ConstrainResult['failed'] = [];
+  const identifier = plane.identifierFor(input.projectId);
 
   // In order, not concurrently. Two appends to the same item would each read the
   // description before the other wrote it, and the second would silently drop the
@@ -150,7 +152,7 @@ export async function constrain(
 
       constrained.push({
         workItemId: item.id,
-        readableId: `#${item.sequence_id}`,
+        readableId: readableId(item.sequence_id, identifier),
         title: item.name,
         ...(holder ? { heldBy: holder } : {}),
       });

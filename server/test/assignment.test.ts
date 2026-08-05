@@ -3,12 +3,7 @@ import { randomUUID } from 'node:crypto';
 import Fastify from 'fastify';
 import { issueToken } from '../src/auth.js';
 import type { Actor } from '../src/auth.js';
-import {
-  foreignAssignees,
-  nameOf,
-  principalPlaneUser,
-  recordAssignment,
-} from '../src/assignment.js';
+import { foreignAssignees, gatewayWrites, nameOf, principalPlaneUser } from '../src/assignment.js';
 import { createPool } from '../src/db.js';
 import { forgetAccess } from '../src/access.js';
 import { PlaneClient } from '../src/plane.js';
@@ -149,19 +144,41 @@ async function harness() {
 
 const idsIn = (body: { items: Array<{ workItemId: string }> }) => body.items.map((i) => i.workItemId);
 
+/**
+ * A name in Plane that the gateway put there and never managed to clear.
+ *
+ * The lease is what says so: it ended, but `mirrored` is false, so the write
+ * that would have removed the assignee has not landed. There is no separate
+ * record of our writes any more — the fact this used to be looked up in
+ * `assignment_write` is derived from the lease itself.
+ */
+async function residue(workItemId: string, planeUserId: string): Promise<void> {
+  process.env.GATEWAY_TOKEN_KEY ??= 'a'.repeat(64);
+  const name = `t-asg-${randomUUID().slice(0, 8)}/other`;
+  await issueToken(pool, {
+    name,
+    principal: 'human:dana@example.com',
+    planeToken: 'plane_pat_test',
+    planeUserId,
+  });
+  await pool.query(
+    `insert into lease (work_item_id, project_id, holder, epoch, state, expires_at, mirrored)
+     values ($1, $2, $3, 1, 'released', now(), false)`,
+    [workItemId, PROJECT, `agent:${name}`],
+  );
+}
+
 beforeEach(async () => {
   forgetAccess();
   updates = [];
   created = [];
   await pool.query('truncate lease');
-  await pool.query('delete from assignment_write');
   await pool.query('delete from takeover_approval');
 });
 
 afterAll(async () => {
-  await pool.query("delete from agent_token where name like 't-asg-%/worker'");
+  await pool.query("delete from agent_token where name like 't-asg-%'");
   await pool.query('truncate lease');
-  await pool.query('delete from assignment_write');
   await pool.query('delete from takeover_approval');
   await pool.end();
 });
@@ -232,11 +249,82 @@ describe('browsing agrees with claiming', () => {
   });
 
   it('offers an item whose only assignee is our own residue', async () => {
-    await recordAssignment(pool, RESIDUE, DANA, 1);
+    await residue(RESIDUE, DANA);
     const { app, get } = await harness();
     const body = await get(`/v1/find?projectId=${PROJECT}&ready=true`).then((r) => r.json());
     expect(idsIn(body)).toContain(RESIDUE);
     await app.close();
+  });
+});
+
+describe('telling our own writes from a human’s', () => {
+  /** A lease in whatever state, held by an agent with its own Plane identity. */
+  async function lease(
+    workItemId: string,
+    state: string,
+    over: { mirrored?: boolean; pending?: boolean } = {},
+  ): Promise<void> {
+    process.env.GATEWAY_TOKEN_KEY ??= 'a'.repeat(64);
+    const name = `t-asg-${randomUUID().slice(0, 8)}/w`;
+    await issueToken(pool, {
+      name,
+      principal: 'human:dana@example.com',
+      planeToken: 'plane_pat_test',
+      planeUserId: DANA,
+    });
+    await pool.query(
+      `insert into lease (work_item_id, project_id, holder, epoch, state, expires_at, mirrored, pending_mirror)
+       values ($1, $2, $3, 1, $4::lease_state, now() + interval '10 minutes', $5, $6::jsonb)`,
+      [
+        workItemId,
+        PROJECT,
+        `agent:${name}`,
+        state,
+        over.mirrored ?? true,
+        over.pending ? JSON.stringify({ kind: 'return' }) : null,
+      ],
+    );
+  }
+
+  it('claims the assignee on a lease it currently holds', async () => {
+    const id = randomUUID();
+    await lease(id, 'held');
+    expect((await gatewayWrites(pool, [id])).get(id)).toBe(DANA);
+  });
+
+  it('claims it while a clear is still owed', async () => {
+    // The residue case. The lease is over, but the write that would have removed
+    // the name has not landed, so the name is ours and the item is free.
+    const queued = randomUUID();
+    const unmirrored = randomUUID();
+    await lease(queued, 'released', { pending: true });
+    await lease(unmirrored, 'released', { mirrored: false });
+
+    const wrote = await gatewayWrites(pool, [queued, unmirrored]);
+    expect(wrote.get(queued)).toBe(DANA);
+    expect(wrote.get(unmirrored)).toBe(DANA);
+  });
+
+  it('disclaims it once Plane has been told the lease ended', async () => {
+    // Nothing is owed and the lease is over, so we cleared the assignee. A name
+    // on the item now is a person's, and withholding it is the correct answer.
+    const id = randomUUID();
+    await lease(id, 'released');
+    expect((await gatewayWrites(pool, [id])).has(id)).toBe(false);
+  });
+
+  it('matches the holder back to the token that issued it', async () => {
+    // holder is `agent:<name>` and agent_token.name is the bare name. A join that
+    // compares them directly matches nothing, silently, and every name in Plane
+    // then reads as a human's.
+    const id = randomUUID();
+    await lease(id, 'held');
+    const { rows } = await pool.query<{ holder: string }>(
+      'select holder from lease where work_item_id = $1',
+      [id],
+    );
+    expect(rows[0]!.holder).toMatch(/^agent:/);
+    expect((await gatewayWrites(pool)).get(id)).toBe(DANA);
   });
 });
 
@@ -351,7 +439,6 @@ describe('finishing work', () => {
     // nobody is. Leaving it made every finished item read as assigned-to-a-human,
     // which under this rule would withhold it forever.
     const plane = fakePlane();
-    await recordAssignment(pool, MINE, ME, 1);
     await mirrorComplete(plane, pool, {
       projectId: PROJECT,
       workItemId: MINE,
@@ -360,13 +447,6 @@ describe('finishing work', () => {
       close: true,
     });
     expect(updates.find((u) => u.id === MINE)?.body['assignees']).toEqual([]);
-
-    // And our record of the write goes with it, so the name cannot later be read
-    // back as residue for an item that no longer carries one.
-    const { rows } = await pool.query('select 1 from assignment_write where work_item_id = $1', [
-      MINE,
-    ]);
-    expect(rows).toHaveLength(0);
   });
 });
 

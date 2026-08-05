@@ -93,6 +93,38 @@ describe('every read tool returns the same shape', () => {
     expect(fromWhy.item.labels).toEqual(['backend']);
   });
 
+  it('spells the readable id the way Plane does, in every tool', async () => {
+    // Two spellings used to be in circulation with no rule about which: `find`
+    // and capture's dedup branch said `SYNC-42`, while `board`, `tree`, `next`
+    // and capture's create branch said `#42`. An agent quoting the second to a
+    // human quoted a number that means nothing outside the project.
+    const plane = Object.assign(fakePlane(items), { identifierFor: () => 'SYNC' });
+
+    const fromNext = await readyCandidates(plane, pool, { projectId: PROJECT, limit: 10 });
+    const fromFind = await find(plane, pool, { projectId: PROJECT });
+    const fromTree = await tree(plane, pool, { projectId: PROJECT, workItemId: id('child') });
+    const fromWhy = await explain(plane, pool, { projectId: PROJECT, workItemId: id('root') });
+
+    for (const readable of [
+      fromNext[0]?.readableId,
+      fromFind.items[0]?.readableId,
+      fromTree.node.readableId,
+      fromTree.path[0]?.readableId,
+      fromWhy.item.readableId,
+    ]) {
+      expect(readable).toMatch(/^SYNC-\d+$/);
+    }
+  });
+
+  it('still answers with a number a human can find when the identifier is unknown', async () => {
+    // The display path is not allowed to fetch — putting a request in front of
+    // every read to prettify a string cost 85 seconds on one test file. So an
+    // unknown identifier degrades to `#42`, which is ambiguous across projects
+    // but still findable, rather than blocking on a lookup.
+    const fromFind = await find(fakePlane(items), pool, { projectId: PROJECT });
+    expect(fromFind.items[0]?.readableId).toMatch(/^#\d+$/);
+  });
+
   it('agrees on the key set, so an agent learns one shape', async () => {
     const plane = fakePlane(items);
     const keys = (v: WorkItemView) => Object.keys(v).filter((k) => k !== 'children').sort();

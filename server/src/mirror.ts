@@ -1,11 +1,6 @@
 import type { Pool } from './db.js';
 import type { Actor } from './auth.js';
-import {
-  forgetAssignment,
-  nameOf,
-  principalPlaneUser,
-  recordAssignment,
-} from './assignment.js';
+import { nameOf, principalPlaneUser } from './assignment.js';
 import { GatewayError } from './errors.js';
 import { UNVERIFIED_LABEL } from './evidence.js';
 import { resolveLabels } from './labels.js';
@@ -270,11 +265,9 @@ export async function mirrorClaim(
     // assigned and started — the inconsistency this whole change is removing,
     // with the two halves swapped.
     try {
-      // Recorded only after Plane accepted the write, and recorded at all so the
-      // gate can later tell this name from one a person put there. Without it,
-      // every item any agent has ever claimed reads as assigned-by-a-human — see
-      // assignment.ts.
-      if (assignee) await recordAssignment(pool, args.workItemId, assignee, args.epoch);
+      // Marked only after Plane accepted the write. This flag is also what tells
+      // the assignment gate that the name now on the item is ours rather than a
+      // person's — see assignment.ts.
       await pool.query('update lease set mirrored = true where work_item_id = $1', [args.workItemId]);
       await plane.comment(
         args.projectId,
@@ -342,7 +335,6 @@ export async function mirrorComplete(
         ...(done ? { state: done.id } : {}),
         assignees: [],
       });
-      await forgetAssignment(pool, args.workItemId);
       await plane.comment(
         args.projectId,
         args.workItemId,
@@ -411,11 +403,6 @@ export async function mirrorReturn(
         ...(todo ? { state: todo.id } : {}),
         assignees: [],
       });
-      // After the clear, never before: dropping the record first would turn a
-      // failed clear into a name the gate no longer recognises as ours, which it
-      // would then honour as a human's and withhold the item indefinitely.
-      await forgetAssignment(pool, args.workItemId);
-
       const repeat =
         args.expiryCount && args.expiryCount >= 3
           ? `<p><strong>This item has now expired ${args.expiryCount} times.</strong> ` +

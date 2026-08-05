@@ -69,7 +69,12 @@ export async function reconcileLeases(
   const { rows } = await pool.query<HeldRow>(
     `select l.work_item_id, l.project_id, l.holder, l.epoch, t.plane_user_id
        from lease l
-       left join agent_token t on t.name = l.holder
+       -- holder is 'agent:<name>'; agent_token.name is the bare name. Joining
+       -- them directly matches nothing at all, and nothing at all is silent here:
+       -- plane_user_id comes back null for every row, divergence() declines to
+       -- judge, and the assignee half of revocation simply never fires. The test
+       -- fixture hid it by naming its token 'agent:t'.
+       left join agent_token t on l.holder = 'agent:' || t.name
       where l.state = 'held'
         and l.expires_at > now()
         -- Only leases Plane has been told about. A claim whose mirror has not

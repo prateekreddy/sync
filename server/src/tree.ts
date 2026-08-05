@@ -2,7 +2,7 @@ import type { Pool } from './db.js';
 import { GatewayError } from './errors.js';
 import type { PlaneClient, State, WorkItem } from './plane.js';
 import { resolve } from './query.js';
-import { viewOf, type WorkItemView } from './view.js';
+import { readableId, viewOf, type WorkItemView } from './view.js';
 
 /**
  * The sub-tree under a work item, with lease state.
@@ -117,13 +117,14 @@ export async function tree(
   // Upwards: what this item sits inside. An agent handed a leaf otherwise has no
   // way to see the work it is part of without listing the project.
   const path: Tree['path'] = [];
+  const identifier = ctx.identifier;
   const climbed = new Set<string>([root.id]);
   let cursor = root.parent ? byId.get(root.parent) : undefined;
   while (cursor && !climbed.has(cursor.id)) {
     climbed.add(cursor.id);
     path.unshift({
       workItemId: cursor.id,
-      readableId: `#${cursor.sequence_id}`,
+      readableId: readableId(cursor.sequence_id, identifier),
       title: cursor.name,
     });
     cursor = cursor.parent ? byId.get(cursor.parent) : undefined;

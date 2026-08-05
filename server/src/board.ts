@@ -2,6 +2,7 @@ import type { Pool } from './db.js';
 import { GatewayError } from './errors.js';
 import type { PlaneClient, State, WorkItem } from './plane.js';
 import { resolve } from './query.js';
+import { readableId } from './view.js';
 
 /**
  * Where a project stands: progress per module, and what the fleet is holding.
@@ -284,7 +285,7 @@ export async function board(
           ? {
               holder: l.holder,
               workItemId: id,
-              readableId: `#${item.sequence_id}`,
+              readableId: readableId(item.sequence_id, ctx.identifier),
               title: item.name,
               expiresAt: l.expiresAt,
             }

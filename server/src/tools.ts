@@ -306,7 +306,18 @@ export async function callTool(
 
   if (native) {
     const spec = (await listTools(deps)).find((t) => t.name === name);
-    const args = withDefaultProject(spec, rawArgs, actor.defaultProjectId);
+    const withProject = withDefaultProject(spec, rawArgs, actor.defaultProjectId);
+    // Our own tools take readable ids too, so an id read from a Plane tool can be
+    // handed straight to claim without a translation step the agent has to know
+    // about. Costs nothing when the value is already a uuid — the lookup is not
+    // even consulted.
+    const args = deps.rest
+      ? await resolveIds(
+          new NameBook(deps.rest),
+          withProject,
+          projectArg(withProject) ?? actor.defaultProjectId,
+        )
+      : withProject;
     const { path, body } = native.request(args);
     const res = await deps.app.inject({
       method: native.method,

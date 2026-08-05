@@ -52,6 +52,8 @@ export interface ViewContext {
   stateNames: Map<string, string>;
   labelNames: Map<string, string>;
   leases: Map<string, Lease>;
+  /** The project's identifier — the `SYNC` in `SYNC-42`. Absent if unreadable. */
+  identifier?: string | undefined;
   /** When set, views carry exactly these keys. */
   fields?: Set<string> | undefined;
 }
@@ -75,9 +77,16 @@ export async function viewContext(
     liveHolders(pool),
   ]);
 
+  // Read from cache only, never fetched. The access check in front of every
+  // project-scoped read has already listed the caller's projects, which fills
+  // this in; when it has not, the readable id falls back to `#42` rather than
+  // making the display path wait on a request.
+  const identifier = plane.identifierFor(projectId);
+
   return {
     stateNames: new Map(states.map((s) => [s.id, s.name])),
     labelNames,
+    ...(identifier ? { identifier } : {}),
     leases: new Map(
       [...leaseRows].map(([id, l]) => [id, { holder: l.holder, expiresAt: l.expiresAt.toISOString() }]),
     ),
@@ -85,12 +94,28 @@ export async function viewContext(
   };
 }
 
+/**
+ * The id a person uses — `SYNC-42`, exactly as Plane's own UI writes it.
+ *
+ * One function because the codebase had two spellings of this and no rule about
+ * which to use: `find` and `capture`'s dedup branch answered `SYNC-42` while
+ * `board`, `tree`, `next` and `capture`'s create branch answered `#42`. An agent
+ * quoting one of them to a human quoted a number that means nothing outside the
+ * project, and an agent comparing two of them compared different things.
+ *
+ * `#42` survives only as the fallback for when the project's identifier could not
+ * be read. It is worse — ambiguous across projects — but it is still a number a
+ * human can find, which beats printing nothing.
+ */
+export const readableId = (sequenceId: number, identifier?: string | undefined): string =>
+  identifier ? `${identifier}-${sequenceId}` : `#${sequenceId}`;
+
 /** One work item, as an agent should see it. */
 export function viewOf(item: WorkItem, ctx: ViewContext): WorkItemView {
   const held = ctx.leases.get(item.id);
   const full: WorkItemView = {
     workItemId: item.id,
-    readableId: `#${item.sequence_id}`,
+    readableId: readableId(item.sequence_id, ctx.identifier),
     title: item.name,
     priority: item.priority,
     state: ctx.stateNames.get(item.state) ?? 'unknown',

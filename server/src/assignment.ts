@@ -17,11 +17,28 @@
  *
  * Who *created* an item never withholds it. Assignment is the only gate.
  *
- * Rule 4 is why `assignment_write` exists. `mirrorClaim` sets an assignee on every
- * claim and clears it on release, so most names in Plane were put there by us; if
- * the gate could not tell its own writes from a human's, either it withholds work
- * nobody is doing (every item any agent ever claimed) or it honours nothing. The
- * table records the writes we make, and anything unrecorded is a person's intent.
+ * Rule 4 is the hard one. `mirrorClaim` sets an assignee on every claim and clears
+ * it on release, so most names in Plane were put there by us; if the gate could not
+ * tell its own writes from a human's, either it withholds work nobody is doing
+ * (every item any agent ever claimed) or it honours nothing.
+ *
+ * That used to be answered by an `assignment_write` table — a row per write we
+ * made, deleted after the clear succeeded. It was a second copy of something the
+ * lease already knows, kept in step by hand: the delete had to happen after the
+ * Plane write and not before, and if the process died between them the copy was
+ * wrong in the direction that freezes an item forever.
+ *
+ * The lease answers it directly, because a person never takes one:
+ *
+ *   - a lease that is `held` — the assignee is ours by construction, we set it on
+ *     the claim
+ *   - a lease that is not mirrored, or has a write still queued — we owe Plane a
+ *     clear that has not landed, so the name on the item is residue rather than
+ *     intent
+ *
+ * Anything else is a person's. Note the second case only became expressible when
+ * the mirror got a real outbox: before that "we owe Plane a write" was not
+ * recorded anywhere, which is why a separate table was needed to stand in for it.
  *
  * The sharp edge, and it is deliberate: an agent minted from a personal token
  * authenticates AS that human — measured, `get_user` through such a token returns
@@ -152,41 +169,12 @@ export const UNKNOWN_ASSIGNEE_REASON =
 
 // ── persistence ────────────────────────────────────────────────────────────
 
-/** Record that we set this item's assignee, so a later read knows it was not a human. */
-export async function recordAssignment(
-  pool: Pool,
-  workItemId: string,
-  planeUserId: string,
-  epoch: number,
-): Promise<void> {
-  await pool.query(
-    `insert into assignment_write (work_item_id, plane_user_id, epoch)
-     values ($1, $2, $3)
-     on conflict (work_item_id) do update
-       set plane_user_id = excluded.plane_user_id,
-           epoch         = excluded.epoch,
-           written_at    = now()`,
-    [workItemId, planeUserId, epoch],
-  );
-}
-
-/**
- * Forget our write, because we have just cleared the assignee in Plane.
- *
- * Deliberately called *after* the Plane write succeeds. Dropping the row first
- * would turn a failed clear into a name we no longer recognise as ours — which is
- * the residue case, reported as a human assignment, freezing the item.
- */
-export async function forgetAssignment(pool: Pool, workItemId: string): Promise<void> {
-  await pool.query('delete from assignment_write where work_item_id = $1', [workItemId]);
-}
-
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Only the ids Postgres will accept as uuids.
  *
- * Both tables key on `uuid`, so an id that is not one cannot have a row by
+ * `lease` keys on `uuid`, so an id that is not one cannot have a row by
  * definition — dropping it and dropping the row it could never have matched are
  * the same answer. Without this, one odd id makes the query throw and takes the
  * gate down for the whole project, which is a much worse failure than the one it
@@ -194,18 +182,34 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  */
 const uuidsOnly = (ids: string[]): string[] => ids.filter((id) => UUID.test(id));
 
-/** Our own assignment writes, for a set of items or for everything we have recorded. */
+/**
+ * The assignees in Plane that this gateway put there, for a set of items or for
+ * every lease it has.
+ *
+ * Read off the lease rather than a table of its own — see the rule 4 note at the
+ * top. The three disjuncts are the whole definition of "ours":
+ *
+ *   held            — we set the assignee on the claim and have not cleared it
+ *   not mirrored    — Plane has not been told about this lease's ending yet
+ *   pending_mirror  — the clear is queued and the drain has not landed it
+ *
+ * `holder` is `agent:<name>` and `agent_token.name` is the bare name, so the join
+ * has to add the prefix back. Matching them directly silently matches nothing,
+ * which is how the assignee half of revocation was dead on arrival.
+ */
 export async function gatewayWrites(pool: Pool, workItemIds?: string[]): Promise<GatewayWrites> {
   const ids = workItemIds ? uuidsOnly(workItemIds) : undefined;
   if (ids && ids.length === 0) return new Map();
-  const { rows } = ids
-    ? await pool.query<{ work_item_id: string; plane_user_id: string }>(
-        'select work_item_id, plane_user_id from assignment_write where work_item_id = any($1::uuid[])',
-        [ids],
-      )
-    : await pool.query<{ work_item_id: string; plane_user_id: string }>(
-        'select work_item_id, plane_user_id from assignment_write',
-      );
+
+  const { rows } = await pool.query<{ work_item_id: string; plane_user_id: string }>(
+    `select l.work_item_id, t.plane_user_id
+       from lease l
+       join agent_token t on l.holder = 'agent:' || t.name
+      where t.plane_user_id is not null
+        and (l.state = 'held' or l.mirrored = false or l.pending_mirror is not null)
+        ${ids ? 'and l.work_item_id = any($1::uuid[])' : ''}`,
+    ids ? [ids] : [],
+  );
   return new Map(rows.map((r) => [r.work_item_id, r.plane_user_id]));
 }
 

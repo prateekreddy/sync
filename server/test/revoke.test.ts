@@ -30,7 +30,15 @@ const pool = createPool(
 const PROJECT = randomUUID();
 const AGENT_USER = randomUUID();
 const SOMEONE_ELSE = randomUUID();
-const HOLDER = 't-rev/worker';
+/**
+ * A token name and the holder string built from it, kept apart on purpose.
+ *
+ * `auth.ts` builds a holder as `agent:<token name>`, so a fixture that used one
+ * string for both would join them together in a way production never does — and
+ * that is exactly what hid a join here that matched nothing at all.
+ */
+const TOKEN_NAME = 't-rev/worker';
+const HOLDER = `agent:${TOKEN_NAME}`;
 
 const STATES: State[] = [
   { id: 'backlog', name: 'Backlog', group: 'backlog', default: true },
@@ -97,19 +105,19 @@ const stateOf = async (workItemId: string) => {
 
 beforeEach(async () => {
   await pool.query('truncate lease');
-  await pool.query("delete from agent_token where name = $1", [HOLDER]);
+  await pool.query('delete from agent_token where name = $1', [TOKEN_NAME]);
   // The agent's Plane identity is what an assignee list is checked against.
   await pool.query(
     `insert into agent_token (name, token_sha256, capabilities, plane_user_id, principal)
      values ($1, $2, '{}', $3, 'human:me@example.com')
      on conflict (name) do update set plane_user_id = excluded.plane_user_id`,
-    [HOLDER, randomUUID().replace(/-/g, ''), AGENT_USER],
+    [TOKEN_NAME, randomUUID().replace(/-/g, ''), AGENT_USER],
   );
 });
 
 afterAll(async () => {
   await pool.query('truncate lease');
-  await pool.query('delete from agent_token where name = $1', [HOLDER]);
+  await pool.query('delete from agent_token where name = $1', [TOKEN_NAME]);
   await pool.end();
 });
 
@@ -226,7 +234,7 @@ describe('what must never revoke', () => {
 
   it('does not revoke an agent with no Plane identity of its own', async () => {
     // There is no id to look for, so every listing would read as a revocation.
-    await pool.query('update agent_token set plane_user_id = null where name = $1', [HOLDER]);
+    await pool.query('update agent_token set plane_user_id = null where name = $1', [TOKEN_NAME]);
     const id = await heldItem();
     await reconcileLeases(fakePlane([item(id, { assignees: [SOMEONE_ELSE] })]), pool);
     expect((await stateOf(id)).state).toBe('held');

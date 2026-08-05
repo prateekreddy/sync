@@ -6,6 +6,7 @@ import { GatewayError } from './errors.js';
 import { resolveLabels } from './labels.js';
 import type { PlaneClient } from './plane.js';
 import { escapeHtml } from './html.js';
+import { readableId } from './view.js';
 
 /**
  * Capture — the write-first primitive.
@@ -328,7 +329,7 @@ export async function capture(
     ];
     result = {
       workItemId: dupe.id,
-      readableId: `${dupe.project__identifier}-${dupe.sequence_id}`,
+      readableId: readableId(dupe.sequence_id, dupe.project__identifier),
       title: dupe.name,
       deduped: true,
       replayed: false,
@@ -350,6 +351,7 @@ export async function capture(
     // orphan, below, because that is a stated intention rather than an inference.
     const parent = await inheritParent(plane, input, source);
 
+    const identifier = plane.identifierFor(input.projectId);
     const created = await plane.createWorkItem(input.projectId, {
       name: input.title,
       description_html: `<p>${escapeHtml(input.body)}</p>`,
@@ -368,7 +370,7 @@ export async function capture(
     });
     result = {
       workItemId: created.id,
-      readableId: `#${created.sequence_id}`,
+      readableId: readableId(created.sequence_id, identifier),
       title: created.name,
       deduped: false,
       replayed: false,

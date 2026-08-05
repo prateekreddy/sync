@@ -1,0 +1,28 @@
+-- ---------------------------------------------------------------------------
+-- The assignment record the lease already was.
+--
+-- `assignment_write` existed to answer one question: is the name on this item in
+-- Plane one a person put there, or one we put there ourselves on a claim? The
+-- gate needs it, because without it every item any agent has ever claimed reads
+-- as assigned-by-a-human and is withheld forever.
+--
+-- It answered it by keeping a second copy of something the lease already knows,
+-- and keeping the copy correct by hand: the row was deleted after the Plane
+-- clear succeeded and deliberately not before, so a process that died between
+-- the two left the copy wrong in the direction that freezes an item.
+--
+-- The lease answers it directly, because a person never takes one. `held` means
+-- we set the assignee on the claim. `mirrored = false` or a queued
+-- `pending_mirror` means we owe Plane a clear that has not landed, so the name
+-- on the item is residue rather than intent. Anything else is a person's.
+--
+-- Note the second half only became expressible in 010: before the mirror had a
+-- real outbox, "we owe Plane a write" was recorded nowhere, and this table was
+-- standing in for it.
+--
+-- Nothing is lost by dropping it. Every fact it held is derivable from `lease`,
+-- which keeps one permanent row per work item, so the gate answers the same
+-- questions the same way the moment this runs.
+-- ---------------------------------------------------------------------------
+
+drop table if exists assignment_write;

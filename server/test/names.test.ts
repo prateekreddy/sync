@@ -38,6 +38,7 @@ const ITEM_12 = uuid(41);
 const STRANGER = uuid(99);
 
 interface Fake {
+  identifierFor?: unknown;
   states?: unknown;
   labels?: unknown;
   members?: unknown;
@@ -82,6 +83,7 @@ function fakePlane(over: Fake = {}): PlaneClient {
         [ITEM_12, 12],
       ]);
     },
+    identifierFor: () => 'SYNC',
     projectIdentifier: async () => 'SYNC',
     ...over,
   } as unknown as PlaneClient;
@@ -117,6 +119,27 @@ describe('a response an agent can read', () => {
     const out = (await resolveNames(book(), ITEM, PROJECT)) as Record<string, unknown>;
     expect(out['project_id']).toBe(PROJECT);
     expect(out['id']).toBe(ITEM_42);
+  });
+
+  it('adds a readable id beside the uuid instead of replacing it', async () => {
+    // Deliberately not symmetric with `parent`. A field naming another item
+    // carries nothing else about it, so a uuid there is unusable and there is
+    // nowhere to put a second spelling. A row's own id sits next to its own
+    // number, so the readable form can be added without taking away the handle
+    // every tool, lease row and URL is keyed on.
+    const out = (await resolveNames(book(), ITEM, PROJECT)) as Record<string, unknown>;
+    expect(out['id']).toBe(ITEM_42);
+    expect(out['readableId']).toBe('SYNC-42');
+  });
+
+  it('does not invent one for rows that are not work items', async () => {
+    // Labels, states and cycles have an `id` too. `sequence_id` is what says a
+    // row is a work item.
+    const out = (await resolveNames(book(), { id: BACKEND, name: 'backend' }, PROJECT)) as Record<
+      string,
+      unknown
+    >;
+    expect(out).toEqual({ id: BACKEND, name: 'backend' });
   });
 
   it('resolves every row of a paginated listing', async () => {
@@ -208,6 +231,20 @@ describe('and write back what it read', () => {
       const out = await resolveIds(book(), { parent: written }, PROJECT);
       expect(out['parent']).toBe(ITEM_12);
     }
+  });
+
+  it('takes a readable id where our own tools take a work item', async () => {
+    // The other half of handing back `readableId`: an id read from a Plane tool
+    // has to be usable in claim without a translation step the agent is expected
+    // to know about.
+    const out = await resolveIds(
+      book(),
+      { workItemId: 'SYNC-42', parentId: 'SYNC-12', projectId: PROJECT },
+      PROJECT,
+    );
+    expect(out['workItemId']).toBe(ITEM_42);
+    expect(out['parentId']).toBe(ITEM_12);
+    expect(out['projectId']).toBe(PROJECT);
   });
 
   it('passes a uuid through untouched', async () => {

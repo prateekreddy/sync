@@ -30,6 +30,7 @@
 import { GatewayError } from './errors.js';
 import { log } from './log.js';
 import type { PlaneClient } from './plane.js';
+import { readableId } from './view.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -58,8 +59,19 @@ const FIELD_KIND: Record<string, Kind> = {
   label_ids: 'label',
   assignees: 'member',
   assignee_ids: 'member',
+  // Fields that name *another* work item. These resolve to the readable id in
+  // both directions — see the note on `readableId` below for why a row's own id
+  // is treated differently.
   parent: 'item',
   parent_id: 'item',
+  issue_id: 'item',
+  issues: 'item',
+  // Our own tools' spellings, so an id read from a Plane tool can be handed
+  // straight to claim.
+  workItemId: 'item',
+  workItemIds: 'item',
+  parentId: 'item',
+  discoveredFrom: 'item',
 };
 
 /** How deep to walk. Plane's payloads are shallow; this only bounds a cycle. */
@@ -116,6 +128,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
  */
 export class NameBook {
   private tables = new Map<string, Promise<Entry[]>>();
+  private identifiers = new Map<string, Promise<string | undefined>>();
 
   constructor(private readonly plane: PlaneClient) {}
 
@@ -150,13 +163,34 @@ export class NameBook {
       // Absent only if the project read fails; `#42` is still better than a uuid
       // and still round-trips, so a missing identifier degrades rather than
       // disables.
-      this.plane.projectIdentifier(projectId).catch(() => undefined),
+      this.identifier(projectId),
     ]);
     return [...sequences].map(([id, sequence]) => ({
       id,
-      name: identifier ? `${identifier}-${sequence}` : `#${sequence}`,
+      name: readableId(sequence, identifier),
       sequence,
     }));
+  }
+
+  /**
+   * A project's identifier, from cache when possible.
+   *
+   * Memoised per book so a hundred-row listing asks once. Falls back to a
+   * fetch — permanently cached by the client, since a project's identifier is
+   * fixed at creation — and to nothing at all if that fails, which costs a
+   * `#42` rather than an error.
+   */
+  identifier(projectId: string | null): Promise<string | undefined> {
+    if (!projectId) return Promise.resolve(undefined);
+    let hit = this.identifiers.get(projectId);
+    if (!hit) {
+      const cached = this.plane.identifierFor(projectId);
+      hit = cached
+        ? Promise.resolve(cached)
+        : this.plane.projectIdentifier(projectId).catch(() => undefined);
+      this.identifiers.set(projectId, hit);
+    }
+    return hit;
   }
 
   /** The name for a uuid, or undefined — an id we cannot explain stays an id. */
@@ -267,6 +301,22 @@ export async function resolveNames(
         continue;
       }
       out[key] = isRecord(v) || Array.isArray(v) ? await walk(v, here, depth + 1) : v;
+    }
+
+    // A work item's own id gets a readable companion rather than being replaced.
+    //
+    // The asymmetry with `parent` above is deliberate. A field that names another
+    // item carries nothing else about it, so a uuid there is unusable and there is
+    // nowhere to put a second spelling without inventing a parallel schema. A
+    // row's own id sits beside its own number, so adding `readableId` loses
+    // nothing — and `id` stays the stable handle that every tool, every lease row
+    // and every URL is keyed on. Both forms are accepted as input, so it does not
+    // matter which one an agent hands back.
+    //
+    // `sequence_id` is what marks a row as a work item; labels, states and cycles
+    // have an `id` too and no number.
+    if (typeof value['sequence_id'] === 'number' && !('readableId' in value)) {
+      out['readableId'] = readableId(value['sequence_id'], await book.identifier(here));
     }
     return out;
   };

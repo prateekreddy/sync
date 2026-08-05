@@ -293,10 +293,31 @@ export class PlaneClient {
    * because they authenticate differently: that one takes a raw Plane token
    * before any agent exists, this one is a method on an already-scoped client.
    */
-  listProjects(): Promise<Array<{ id: string; identifier: string; name: string }>> {
-    return this.listAll<{ id: string; identifier: string; name: string }>(
+  async listProjects(): Promise<Array<{ id: string; identifier: string; name: string }>> {
+    const projects = await this.listAll<{ id: string; identifier: string; name: string }>(
       '/projects/?fields=id,identifier,name',
     );
+    // Free, and it is what makes `identifierFor` answer without a request. The
+    // access check calls this in front of every project-scoped read, so by the
+    // time anything wants to print `SYNC-42` the answer is already here.
+    for (const p of projects) if (p.identifier) this.identifierCache.set(p.id, p.identifier);
+    return projects;
+  }
+
+  /**
+   * A project's identifier if we already know it, and nothing if we do not.
+   *
+   * Deliberately not async and deliberately unable to fetch. It exists for the
+   * display path — turning `42` into `SYNC-42` — and that path must not be able
+   * to make a request. The first version of this called `projectIdentifier()` on
+   * every read, which put a network round trip in front of every board, tree,
+   * briefing and capture to compute a cosmetic string: measured, one test file
+   * went from under a second to 85, with all 17 tests timing out. A read that
+   * cannot reach Plane should print `#42` instantly, not wait out a retry ladder
+   * for a nicer number.
+   */
+  identifierFor(projectId: string): string | undefined {
+    return this.identifierCache.get(projectId);
   }
 
   getWorkItem(projectId: string, id: string): Promise<WorkItem> {

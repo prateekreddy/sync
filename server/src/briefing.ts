@@ -1,5 +1,6 @@
 import type { PlaneClient, RelatedRef } from './plane.js';
 import { plainText } from './textsearch.js';
+import { readableId } from './view.js';
 
 /**
  * Everything an agent needs to start work on an item, handed over with the lease.
@@ -80,6 +81,7 @@ export async function briefing(
   plane: PlaneClient,
   opts: { projectId: string; workItemId: string },
 ): Promise<Briefing> {
+  const identifier = plane.identifierFor(opts.projectId);
   const [item, rel, states, labelNames] = await Promise.all([
     plane.getWorkItem(opts.projectId, opts.workItemId),
     plane.relations(opts.projectId, opts.workItemId).catch(() => null),
@@ -119,7 +121,7 @@ export async function briefing(
         const isDone = closed(linked.state);
         return {
           workItemId: linked.id,
-          readableId: `#${linked.sequence_id}`,
+          readableId: readableId(linked.sequence_id, identifier),
           title: linked.name,
           state: stateNames.get(linked.state) ?? 'unknown',
           done: isDone,
@@ -139,7 +141,7 @@ export async function briefing(
 
   return {
     workItemId: item.id,
-    readableId: `#${item.sequence_id}`,
+    readableId: readableId(item.sequence_id, identifier),
     title: item.name,
     priority: item.priority,
     state: stateNames.get(item.state) ?? 'unknown',

@@ -114,6 +114,11 @@ what you read is what you can write back. Ids still work everywhere they always 
 not exist the call is refused and the alternatives are named; two people sharing a display name are
 refused rather than guessed at, so use the email. Pass `verbose: true` if you ever need the raw ids.
 
+Every work item also carries `readableId` — `SYNC-42`, the id Plane's own UI shows. Use it when you
+write for a human: a uuid in a PR description or a commit message is unusable to them. `id` stays
+the uuid because it is the handle everything is keyed on, but anywhere a work item is *taken* —
+`claim`, `complete`, `parentId`, `issue_id` — either form works.
+
 **`plane_states`** — `list`, `get` freely. Read them to understand a project's workflow. `create`,
 `update` and `delete` need the `destructive` capability you almost certainly do not have, and for
 good reason: the readiness gate reads state *groups*, so removing one strands every item that
