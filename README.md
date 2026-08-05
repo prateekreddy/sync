@@ -448,12 +448,16 @@ docker run -d --name sync-test-db -p 127.0.0.1:15432:5432 \
 docker cp server/migrations sync-test-db:/migrations
 docker exec -e PGPASSWORD=plane sync-test-db \
   psql -h /var/run/postgresql -U plane -d postgres -f /migrations/000_bootstrap.sql
-for f in 001_init 002_agent_default_project 003_oauth_client \
-         004_attestation 005_citation 006_relation_retraction; do
+for f in server/migrations/0*.sql; do
+  b=$(basename "$f" .sql); [ "$b" = 000_bootstrap ] && continue
   docker exec -e PGPASSWORD=agent_gw_dev sync-test-db \
-    psql -h /var/run/postgresql -U agent_gw -d gateway -v ON_ERROR_STOP=1 -f "/migrations/$f.sql"
+    psql -h /var/run/postgresql -U agent_gw -d gateway -v ON_ERROR_STOP=1 -f "/migrations/$b.sql"
 done
 ```
+
+The loop globs rather than listing the files: the list here was hardcoded and had
+already gone stale by two migrations, which fails as a missing table three
+commands later rather than as a missing file.
 
 `POSTGRES_DB=plane` is not decoration: `000_bootstrap.sql` revokes `CONNECT` on
 Plane's own database, and fails if there is no such database to revoke it on.

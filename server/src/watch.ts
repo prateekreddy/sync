@@ -62,7 +62,24 @@ export interface WatchState {
   say?: string;
 }
 
-/** Issue a capability for one session. Returns the raw value, once. */
+/**
+ * Issue a capability covering everything one session holds. Returns the raw
+ * value, once.
+ *
+ * The new credential is stamped onto the item just claimed *and* onto every
+ * lease this session already holds, which retires the previous one everywhere.
+ * That is what keeps a session down to exactly one credential.
+ *
+ * Minting per item instead would be quietly broken: `claim` hands the URL back
+ * for a hook to store, and a second claim would overwrite the stored value, so
+ * the monitor could only ever poll the most recent item. The first would stop
+ * being heartbeated and lapse while the agent was still working it — an agent
+ * losing a lease it never let go of, which is the failure this design removes.
+ *
+ * A session id is required for that grouping. Clients that do not report one
+ * fall back to a per-item credential, which is degraded but not wrong: such a
+ * client has no way to hold two leases at once under one monitor anyway.
+ */
 export async function mintWatch(
   pool: Pool,
   args: { sessionId: string | null; workItemId: string },
@@ -72,8 +89,12 @@ export async function mintWatch(
     `update lease
         set watch_sha256     = $2,
             watch_expires_at = now() + make_interval(secs => $3)
-      where work_item_id = $1`,
-    [args.workItemId, sha256(raw), WATCH_TTL_MS / 1000],
+      where work_item_id = $1
+         or ($4::text is not null
+             and session_id = $4
+             and state = 'held'
+             and expires_at > now())`,
+    [args.workItemId, sha256(raw), WATCH_TTL_MS / 1000, args.sessionId],
   );
   return raw;
 }
@@ -119,6 +140,13 @@ export async function pollWatch(
   let stale = false;
 
   for (const row of rows) {
+    // Finished on purpose, by this session. Not a lapse and not a theft, so
+    // neither reinstate it nor cry stale — the agent already knows, and telling
+    // it to "discard that work" after a successful complete would be a lie that
+    // costs real work. Skipped silently; `closeWatch` and the next claim are what
+    // clear the credential.
+    if (row.state === 'completed' || row.state === 'released') continue;
+
     const lapsed = row.state !== 'held' || row.expires_at.getTime() <= Date.now();
     const capped = Date.now() - row.claimed_at.getTime() > MAX_HOLD_MS;
 
@@ -161,6 +189,10 @@ export async function pollWatch(
               end_reason   = null
         where work_item_id = $1
           and watch_sha256 = $3
+          -- Expired or lapsed only. A finished lease is excluded here as well as
+          -- above: this statement is the actual guard, and a reinstate that
+          -- reopened a completed item would be silent and unrecoverable.
+          and state not in ('completed', 'released')
           and (state <> 'held' or expires_at <= now())`,
       [row.work_item_id, EXTEND_S, hash],
     );

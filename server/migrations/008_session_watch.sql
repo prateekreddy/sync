@@ -44,7 +44,14 @@ alter table lease
 
 -- The monitor's lookup, on every poll from every session. Partial because rows
 -- without a credential are the common case and should not be indexed.
-create unique index if not exists lease_watch_idx
+--
+-- Deliberately NOT unique. One credential covers every lease a session holds,
+-- because the session is the unit of liveness: an agent that claims a second
+-- item must not end up with two credentials, of which the monitor can only ever
+-- poll the last one it was handed -- the first item would then stop being
+-- heartbeated and lapse while the agent was actively working it, which is the
+-- exact failure this design exists to remove.
+create index if not exists lease_watch_idx
   on lease (watch_sha256) where watch_sha256 is not null;
 
 -- "What does this session hold" -- asked by the watch endpoint, by the resume
