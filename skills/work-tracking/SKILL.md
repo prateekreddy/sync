@@ -20,8 +20,8 @@ Two halves live on one MCP server. Do not confuse them:
   | `link` `unlink` `constrain` | typed edges; take a blocker back; a requirement on existing work |
   | `held` | what am I holding |
 
-- **Plane's own surface** — 10 tools, grouped by the thing they act on: `cycles`, `modules`,
-  `labels`, `states`, `issue_types`, `worklogs`, `comments`, `issues`, `projects`, `people`. Each
+- **Plane's own surface** — 10 tools, grouped by the thing they act on: `plane_cycles`, `plane_modules`,
+  `plane_labels`, `plane_states`, `plane_issue_types`, `plane_worklogs`, `plane_comments`, `plane_issues`, `plane_projects`, `plane_people`. Each
   takes an `action` (`list`, `get`, `create`, `update`, `delete`, and a few of its own); the tool's
   description lists every action with the arguments it needs. They have **no notion of a lease**.
 

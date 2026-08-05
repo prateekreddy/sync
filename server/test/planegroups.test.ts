@@ -123,7 +123,7 @@ describe('nothing is lost in the grouping', () => {
     // Offering an action that 404s is worse than never mentioning it.
     const trimmed = UPSTREAM_47.filter((n) => n !== 'delete_cycle');
     const tools = await listTools(deps(trimmed));
-    const cycles = tools.find((t) => t.name === 'cycles')!;
+    const cycles = tools.find((t) => t.name === 'plane_cycles')!;
     const actions = (cycles.inputSchema as { properties: { action: { enum: string[] } } })
       .properties.action.enum;
     expect(actions).not.toContain('delete');
@@ -133,14 +133,14 @@ describe('nothing is lost in the grouping', () => {
   it('drops a whole group when this Plane serves none of it', async () => {
     const noWorklogs = UPSTREAM_47.filter((n) => !n.includes('worklog'));
     const names = (await listTools(deps(noWorklogs))).map((t) => t.name);
-    expect(names).not.toContain('worklogs');
-    expect(names).toContain('cycles');
+    expect(names).not.toContain('plane_worklogs');
+    expect(names).toContain('plane_cycles');
   });
 });
 
 describe('resolving a grouped call', () => {
   it('maps an action to the tool it stands for', () => {
-    expect(resolveGroup('cycles', { action: 'create', name: 'Sprint 1' })).toEqual({
+    expect(resolveGroup('plane_cycles', { action: 'create', name: 'Sprint 1' })).toEqual({
       tool: 'create_cycle',
       args: { name: 'Sprint 1' },
     });
@@ -148,7 +148,7 @@ describe('resolving a grouped call', () => {
 
   it('does not forward `action` as an argument', () => {
     // It chose the tool; upstream would reject it as an unknown property.
-    const out = resolveGroup('labels', { action: 'list', project_id: 'p' });
+    const out = resolveGroup('plane_labels', { action: 'list', project_id: 'p' });
     expect(out).toEqual({ tool: 'list_labels', args: { project_id: 'p' } });
   });
 
@@ -157,13 +157,13 @@ describe('resolving a grouped call', () => {
   });
 
   it('names the valid actions when given one that does not exist', () => {
-    const out = resolveGroup('labels', { action: 'archive' }) as { error: string };
+    const out = resolveGroup('plane_labels', { action: 'archive' }) as { error: string };
     expect(out.error).toMatch(/no action "archive"/);
     expect(out.error).toMatch(/list, get, create, update, delete/);
   });
 
   it('asks for an action when none was given', () => {
-    const out = resolveGroup('labels', {}) as { error: string };
+    const out = resolveGroup('plane_labels', {}) as { error: string };
     expect(out.error).toMatch(/needs an action/);
   });
 });
@@ -171,7 +171,7 @@ describe('resolving a grouped call', () => {
 describe('a grouped call reaches the right tool', () => {
   it('forwards to the upstream tool the action named', async () => {
     calls.length = 0;
-    await call('cycles', { action: 'list', project_id: 'p1' });
+    await call('plane_cycles', { action: 'list', project_id: 'p1' });
     expect(calls).toHaveLength(1);
     expect(calls[0]!.tool).toBe('list_cycles');
   });
@@ -187,13 +187,13 @@ describe('a grouped call reaches the right tool', () => {
     // would hand a project to an action that never asked for one, and upstream
     // rejects the call for a field it does not know.
     calls.length = 0;
-    await call('cycles', { action: 'list' });
+    await call('plane_cycles', { action: 'list' });
     expect(calls[0]!.args['project_id']).toBe('default-project');
   });
 
   it('refuses an unknown action without troubling Plane', async () => {
     calls.length = 0;
-    const out = await call('cycles', { action: 'nope' });
+    const out = await call('plane_cycles', { action: 'nope' });
     expect(out.isError).toBe(true);
     expect(calls).toHaveLength(0);
   });
@@ -206,7 +206,7 @@ describe('a group is not a way around the lease', () => {
     // for the one tool that must never be unguarded.
     calls.length = 0;
     await expect(
-      call('issues', {
+      call('plane_issues', {
         action: 'update',
         issue_id: 'not-mine',
         issue_data: { assignees: ['someone'] },
@@ -218,7 +218,7 @@ describe('a group is not a way around the lease', () => {
   it('allows the same edit on an item you do hold', async () => {
     calls.length = 0;
     await call(
-      'issues',
+      'plane_issues',
       { action: 'update', issue_id: 'mine', issue_data: { assignees: ['me'] } },
       deps(UPSTREAM_47, ['mine']),
     );
@@ -227,13 +227,13 @@ describe('a group is not a way around the lease', () => {
 
   it('leaves a harmless edit alone', async () => {
     calls.length = 0;
-    await call('issues', { action: 'update', issue_id: 'any', issue_data: { name: 'retitled' } });
+    await call('plane_issues', { action: 'update', issue_id: 'any', issue_data: { name: 'retitled' } });
     expect(calls[0]!.tool).toBe('update_issue');
   });
 
   it('keeps the destructive-capability check on a grouped delete', async () => {
     calls.length = 0;
-    await expect(call('states', { action: 'delete', state_id: 's1' })).rejects.toMatchObject({
+    await expect(call('plane_states', { action: 'delete', state_id: 's1' })).rejects.toMatchObject({
       code: 'FORBIDDEN',
     });
     expect(calls).toHaveLength(0);
@@ -245,14 +245,14 @@ describe('what the model is told about a group', () => {
     // The schema cannot say "these fields when action=create"; the description
     // has to, or the union of properties is a guessing game.
     const tools = await listTools(deps());
-    const cycles = tools.find((t) => t.name === 'cycles')!;
+    const cycles = tools.find((t) => t.name === 'plane_cycles')!;
     expect(cycles.description).toMatch(/create — /);
     expect(cycles.description).toMatch(/project_id/);
   });
 
   it('requires the action and nothing else', async () => {
     const tools = await listTools(deps());
-    const schema = tools.find((t) => t.name === 'labels')!.inputSchema as {
+    const schema = tools.find((t) => t.name === 'plane_labels')!.inputSchema as {
       required: string[];
       properties: Record<string, unknown>;
     };
@@ -269,6 +269,70 @@ describe('what the model is told about a group', () => {
       expect(schema.properties).toHaveProperty('fields');
       expect(schema.properties).toHaveProperty('verbose');
     }
+  });
+
+  it('says which actions each field belongs to', async () => {
+    // A union of properties with only `action` required is otherwise a guessing
+    // game: the model can see `issue_id` exists but not that `create` ignores it.
+    // Anthropic's tool guidance warns against exactly this — a schema loose
+    // enough to be a free-form blob — and the answer belongs on the field, where
+    // the model is already looking when it fills it in.
+    // Schemas that differ per action, as Plane's really do — the shared fixture
+    // gives every tool the same one, which would make "every action" trivially
+    // true and prove nothing.
+    const varied = {
+      app: { log: { warn: vi.fn(), error: vi.fn() } },
+      pool: {},
+      plane: {
+        tools: async () => [
+          {
+            name: 'list_cycles',
+            description: 'l',
+            inputSchema: {
+              type: 'object',
+              properties: { project_id: { type: 'string' } },
+              required: ['project_id'],
+            },
+          },
+          {
+            name: 'delete_cycle',
+            description: 'd',
+            inputSchema: {
+              type: 'object',
+              properties: { project_id: { type: 'string' }, cycle_id: { type: 'string' } },
+              required: ['project_id', 'cycle_id'],
+            },
+          },
+        ],
+      },
+    } as unknown as ToolDeps;
+
+    const tools = await listTools(varied);
+    const schema = tools.find((t) => t.name === 'plane_cycles')!.inputSchema as {
+      properties: Record<string, { description?: string }>;
+    };
+    // Shared by both actions, and required by both.
+    expect(schema.properties['project_id']!.description).toMatch(/required by every action/i);
+    // Belongs to one action only, and the field says which.
+    expect(schema.properties['cycle_id']!.description).toMatch(/delete/);
+    expect(schema.properties['cycle_id']!.description).not.toMatch(/every action/);
+  });
+
+  it('marks Plane\'s half with a prefix, because the two halves are not alike', async () => {
+    // These do not understand the lease and the coordination tools do. The
+    // mistake that costs something is reaching for plane_issues/update instead of
+    // complete, so the warning belongs in the name, at the moment of choosing.
+    const names = (await listTools(deps())).map((t) => t.name);
+    const proxied = names.filter((n) => !NATIVE_TOOLS.some((t) => t.name === n));
+    expect(proxied.every((n) => n.startsWith('plane_'))).toBe(true);
+    expect(NATIVE_TOOLS.every((t) => !t.name.startsWith('plane_'))).toBe(true);
+  });
+
+  it('points the agent back at claim and capture from the tool it might misuse', async () => {
+    const tools = await listTools(deps());
+    const issues = tools.find((t) => t.name === 'plane_issues')!;
+    expect(issues.description).toMatch(/claim/);
+    expect(issues.description).toMatch(/capture/);
   });
 
   it('never lets a group shadow a coordination tool', async () => {

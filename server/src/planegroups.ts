@@ -12,6 +12,14 @@
  * that is how the question arrives: an agent knows it wants to do something with
  * a cycle before it knows whether that is a create or an update.
  *
+ * The `plane_` prefix is doing real work rather than tidying. This server serves
+ * two halves that look alike and behave completely differently: the coordination
+ * tools understand the lease, and these do not. The mistake that costs something
+ * is reaching for `plane_issues` with action `update` instead of `complete`, and
+ * a prefix puts the warning at the moment of choosing rather than in a document
+ * read earlier, if at all. Grouping under a prefix by service or resource is also
+ * what Anthropic's tool-design guidance recommends.
+ *
  * This is a presentation layer and nothing more. Each grouped call resolves to
  * exactly one upstream tool and is forwarded unchanged, so Plane remains the only
  * thing that validates or executes. The raw names stay callable too — they are
@@ -42,7 +50,7 @@ export interface PlaneGroup {
  */
 export const PLANE_GROUPS: PlaneGroup[] = [
   {
-    name: 'cycles',
+    name: 'plane_cycles',
     summary: "Time-boxed iterations. Use to see what is in the current cycle, or to move work between cycles.",
     actions: {
       list: 'list_cycles',
@@ -57,7 +65,7 @@ export const PLANE_GROUPS: PlaneGroup[] = [
     },
   },
   {
-    name: 'modules',
+    name: 'plane_modules',
     summary: 'Features or workstreams — the epic layer. One flat level; modules do not nest.',
     actions: {
       list: 'list_modules',
@@ -71,7 +79,7 @@ export const PLANE_GROUPS: PlaneGroup[] = [
     },
   },
   {
-    name: 'labels',
+    name: 'plane_labels',
     summary: 'Cross-cutting dimensions on work items: area, capability, risk.',
     actions: {
       list: 'list_labels',
@@ -82,7 +90,7 @@ export const PLANE_GROUPS: PlaneGroup[] = [
     },
   },
   {
-    name: 'states',
+    name: 'plane_states',
     summary: "A project's workflow columns (Backlog, In Progress, Done) and their groups.",
     actions: {
       list: 'list_states',
@@ -93,7 +101,7 @@ export const PLANE_GROUPS: PlaneGroup[] = [
     },
   },
   {
-    name: 'issue_types',
+    name: 'plane_issue_types',
     summary: "A project's own taxonomy — bug, task, spike. Prefer these over encoding the kind in a title.",
     actions: {
       list: 'list_issue_types',
@@ -104,7 +112,7 @@ export const PLANE_GROUPS: PlaneGroup[] = [
     },
   },
   {
-    name: 'worklogs',
+    name: 'plane_worklogs',
     summary: 'Effort recorded against a work item. The only way anyone learns what this class of work costs.',
     actions: {
       list: 'get_issue_worklogs',
@@ -115,7 +123,7 @@ export const PLANE_GROUPS: PlaneGroup[] = [
     },
   },
   {
-    name: 'comments',
+    name: 'plane_comments',
     summary: 'The discussion on a work item. Where a human looks to find out what happened and why.',
     actions: {
       list: 'get_issue_comments',
@@ -123,7 +131,7 @@ export const PLANE_GROUPS: PlaneGroup[] = [
     },
   },
   {
-    name: 'issues',
+    name: 'plane_issues',
     summary:
       'Plane work items directly. For taking work use claim; for writing something down use capture — ' +
       'both do more than these and neither can be replaced by them.',
@@ -135,7 +143,7 @@ export const PLANE_GROUPS: PlaneGroup[] = [
     },
   },
   {
-    name: 'projects',
+    name: 'plane_projects',
     summary: 'Projects in this workspace.',
     actions: {
       list: 'get_projects',
@@ -143,7 +151,7 @@ export const PLANE_GROUPS: PlaneGroup[] = [
     },
   },
   {
-    name: 'people',
+    name: 'plane_people',
     summary: 'Who you are authenticated as, and who else is in the workspace.',
     actions: {
       me: 'get_user',
@@ -219,13 +227,41 @@ export function groupSchema(group: PlaneGroup, upstream: Map<string, unknown>): 
     },
   };
 
-  for (const toolName of Object.values(group.actions)) {
+  // Which actions each field belongs to, and which of those require it. A union
+  // of properties with only `action` required is otherwise a guessing game: the
+  // model can see that `cycle_id` exists but not that it means nothing to
+  // `create`. Saying so on the field itself puts the answer where the model is
+  // already looking when it fills the field in.
+  const usedBy = new Map<string, string[]>();
+  const requiredBy = new Map<string, string[]>();
+
+  for (const [action, toolName] of Object.entries(group.actions)) {
     const schema = asSchema(upstream.get(toolName));
+    const required = new Set(schema.required ?? []);
     for (const [key, value] of Object.entries(schema.properties ?? {})) {
       // First definition wins: the same field means the same thing across a
       // group's actions, and the earliest action is the most commonly used one.
       if (!(key in properties)) properties[key] = value;
+      usedBy.set(key, [...(usedBy.get(key) ?? []), action]);
+      if (required.has(key)) requiredBy.set(key, [...(requiredBy.get(key) ?? []), action]);
     }
+  }
+
+  const total = Object.keys(group.actions).length;
+  for (const [key, actions] of usedBy) {
+    const base = asSchema(properties[key]);
+    const req = requiredBy.get(key) ?? [];
+    const scope = actions.length === total ? 'every action' : `${actions.join(', ')}`;
+    const note =
+      req.length === actions.length
+        ? `Required by ${scope}.`
+        : req.length
+          ? `Used by ${scope}; required by ${req.join(', ')}.`
+          : `Optional, for ${scope}.`;
+    properties[key] = {
+      ...base,
+      description: base.description ? `${String(base.description)} ${note}` : note,
+    };
   }
 
   return { type: 'object', properties, required: ['action'] };

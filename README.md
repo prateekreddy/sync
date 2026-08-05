@@ -260,8 +260,8 @@ history   → has this been attempted? (claims, expiries, how it ended)
 
 **Plane's — everything else.** The gateway runs Plane's official
 `@makeplane/plane-mcp-server` and re-exports its 47 tools as **10**, grouped by the
-thing they act on: `cycles`, `modules`, `labels`, `states`, `issue_types`,
-`worklogs`, `comments`, `issues`, `projects`, `people`. Each takes an `action`.
+thing they act on: `plane_cycles`, `plane_modules`, `plane_labels`, `plane_states`, `plane_issue_types`,
+`plane_worklogs`, `plane_comments`, `plane_issues`, `plane_projects`, `plane_people`. Each takes an `action`.
 
 One tool per REST endpoint is the right shape for an API and the wrong one for a
 tool list: the list is what the model reads to work out what it can do, and 47

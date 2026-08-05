@@ -27,7 +27,7 @@ epic comes from sub-items, which do nest and which the readiness gate understand
 threshold: would a human ask "how far along is *that*?" as a question in its own right, over weeks
 rather than hours? If not, it is a parent work item with sub-items, or just a label. Forty modules
 is not an epic layer — it is a second copy of the backlog with worse tooling, and it makes the
-progress rollup that justifies modules meaningless. Check `list_modules` before creating one; a
+progress rollup that justifies modules meaningless. Check `plane_modules` (`list`) before creating one; a
 near-duplicate module is worse than none.
 
 **Modules and labels are orthogonal, and that is the point.** An item sits in exactly one module and
@@ -82,20 +82,20 @@ Each of these takes an `action`. The tool's own description lists every action i
 arguments each one needs, so read that rather than guessing — what follows is when to reach for
 them, not their signatures.
 
-**`comments`** — `list`, `add`. Put the reasoning where the work is. A decision, a dead end, a
+**`plane_comments`** — `list`, `add`. Put the reasoning where the work is. A decision, a dead end, a
 measurement, a question for the human: comment on the item rather than letting it evaporate with
 your context. Read the comments before starting — someone may have already tried your first idea.
 
-**`cycles`** (sprints) — `list`, `get`, `create`, `update`, `delete`, `list_issues`, `add_issues`,
+**`plane_cycles`** (sprints) — `list`, `get`, `create`, `update`, `delete`, `list_issues`, `add_issues`,
 `remove_issue`, `transfer_issues`. There is no "current cycle" action: `list` them and pick by date.
 Add what you claim to the active cycle so the humans' board shows reality, and use
 `transfer_issues` to move unfinished work forward rather than leaving it stranded in a closed cycle.
 
-**`modules`** (features / epics) — same actions as cycles, minus the transfer. Group a body of
+**`plane_modules`** (features / epics) — same actions as cycles, minus the transfer. Group a body of
 related work under a module before you fan it out into sub-items; it is how anyone later answers
 "how far along is this feature?".
 
-**`labels`** — `list`, `get`, `create`, `update`, `delete`. Labels are routing, and the most
+**`plane_labels`** — `list`, `get`, `create`, `update`, `delete`. Labels are routing, and the most
 under-used surface here. Reuse what exists (`list` first — a near-duplicate label is worse than
 none). Four are load-bearing: `needs-human`, `needs-refinement`, `blocked`, `wontfix` make an item
 unclaimable. A token's `capabilities` are matched against label names too, so labels are how work
@@ -106,25 +106,25 @@ labelling costs nothing. A name one character from a load-bearing label (`needs-
 is refused rather than created — that failure would be silent, withholding nothing while looking
 right. Plane's own tools still take uuids; only `capture` resolves names.
 
-**`states`** — `list`, `get` freely. Read them to understand a project's workflow. `create`,
+**`plane_states`** — `list`, `get` freely. Read them to understand a project's workflow. `create`,
 `update` and `delete` need the `destructive` capability you almost certainly do not have, and for
 good reason: the readiness gate reads state *groups*, so removing one strands every item that
 referenced it.
 
-**`issue_types`** — `list`, `get`, `create`, `update`, `delete`. Use the project's own taxonomy
+**`plane_issue_types`** — `list`, `get`, `create`, `update`, `delete`. Use the project's own taxonomy
 (bug / task / spike) rather than encoding it in the title.
 
-**`worklogs`** — `list`, `total`, `create`, `update`, `delete`. Log the real effort when you
+**`plane_worklogs`** — `list`, `total`, `create`, `update`, `delete`. Log the real effort when you
 complete. It is the only way anyone ever learns what this class of work actually costs, and
 estimates without it are folklore.
 
-**`issues`** — `get_by_identifier` resolves a human's "PROJ-142" to the real item; do that instead
+**`plane_issues`** — `get_by_identifier` resolves a human's "PROJ-142" to the real item; do that instead
 of guessing from a title. Also `list`, `create`, `update`. For *taking* work use `claim` and for
 writing something down use `capture` — both do more than these, and neither can be replaced by
 them. `update` cannot set `assignees` or `state` on an item you do not hold; that would bypass the
 lease.
 
-**`projects`** — `list`, `create`. **`people`** — `me`, `members`.
+**`plane_projects`** — `list`, `create`. **`plane_people`** — `me`, `members`.
 
 A good claimed-work rhythm: claim → comment what you intend → add to the current cycle/module →
 work → comment anything a human would want to know → `complete` with evidence → worklog. And
