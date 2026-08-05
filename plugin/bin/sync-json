@@ -54,6 +54,15 @@ try:
 except Exception:
     pass
 ' "$path" 2>/dev/null
+else
+  # Nothing to parse JSON with. This is the one case that must NOT be quiet:
+  # every caller here treats an empty answer as "the field was absent", so
+  # staying silent would disable the push fence and the session bracket while
+  # both still looked healthy. That is precisely the failure this project keeps
+  # finding -- a mechanism that is documented as working and is not running.
+  echo "sync: cannot parse JSON — install jq (brew install jq / apt-get install jq)." >&2
+  echo "sync: the push fence and session tracking are DISABLED until you do." >&2
+  exit 3
 fi
 
 exit 0

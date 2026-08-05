@@ -13,6 +13,14 @@
     ],
     "SessionStart": [
       {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/sync-session preflight"
+          }
+        ]
+      },
+      {
         "matcher": "resume|compact|fork",
         "hooks": [
           {

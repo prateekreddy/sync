@@ -26,8 +26,11 @@ mkdir -p "$STATE_DIR" 2>/dev/null || true
 input=$(cat 2>/dev/null || true)
 # Portable across jq / node / python3 -- see bin/sync-json. No hard dependency,
 # because a missing helper would disable the fence silently.
-jqr() { printf '%s' "$input" | "$(dirname "$0")/sync-json" "$1"; }
-get() { printf '%s' "$1" | "$(dirname "$0")/sync-json" "$2"; }
+# Quiet on purpose: `preflight` is the one place that reports a missing parser,
+# once per session. Letting every hook invocation shout would be noise people
+# learn to scroll past, which is how a real warning gets missed.
+jqr() { printf '%s' "$input" | "$(dirname "$0")/sync-json" "$1" 2>/dev/null; }
+get() { printf '%s' "$1" | "$(dirname "$0")/sync-json" "$2" 2>/dev/null; }
 
 SESSION=$(jqr '.session_id')
 case "$SESSION" in
@@ -36,6 +39,17 @@ esac
 WATCH_FILE="$STATE_DIR/$SESSION.watch"
 
 case "$CMD" in
+  preflight)
+    # Checked once per session rather than per hook. A missing parser makes the
+    # fence and the session bracket inert, and an inert guard that nobody knows
+    # is inert is worse than no guard -- you push stale work believing something
+    # checked it.
+    if ! printf '{"ok":1}' | "$(dirname "$0")/sync-json" ok >/dev/null 2>&1; then
+      echo "sync is degraded: no JSON parser found, so the push fence and session tracking are OFF."
+      echo "Install jq to restore them:  brew install jq   |   apt-get install -y jq"
+    fi
+    ;;
+
   harvest)
     # `claim` is the one call an agent must make, so it is the one place a
     # credential can be handed over without adding an obligation. The model never
