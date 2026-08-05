@@ -6,6 +6,7 @@ import {
   principalPlaneUser,
   recordAssignment,
 } from './assignment.js';
+import { GatewayError } from './errors.js';
 import { UNVERIFIED_LABEL } from './evidence.js';
 import { resolveLabels } from './labels.js';
 import { log } from './log.js';
@@ -15,12 +16,22 @@ import type { PlaneClient } from './plane.js';
  * Reflects lease state into Plane so humans watching a board see what agents are
  * doing.
  *
- * Explicitly best-effort. The lease row is the commit point; if a mirror write
- * fails, the lease still stands and `mirrored = false` leaves it on the sweeper's
- * retry queue. There is deliberately no distributed transaction between the
- * gateway and Plane -- the gateway is authoritative for *who holds what*, Plane
- * for *what it is*, and the mirror only has to be fast enough for a human to
- * watch.
+ * Best-effort everywhere except one place. For completion and return the lease
+ * row is the commit point: if a mirror write fails the lease still stands, and
+ * `mirrored = false` leaves it on the retry queue. There is deliberately no
+ * distributed transaction between the gateway and Plane -- the gateway is
+ * authoritative for *who holds what*, Plane for *what it is*.
+ *
+ * `mirrorClaim` is the exception, and it earns it. A claim exists to tell people
+ * the work is taken; a claim that Plane never heard about is a lease held where
+ * nobody can see it, so the board offers the item to the next agent and two of
+ * them do the same work. That is the failure this project exists to prevent, so
+ * the claim waits for Plane and is given back if Plane will not take it.
+ *
+ * The cost is honest: claiming is now as available as Plane is. That is the right
+ * trade only for claim, and only for the write that makes the claim *visible* --
+ * the comment that follows is still best-effort, because losing the annotation
+ * costs a note while losing the assignment costs duplicated work.
  */
 
 /**
@@ -50,11 +61,18 @@ function serial(workItemId: string, fn: () => Promise<void>): Promise<void> {
   const prev = chains.get(workItemId) ?? Promise.resolve();
   const next = prev.then(fn, fn); // a failed predecessor must not block the rest
   chains.set(workItemId, next);
-  void next.finally(() => {
-    // Only the tail clears the entry, or a slow early write would drop a chain
-    // that later calls are still queued behind.
-    if (chains.get(workItemId) === next) chains.delete(workItemId);
-  });
+  void next
+    .finally(() => {
+      // Only the tail clears the entry, or a slow early write would drop a chain
+      // that later calls are still queued behind.
+      if (chains.get(workItemId) === next) chains.delete(workItemId);
+    })
+    // The cleanup is a second branch off `next`, so a rejection travels down it
+    // as well as to the caller. Nobody is listening on this one, and since
+    // `mirrorClaim` began throwing to trigger a rollback that surfaces as an
+    // unhandled rejection -- which newer Node treats as fatal. The caller still
+    // gets the error through the returned promise; this only silences the copy.
+    .catch(() => {});
   return next;
 }
 
@@ -135,21 +153,54 @@ export async function mirrorClaim(
   },
 ): Promise<void> {
   return serial(args.workItemId, async () => {
+    // Already reflected, so there is nothing to do and a second comment would be
+    // noise on an item a human reads. This covers a re-sent claim, and also two
+    // copies of one arriving together: the serial chain makes the second wait for
+    // the first, and it then finds the work done.
+    const { rows } = await pool.query<{ mirrored: boolean }>(
+      'select mirrored from lease where work_item_id = $1 and epoch = $2',
+      [args.workItemId, args.epoch],
+    );
+    if (rows[0]?.mirrored) return;
+
+    // `members` is best-effort by contract and returns empty rather than throwing.
+    const members = args.takeover ? await plane.members() : [];
+    const assignee = args.takeover
+      ? (principalPlaneUser(args.actor, members) ?? args.actor.planeUserId)
+      : args.actor.planeUserId;
+
+    // ── the visible fact ────────────────────────────────────────────────────
+    // The only part allowed to fail the claim. If this does not land, the board
+    // shows the item as free while an agent works it, which is precisely the
+    // collision this project exists to prevent — better to hand the lease back
+    // and say so than to hold work nobody can see.
     try {
-      const members = args.takeover ? await plane.members() : [];
-      const assignee = args.takeover
-        ? (principalPlaneUser(args.actor, members) ?? args.actor.planeUserId)
-        : args.actor.planeUserId;
       const started = await plane.stateByGroup(args.projectId, 'started');
       await plane.updateWorkItem(args.projectId, args.workItemId, {
         ...(started ? { state: started.id } : {}),
         ...(assignee ? { assignees: [assignee] } : {}),
       });
+    } catch (err) {
+      log.warn({ err, workItemId: args.workItemId, op: 'claim' }, 'plane mirror failed');
+      throw new GatewayError(
+        'UPSTREAM',
+        'Plane would not accept the claim, so the lease was handed back rather than held where nobody can see it.',
+        { workItemId: args.workItemId },
+      );
+    }
+
+    // ── past the commit point ───────────────────────────────────────────────
+    // Nothing below may throw. The claim is now visible in Plane, so failing the
+    // request here would roll back a lease while leaving the item showing as
+    // assigned and started — the inconsistency this whole change is removing,
+    // with the two halves swapped.
+    try {
       // Recorded only after Plane accepted the write, and recorded at all so the
       // gate can later tell this name from one a person put there. Without it,
       // every item any agent has ever claimed reads as assigned-by-a-human — see
       // assignment.ts.
       if (assignee) await recordAssignment(pool, args.workItemId, assignee, args.epoch);
+      await pool.query('update lease set mirrored = true where work_item_id = $1', [args.workItemId]);
       await plane.comment(
         args.projectId,
         args.workItemId,
@@ -165,12 +216,9 @@ export async function mirrorClaim(
               : ''),
         ),
       );
-      await pool.query('update lease set mirrored = true where work_item_id = $1', [args.workItemId]);
     } catch (err) {
-      // Never fail the claim over this: the agent already legitimately holds the
-      // item. But say so — a mirror that fails silently leaves the board showing
-      // work as unclaimed while an agent is busy on it.
-      log.warn({ err, workItemId: args.workItemId, op: 'claim' }, 'plane mirror failed');
+      // The claim stands and is visible; only the annotation is missing.
+      log.warn({ err, workItemId: args.workItemId, op: 'claim' }, 'plane claim note failed');
     }
   });
 }

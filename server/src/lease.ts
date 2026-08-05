@@ -13,6 +13,16 @@ export interface Lease {
   claimedAt: Date;
   expiresAt: Date;
   heartbeatAt: Date;
+  /**
+   * This claim was already held by the same session -- a re-sent request rather
+   * than a new grant.
+   *
+   * Set only by `retryOf`, and never read back from the database, because it is a
+   * fact about *this call* and not about the lease. The caller needs it to avoid
+   * mirroring twice, which would put a second "Claimed" comment on an item a
+   * human is reading.
+   */
+  retried?: boolean;
 }
 
 interface Row {
@@ -157,7 +167,43 @@ async function retryOf(pool: Pool, opts: ClaimOpts): Promise<Lease | null> {
   // epoch would invalidate work the agent has already done under it, and moving
   // claimed_at would push out the maximum-hold ceiling, so an agent that retried
   // often enough could hold an item indefinitely.
-  return rows[0] ? toLease(rows[0]) : null;
+  return rows[0] ? { ...toLease(rows[0]), retried: true } : null;
+}
+
+/**
+ * Undo a claim whose mirror into Plane failed.
+ *
+ * The claim is only useful if a human can see it. An agent holding a lease that
+ * Plane shows as free is the communication gap this project exists to close: the
+ * board says the work is available, someone picks it up, and two people do it.
+ * So when the write to Plane fails the lease is given back rather than kept.
+ *
+ * Guarded on holder and epoch so this can only ever retract the claim it was
+ * asked about. Without that, a rollback arriving late -- after the lease had
+ * lapsed and been taken by somebody else -- would release the new holder's lease
+ * out from under them.
+ *
+ * `mirrored` is left true on purpose. It means "Plane is up to date with this
+ * lease", and it is: the claim never reached Plane and the lease is now over, so
+ * Plane showing nothing is correct. Marking it false would queue a pointless
+ * retry to undo a write that never happened.
+ */
+export async function rollbackClaim(
+  pool: Pool,
+  opts: { workItemId: string; holder: string; epoch: number },
+): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `update lease
+        set state        = 'released',
+            ended_at     = now(),
+            expires_at   = now(),
+            end_reason   = 'claim rolled back: Plane would not accept the write',
+            mirrored     = true,
+            watch_sha256 = null
+      where work_item_id = $1 and holder = $2 and epoch = $3 and state = 'held'`,
+    [opts.workItemId, opts.holder, opts.epoch],
+  );
+  return (rowCount ?? 0) > 0;
 }
 
 /**

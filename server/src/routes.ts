@@ -1075,14 +1075,30 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
           workItemId: b.workItemId,
         });
       }
-      void mirrorClaim(plane.as(actor.planeToken), pool, {
-        projectId: b.projectId,
-        workItemId: l.workItemId,
-        actor,
-        epoch: l.epoch,
-        expiresAt: l.expiresAt,
-        ...(b.takeover ? { takeover: { takenFrom: takenFrom ?? null } } : {}),
-      });
+      // Awaited, not fired and forgotten. A lease Plane never heard about is one
+      // no human can see, so the board keeps offering the item and a second agent
+      // takes it. Better to hand it back and say so than to hold work invisibly.
+      try {
+        await mirrorClaim(plane.as(actor.planeToken), pool, {
+          projectId: b.projectId,
+          workItemId: l.workItemId,
+          actor,
+          epoch: l.epoch,
+          expiresAt: l.expiresAt,
+          ...(b.takeover ? { takeover: { takenFrom: takenFrom ?? null } } : {}),
+        });
+      } catch (err) {
+        // Not on a retry: that lease was granted and mirrored by the original
+        // request, and this copy failing must not retract it.
+        if (!l.retried) {
+          await lease.rollbackClaim(pool, {
+            workItemId: l.workItemId,
+            holder: actor.holder,
+            epoch: l.epoch,
+          });
+        }
+        throw err;
+      }
       // Handed over WITH the lease rather than left for the agent to go and ask
       // for. An agent that must remember to call tree, history and get_issue
       // after every claim will not, under context pressure — the same argument
@@ -1133,13 +1149,26 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         sessionId: sessionOf(req, b),
       });
       if (!l) continue; // lost the race; try the next one
-      void mirrorClaim(plane.as(actor.planeToken), pool, {
-        projectId: b.projectId,
-        workItemId: l.workItemId,
-        actor,
-        epoch: l.epoch,
-        expiresAt: l.expiresAt,
-      });
+      // Same rule as the explicit claim above, and the failure is not retried
+      // against the next candidate: if Plane will not take a write it will not
+      // take the next one either, and trying would spend the caller's Plane
+      // budget on a queue of identical failures before answering.
+      try {
+        await mirrorClaim(plane.as(actor.planeToken), pool, {
+          projectId: b.projectId,
+          workItemId: l.workItemId,
+          actor,
+          epoch: l.epoch,
+          expiresAt: l.expiresAt,
+        });
+      } catch (err) {
+        await lease.rollbackClaim(pool, {
+          workItemId: l.workItemId,
+          holder: actor.holder,
+          epoch: l.epoch,
+        });
+        throw err;
+      }
       return {
         lease: l,
         item: c,
