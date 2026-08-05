@@ -211,6 +211,16 @@ export const ClaimBody = z.object({
   workItemId: uuid.optional().describe('Omit to let the gateway pick the best ready item.'),
   ttlSeconds: z.number().int().min(30).max(MAX_TTL).default(DEFAULT_TTL),
   spawnedBy: z.array(z.string()).optional(),
+  sessionId: z
+    .string()
+    .max(200)
+    .optional()
+    .describe(
+      'Your client session id, if your client supplies one. Sent by the sync plugin ' +
+        'automatically. Agents authenticate as the human running them, so without this ' +
+        'two windows of the same person are indistinguishable and one can keep the ' +
+        "other's lease alive.",
+    ),
   takeover: z
     .boolean()
     .optional()

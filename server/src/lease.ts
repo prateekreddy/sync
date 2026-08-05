@@ -48,6 +48,17 @@ export interface ClaimOpts {
   holder: string;
   holderChain?: string[];
   ttlSeconds: number;
+  /**
+   * The client session taking this lease.
+   *
+   * Agents authenticate as the human running them, so every window that person
+   * opens resolves to the same `holder`. Without this the gateway cannot tell two
+   * concurrent sessions apart, and activity in one would keep the other's lease
+   * alive -- the exact failure this design removes, reintroduced by the identity
+   * simplification. Null for clients that do not report one; those fall back to
+   * holder-level behaviour, which is today's semantics.
+   */
+  sessionId?: string | null;
 }
 
 /**
@@ -67,12 +78,18 @@ export interface ClaimOpts {
 export async function claim(pool: Pool, opts: ClaimOpts): Promise<Lease | null> {
   const { rows } = await pool.query<Row>(
     `insert into lease as l
-       (work_item_id, project_id, holder, holder_chain, epoch, state, expires_at)
-     values ($1, $2, $3, $4, 1, 'held', now() + make_interval(secs => $5))
+       (work_item_id, project_id, holder, holder_chain, epoch, state, expires_at, session_id)
+     values ($1, $2, $3, $4, 1, 'held', now() + make_interval(secs => $5), $6)
      on conflict (work_item_id) do update
         set holder       = excluded.holder,
             holder_chain = excluded.holder_chain,
             project_id   = excluded.project_id,
+            session_id   = excluded.session_id,
+            -- Cleared, not carried: the credential belongs to the session that
+            -- held the lease, and a new claimant must not inherit the old
+            -- monitor's ability to speak for this item. The previous session's
+            -- next poll finds nothing, which is how it learns the work is gone.
+            watch_sha256 = null,
             -- Monotonic across steals, and never reset. This is what makes a
             -- late-waking previous holder detectable instead of destructive.
             epoch        = l.epoch + 1,
@@ -87,7 +104,14 @@ export async function claim(pool: Pool, opts: ClaimOpts): Promise<Lease | null> 
                                 then l.expiry_count else 0 end
       where l.state <> 'held' or l.expires_at <= now()
      returning ${RETURNING}`,
-    [opts.workItemId, opts.projectId, opts.holder, opts.holderChain ?? [], opts.ttlSeconds],
+    [
+      opts.workItemId,
+      opts.projectId,
+      opts.holder,
+      opts.holderChain ?? [],
+      opts.ttlSeconds,
+      opts.sessionId ?? null,
+    ],
   );
   return rows[0] ? toLease(rows[0]) : null;
 }

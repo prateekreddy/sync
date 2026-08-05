@@ -50,9 +50,19 @@ while true; do
   fi
 
   if [ -n "$url" ]; then
-    body=$(curl -fsS -m 20 "$url" 2>/dev/null) && rc=0 || rc=$?
+    tmp="$TOKEN_DIR/.poll.$$"
+    code=$(curl -sS -m 20 -o "$tmp" -w '%{http_code}' "$url" 2>/dev/null) || code=000
+    body=$(cat "$tmp" 2>/dev/null); rm -f "$tmp"
 
-    if [ "$rc" -eq 0 ]; then
+    if [ "$code" = "410" ]; then
+      # A verdict, not a failure: the credential was cleared because another
+      # session claimed the item. Said once -- repeating it every two minutes
+      # would train people to ignore the channel that carries the one message
+      # that matters.
+      echo "sync: your claim is no longer yours -- another session took it, or the lease was revoked. Discard that work."
+      rm -f "$WATCH_FILE"
+      BACKOFF=$MAX_BACKOFF
+    elif [ "$code" = "200" ]; then
       BACKOFF=0
 
       # Rotation: the reply carries the URL to use next. Written before anything
@@ -68,11 +78,9 @@ while true; do
       say=$(printf '%s' "$body" | "$(dirname "$0")/sync-json" say)
       [ -n "$say" ] && echo "sync: $say"
     else
-      # 410 means the credential is spent -- after a long sleep, or once the
-      # session ended. Not an error worth reporting: the lease it protected is
-      # long gone, and the next tool call mints a fresh one. Staying quiet here
-      # is deliberate; a monitor that narrates its own failures trains people to
-      # ignore it, and then it cannot tell them the one thing that matters.
+      # Could not reach the gateway. Deliberately silent: this is ignorance, not
+      # news, and a monitor that narrates its own network trouble trains people
+      # to ignore it -- and then it cannot tell them the one thing that matters.
       BACKOFF=$(( BACKOFF == 0 ? 30 : BACKOFF * 2 ))
       [ "$BACKOFF" -gt "$MAX_BACKOFF" ] && BACKOFF=$MAX_BACKOFF
     fi

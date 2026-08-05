@@ -30,6 +30,7 @@ import {
   registerClient,
 } from './oauth.js';
 import { assertCanRead } from './access.js';
+import { closeWatch, mintWatch, pollWatch } from './watch.js';
 import { approveTakeover } from './assignment.js';
 import { board } from './board.js';
 import { buildIdentity, schemaLevel } from './build.js';
@@ -250,6 +251,42 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     build,
     schema: await schemaLevel(deps.pool),
   }));
+
+  // ── watch (the monitor's channel) ────────────────────────────────────────
+  //
+  // No Authorization header: the URL *is* the credential. That is not a shortcut
+  // — the background monitor is a separate OS process and cannot reach the OAuth
+  // token Claude Code holds, so possession has to be the proof. It is safe only
+  // because of how little this can do: extend this session's leases and report
+  // them. It cannot claim, complete, capture, or read a work item.
+  //
+  // `logLevel: 'silent'` is load-bearing. Fastify logs request URLs by default,
+  // and the URL here is the password — logging it would put a live credential in
+  // every log aggregator this gateway ships to.
+  const watchOpts = { logLevel: 'silent' as const };
+
+  app.get<{ Params: { capability: string } }>('/v1/watch/:capability', watchOpts, async (req, reply) => {
+    const base = publicBase(deps.publicUrl, req.headers, req.protocol);
+    const state = await pollWatch(pool, req.params.capability, base);
+    if (!state) {
+      // Gone, not Unauthorized. The distinction is the whole point: 410 means
+      // "this work is definitively not yours any more" — the capability was
+      // cleared because another session claimed the item — whereas a network
+      // failure means the client simply could not ask. The push fence must
+      // refuse on the first and allow on the second, so they cannot share a code.
+      return reply.status(410).send({ error: 'GONE', message: 'This lease is no longer yours.' });
+    }
+    return state;
+  });
+
+  app.delete<{ Params: { capability: string } }>('/v1/watch/:capability', watchOpts, async (req) => {
+    // Driven by the SessionEnd hook. Best-effort by construction — it does not
+    // run when a process is killed — so it makes the common case immediate rather
+    // than being the guarantee. The lease TTL remains the thing that cannot be
+    // skipped.
+    const released = await closeWatch(pool, req.params.capability);
+    return { released };
+  });
 
   // ── self-service onboarding ──────────────────────────────────────────────
   //
@@ -1001,6 +1038,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         holder: actor.holder,
         holderChain: chain,
         ttlSeconds: b.ttlSeconds,
+        sessionId: b.sessionId ?? null,
       });
       if (!l) {
         throw new GatewayError('NOT_CLAIMABLE', 'Another agent holds this item', {
@@ -1019,8 +1057,17 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       // for. An agent that must remember to call tree, history and get_issue
       // after every claim will not, under context pressure — the same argument
       // that put module inheritance and lease-derived provenance in `capture`.
+      // Handed back with the lease so the plugin's hook can store it without the
+      // model doing anything. `claim` is the one call an agent must make, which
+      // makes it the only place a credential can be issued without inventing a
+      // new obligation for something that forgets.
+      const watch = await mintWatch(pool, {
+        sessionId: b.sessionId ?? null,
+        workItemId: l.workItemId,
+      });
       return {
         lease: l,
+        watchUrl: `${publicBase(deps.publicUrl, req.headers, req.protocol)}/v1/watch/${watch}`,
         briefing: await briefingOrNull(plane.as(actor.planeToken), {
           projectId: b.projectId,
           workItemId: l.workItemId,
@@ -1053,6 +1100,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         holder: actor.holder,
         holderChain: chain,
         ttlSeconds: b.ttlSeconds,
+        sessionId: b.sessionId ?? null,
       });
       if (!l) continue; // lost the race; try the next one
       void mirrorClaim(plane.as(actor.planeToken), pool, {

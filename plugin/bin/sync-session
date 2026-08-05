@@ -84,24 +84,45 @@ case "$CMD" in
 
   fence)
     # The lease protects the gateway's bookkeeping; it cannot stop an agent
-    # writing files. A push is where private work becomes everyone's problem, so
-    # it is the last moment a stale holder can be stopped cheaply -- and the only
-    # one that would have prevented the collision this design exists to fix.
+    # writing files. A push is where private work becomes everyone else's
+    # problem, so it is the last cheap moment to stop a stale holder -- and the
+    # only one that would have prevented the collision this design exists to fix.
     #
-    # Refusing to reach the gateway is NOT a reason to block: a network failure
-    # must not make it impossible to push. Fail open, loudly.
+    # The distinction that matters is between a verdict and ignorance:
+    #
+    #   410  the gateway says this work is definitively not yours. Another
+    #        session claimed the item, which cleared this credential. REFUSE.
+    #   200  it answered; obey `stale`.
+    #   any  we could not ask. Allow, and say so -- a network failure must never
+    #   else make it impossible to push, or the guard becomes the outage.
     [ -r "$WATCH_FILE" ] || exit 0
-    body=$(curl -fsS -m 10 "$(cat "$WATCH_FILE")" 2>/dev/null) || exit 0
-    if [ "$(get "$body" stale)" = "true" ]; then
-      reason=$(get "$body" say)
-      [ -n "$reason" ] || reason="Your lease was revoked or has lapsed. Do not push this work."
-      # Emitted by hand rather than with jq: this is the one path that must work
-      # on a machine with no JSON tooling at all, because failing open here means
-      # publishing work the lease no longer covers.
+    tmp="$STATE_DIR/.fence.$$"
+    code=$(curl -sS -m 10 -o "$tmp" -w '%{http_code}' "$(cat "$WATCH_FILE")" 2>/dev/null) || code=000
+    body=$(cat "$tmp" 2>/dev/null); rm -f "$tmp"
+
+    deny() {
       printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
-        "$(printf '%s' "$reason" | sed 's/\\/\\\\/g; s/"/\\"/g; s/^/"/; s/$/"/')"
-    fi
+        "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/^/"/; s/$/"/')"
+      exit 0
+    }
+
+    case "$code" in
+      410)
+        deny "This work is no longer yours -- another session claimed it, or the lease was revoked. Do not push. Discard this work and re-claim if you still want the item."
+        ;;
+      200)
+        if [ "$(get "$body" stale)" = "true" ]; then
+          reason=$(get "$body" say)
+          [ -n "$reason" ] || reason="Your lease has lapsed or was revoked. Do not push this work."
+          deny "$reason"
+        fi
+        ;;
+      *)
+        echo "sync: could not reach the gateway to check your lease; allowing the push unchecked." >&2
+        ;;
+    esac
     ;;
+
 esac
 
 exit 0
