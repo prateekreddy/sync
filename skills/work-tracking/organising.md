@@ -104,7 +104,15 @@ reaches the agent equipped for it.
 `capture(labels: ["backend"])` takes names and creates the label if the project lacks it, so
 labelling costs nothing. A name one character from a load-bearing label (`needs-humans`, `blockd`)
 is refused rather than created — that failure would be silent, withholding nothing while looking
-right. Plane's own tools still take uuids; only `capture` resolves names.
+right. `capture` is the only tool that *creates* a missing label; elsewhere a name that does not
+exist is refused, with the existing names listed.
+
+**Names, not ids.** `state`, `labels`, `assignees` and `parent` come back as names on every tool
+here — `"In Progress"`, `"backend"`, a person's name, `"SYNC-12"` — and are accepted the same way
+when you write them. So there is no need to list states or labels first just to translate an id, and
+what you read is what you can write back. Ids still work everywhere they always did. If a name does
+not exist the call is refused and the alternatives are named; two people sharing a display name are
+refused rather than guessed at, so use the email. Pass `verbose: true` if you ever need the raw ids.
 
 **`plane_states`** — `list`, `get` freely. Read them to understand a project's workflow. `create`,
 `update` and `delete` need the `destructive` capability you almost certainly do not have, and for

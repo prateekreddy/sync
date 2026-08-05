@@ -104,6 +104,15 @@ export class PlaneClient {
     string,
     { at: number; byItem: Map<string, string>; ok: boolean }
   >();
+  /**
+   * item id -> its number in the project, per project.
+   *
+   * The one lookup that turns a `parent` uuid into `SYNC-12`. A work item's
+   * number is fixed at creation, so the entries never go stale — the TTL exists
+   * only to pick up items created since, which is why it is short and why a miss
+   * is cheap to tolerate.
+   */
+  private itemCache = new Map<string, { at: number; bySequence: Map<string, number> }>();
 
   constructor(
     private readonly baseUrl: string,
@@ -128,6 +137,7 @@ export class PlaneClient {
     scoped.labelCache = this.labelCache;
     scoped.identifierCache = this.identifierCache;
     scoped.moduleCache = this.moduleCache;
+    scoped.itemCache = this.itemCache;
     return scoped;
   }
 
@@ -460,6 +470,29 @@ export class PlaneClient {
     const hit = this.moduleCache.get(projectId);
     if (!hit) return;
     for (const id of issues) if (!hit.byItem.has(id)) hit.byItem.set(id, moduleId);
+  }
+
+  /**
+   * Every work item's number, keyed by uuid.
+   *
+   * Built from the project listing rather than per item on demand: a response
+   * carrying thirty parents would otherwise cost thirty requests, and the listing
+   * is a call the board path already makes on the same cache line.
+   *
+   * Cached like everything else here, and shared across `as()` clients — an
+   * item's number is not per-user data, and rebuilding it per agent would
+   * multiply the same listing by the size of the fleet.
+   */
+  async itemSequences(projectId: string, ttlMs = 60_000): Promise<Map<string, number>> {
+    const hit = this.itemCache.get(projectId);
+    if (hit && Date.now() - hit.at < ttlMs) return hit.bySequence;
+
+    const bySequence = new Map<string, number>();
+    for (const item of await this.listWorkItems(projectId)) {
+      bySequence.set(item.id, item.sequence_id);
+    }
+    this.itemCache.set(projectId, { at: Date.now(), bySequence });
+    return bySequence;
   }
 
   /** A project's modules — the epic layer. Requires `module_view` on the project. */

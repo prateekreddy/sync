@@ -1460,7 +1460,10 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   // Agents install one stdio MCP server that knows nothing and forwards
   // everything here. That keeps the entire agent-facing surface — ours and
   // Plane's — deployable from the server, with no agent box to update.
-  const toolDeps = { app, pool, plane: deps.planeMcp ?? null };
+  // `rest` is the REST client, and it is here only so proxied responses can say
+  // "In Progress" where Plane says a uuid — the same names the gateway's own
+  // tools have always returned.
+  const toolDeps = { app, pool, plane: deps.planeMcp ?? null, rest: plane };
 
   app.get('/v1/tools', async (req) => {
     await actorOf(req); // authenticated: the catalogue names internal tooling

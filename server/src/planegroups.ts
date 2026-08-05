@@ -134,7 +134,10 @@ export const PLANE_GROUPS: PlaneGroup[] = [
     name: 'plane_issues',
     summary:
       'Plane work items directly. For taking work use claim; for writing something down use capture — ' +
-      'both do more than these and neither can be replaced by them.',
+      'both do more than these and neither can be replaced by them.\n\n' +
+      'state, labels, assignees and parent are read and written as names — "In Progress", ' +
+      '"backend", a person\'s name or email, "SYNC-12". Ids still work everywhere they used to, ' +
+      'so there is no need to look one up first.',
     actions: {
       list: 'list_project_issues',
       get_by_identifier: 'get_issue_using_readable_identifier',

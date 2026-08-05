@@ -176,6 +176,44 @@ export function unmatchedFields(value: unknown, fields?: string[]): string[] {
 }
 
 /**
+ * Apply an async transformation to the JSON inside each text block.
+ *
+ * Exists because id resolution has to happen *before* projection, not after: it
+ * introduces no keys of its own but it does change values, and a caller that
+ * narrowed with `fields` must see the resolved value of the field it asked for.
+ * Doing it here rather than inside `projectToolResult` keeps that function
+ * synchronous and single-purpose, at the cost of parsing each block twice —
+ * which is CPU on the side of this exchange that has it to spare.
+ *
+ * Non-JSON blocks are passed through for the same reason projection leaves them
+ * alone: a human-readable message must not be mangled by machinery meant for
+ * data.
+ */
+export async function mapTextBlocks(
+  result: unknown,
+  fn: (payload: unknown) => Promise<unknown>,
+): Promise<unknown> {
+  if (!isRecord(result) || !Array.isArray(result['content'])) return result;
+
+  const content = await Promise.all(
+    (result['content'] as unknown[]).map(async (block) => {
+      if (!isRecord(block) || block['type'] !== 'text' || typeof block['text'] !== 'string') {
+        return block;
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(block['text']);
+      } catch {
+        return block;
+      }
+      return { ...block, text: JSON.stringify(await fn(parsed)) };
+    }),
+  );
+
+  return { ...result, content };
+}
+
+/**
  * Project an upstream MCP tool result in place.
  *
  * Plane's MCP server returns JSON as text inside a content block. Anything that

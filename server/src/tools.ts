@@ -12,7 +12,9 @@ import {
   resolveGroup,
   type PlaneGroup,
 } from './planegroups.js';
-import { projectToolResult } from './projection.js';
+import { NameBook, isUuid, nameHint, resolveIds, resolveNames } from './names.js';
+import type { PlaneClient } from './plane.js';
+import { mapTextBlocks, projectToolResult } from './projection.js';
 import { checkToolCall } from './toolpolicy.js';
 import { NATIVE_TOOLS } from './toolspec.js';
 
@@ -44,6 +46,14 @@ export interface ToolDeps {
   app: FastifyInstance;
   pool: Pool;
   plane: PlaneMcp | null;
+  /**
+   * Plane's REST API, used only to turn uuids into names and back.
+   *
+   * Optional, and absent means ids pass through in both directions — the
+   * behaviour every caller had before names.ts existed. Nothing here depends on
+   * resolution succeeding.
+   */
+  rest?: PlaneClient | null;
 }
 
 const nativeCatalogue = (): ToolCatalogue[] =>
@@ -55,6 +65,38 @@ const nativeCatalogue = (): ToolCatalogue[] =>
   }));
 
 /**
+ * Say on each field that it takes a name.
+ *
+ * Recursive, because the fields that most need this are nested: `update_issue`
+ * carries `state`, `labels` and `assignees` under `issue_data`, and an
+ * annotation that only reached the top level would miss the single most common
+ * write. Bounded depth, since a schema can reference itself.
+ */
+function withNameHints(schema: unknown, depth = 0): unknown {
+  if (typeof schema !== 'object' || schema === null || Array.isArray(schema) || depth > 3) {
+    return schema;
+  }
+  const s = schema as { properties?: Record<string, unknown>; [k: string]: unknown };
+  if (!s.properties) return schema;
+
+  const properties: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(s.properties)) {
+    const inner = withNameHints(value, depth + 1);
+    const hint = nameHint(key);
+    if (!hint || typeof inner !== 'object' || inner === null) {
+      properties[key] = inner;
+      continue;
+    }
+    const prop = inner as { description?: unknown };
+    properties[key] = {
+      ...prop,
+      description: prop.description ? `${String(prop.description)} ${hint}` : hint,
+    };
+  }
+  return { ...s, properties };
+}
+
+/**
  * Advertise the projection escape hatch on every proxied tool.
  *
  * Built as a new object rather than mutated: the upstream catalogue is cached for
@@ -62,7 +104,7 @@ const nativeCatalogue = (): ToolCatalogue[] =>
  */
 function withVerbose(schema: unknown): unknown {
   if (typeof schema !== 'object' || schema === null || Array.isArray(schema)) return schema;
-  const s = schema as { properties?: Record<string, unknown>; [k: string]: unknown };
+  const s = withNameHints(schema) as { properties?: Record<string, unknown>; [k: string]: unknown };
   if (!s.properties || 'verbose' in s.properties) return schema;
   return {
     ...s,
@@ -81,10 +123,12 @@ function withVerbose(schema: unknown): unknown {
       verbose: {
         type: 'boolean',
         description:
-          "Return the tool's full response untrimmed. Off by default: audit metadata " +
-          '(created_at, updated_at, created_by, workspace, sort_order and similar) is removed, ' +
-          'and descriptions are removed from lists. Prefer `fields` when you know what you ' +
-          'want; reach for this when exploring what a tool returns at all.',
+          "Return the tool's full response exactly as Plane sent it. Off by default: audit " +
+          'metadata (created_at, updated_at, created_by, workspace, sort_order and similar) is ' +
+          'removed, descriptions are removed from lists, and state, labels, assignees and parent ' +
+          'come back as names rather than ids. Turning this on gives you the raw ids too — which ' +
+          'you rarely need, since every field that takes an id also takes the name. Prefer ' +
+          '`fields` when you know what you want.',
       },
     },
   };
@@ -182,6 +226,21 @@ function withDefaultProject(
     if (key in props && out[key] === undefined) out[key] = defaultProjectId;
   }
   return out;
+}
+
+/**
+ * Which project a call is about, for scoping the name lookups.
+ *
+ * States and labels are per project and two projects may each have a "Done", so
+ * resolving without knowing which one would be a coin toss. Both spellings are
+ * read for the same reason `withDefaultProject` writes both.
+ */
+function projectArg(args: Record<string, unknown>): string | null {
+  for (const key of ['project_id', 'projectId']) {
+    const v = args[key];
+    if (typeof v === 'string' && isUuid(v)) return v;
+  }
+  return null;
 }
 
 export interface ToolResult {
@@ -315,8 +374,27 @@ export async function callTool(
     // a worse error message, not a wrong call.
   }
 
-  const checked = await checkToolCall({ pool: deps.pool, actor }, upstreamName, forwarded);
-  const out = await deps.plane.call(actor.planeToken, upstreamName, checked);
+  // One book serves both directions of this call, so a payload that mentions the
+  // same project on every row builds each lookup table once.
+  const book = deps.rest ? new NameBook(deps.rest) : null;
+  const projectId = projectArg(forwarded) ?? actor.defaultProjectId;
+
+  // Names to ids on the way in, before the policy check — so what the guard
+  // inspects is exactly what Plane will receive, and a lease field written by
+  // name is guarded the same as one written by id.
+  const named = book ? await resolveIds(book, forwarded, projectId) : forwarded;
+
+  const checked = await checkToolCall({ pool: deps.pool, actor }, upstreamName, named);
+  const raw = await deps.plane.call(actor.planeToken, upstreamName, checked);
+
+  // Ids to names on the way out. Before projection, deliberately: resolution
+  // changes values rather than adding keys, so a caller that narrowed with
+  // `fields` still gets the resolved value of the field it named.
+  const out =
+    book && verbose !== true
+      ? await mapTextBlocks(raw, (payload) => resolveNames(book, payload, projectId))
+      : raw;
+
   // An explicit field list wins over verbose: a caller who named fields has said
   // precisely what they want, and honouring the broader flag instead would ignore
   // the more specific request.
