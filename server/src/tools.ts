@@ -12,6 +12,7 @@ import {
   resolveGroup,
   type PlaneGroup,
 } from './planegroups.js';
+import { approveTakeover } from './assignment.js';
 import { NameBook, isUuid, nameHint, resolveIds, resolveNames } from './names.js';
 import type { PlaneClient } from './plane.js';
 import { mapTextBlocks, projectToolResult } from './projection.js';
@@ -54,7 +55,26 @@ export interface ToolDeps {
    * resolution succeeding.
    */
   rest?: PlaneClient | null;
+  /**
+   * How to put a yes/no question to the person at the other end of the client.
+   *
+   * Absent on every path an agent can reach without a human — the REST surface,
+   * a cron, a headless client that declines. Absent means the question does not
+   * get asked and the refusal stands, which is the safe direction: work assigned
+   * to a person stays theirs.
+   */
+  askHuman?: AskHuman | undefined;
 }
+
+/**
+ * The verdict on a question put to a human.
+ *
+ * `unavailable` is separate from `refused` on purpose. Nobody said no — there
+ * was nobody to ask — and collapsing the two would report a conversation that
+ * never happened, which is exactly the failure this whole change is removing
+ * from the other direction.
+ */
+export type AskHuman = (message: string) => Promise<'approved' | 'refused' | 'unavailable'>;
 
 const nativeCatalogue = (): ToolCatalogue[] =>
   NATIVE_TOOLS.map((t) => ({
@@ -286,6 +306,62 @@ const errorResult = (
   };
 };
 
+/** What the claim endpoint tells us about a refusal a person could lift. */
+interface ApprovalDetail {
+  workItemId?: string;
+  projectId?: string;
+  /** Already formatted by the endpoint that had the item — see approvalNeeded. */
+  readableId?: string;
+  assignedTo?: string;
+  takenFrom?: string | null;
+}
+
+/**
+ * Put the takeover to a human, and record their answer if they say yes.
+ *
+ * This replaces `takeover: true`, an argument the model set on its own to assert
+ * that somebody had agreed. The gateway could not tell the model's word from a
+ * person's, so the argument *was* the trust — and an agent that wanted the item
+ * had only to pass it. Nothing about that was a hypothetical failure mode: it is
+ * one boolean between an agent and somebody else's work.
+ *
+ * Now the question is asked by the server, over a channel the model does not
+ * author, and the answer is written down before the claim is retried. What the
+ * elicitation proves is that *a* human at this client answered; it does not
+ * authenticate which one, so the approval is attributed to the principal the
+ * agent acts for. That is the same attribution as before, but it now records
+ * something that happened rather than something claimed.
+ *
+ * The approval outlives the conversation deliberately. A compaction between the
+ * yes and the claim would otherwise lose it, and the person would be asked again
+ * about a decision they had already made — which is how approval prompts become
+ * something people click through.
+ */
+async function requestApproval(
+  deps: ToolDeps,
+  actor: Actor,
+  detail: ApprovalDetail,
+): Promise<'approved' | 'refused' | 'unavailable'> {
+  if (!deps.askHuman || !detail.workItemId) return 'unavailable';
+
+  // The readable id arrives already formatted, from the layer that was holding
+  // the item. Looking it up here would put a board listing on the path of asking
+  // a person a question.
+  const outcome = await deps.askHuman(
+    `${detail.readableId ?? detail.workItemId} is assigned to ${detail.assignedTo ?? 'someone else'}. ` +
+      `May ${actor.holder} take it over?`,
+  );
+  if (outcome !== 'approved') return outcome;
+
+  await approveTakeover(deps.pool, {
+    workItemId: detail.workItemId,
+    approvedBy: actor.principal,
+    takenFrom: detail.takenFrom ?? null,
+    reason: `approved in conversation for ${actor.holder}`,
+  });
+  return 'approved';
+}
+
 /**
  * Invoke a tool by name.
  *
@@ -319,13 +395,38 @@ export async function callTool(
         )
       : withProject;
     const { path, body } = native.request(args);
-    const res = await deps.app.inject({
-      method: native.method,
-      url: path,
-      headers: { authorization, ...(body ? { 'content-type': 'application/json' } : {}) },
-      ...(body ? { payload: body as object } : {}),
-    });
-    const parsed: unknown = res.body ? JSON.parse(res.body) : {};
+    const send = () =>
+      deps.app.inject({
+        method: native.method,
+        url: path,
+        headers: { authorization, ...(body ? { 'content-type': 'application/json' } : {}) },
+        ...(body ? { payload: body as object } : {}),
+      });
+
+    let res = await send();
+    let parsed: unknown = res.body ? JSON.parse(res.body) : {};
+
+    // The one refusal a person can lift in the moment. Asked here rather than
+    // inside the endpoint because this is the only layer with a channel to a
+    // human; the endpoint stays the single implementation and is simply called
+    // again once permission exists.
+    if (res.statusCode >= 400 && (parsed as { error?: string }).error === 'NEEDS_APPROVAL') {
+      const outcome = await requestApproval(deps, actor, parsed as ApprovalDetail);
+      if (outcome === 'refused') {
+        return errorResult(
+          'NEEDS_APPROVAL',
+          'The person you are working with said no. This item is not yours to take.',
+          'Do not ask again for this item in this session, and do not work it. Pick different work.',
+        );
+      }
+      if (outcome === 'approved') {
+        res = await send();
+        parsed = res.body ? JSON.parse(res.body) : {};
+      }
+      // 'unavailable' falls through to the original refusal, whose recovery line
+      // already explains the two ways a human can clear it.
+    }
+
     if (res.statusCode >= 400) {
       const e = parsed as {
         error?: string;

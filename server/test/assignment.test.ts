@@ -5,6 +5,7 @@ import { issueToken } from '../src/auth.js';
 import type { Actor } from '../src/auth.js';
 import { foreignAssignees, gatewayWrites, nameOf, principalPlaneUser } from '../src/assignment.js';
 import { createPool } from '../src/db.js';
+import { callTool, type AskHuman } from '../src/tools.js';
 import { forgetAccess } from '../src/access.js';
 import { PlaneClient } from '../src/plane.js';
 import type { Member, State, WorkItem } from '../src/plane.js';
@@ -139,7 +140,38 @@ async function harness() {
   const post = (path: string, body: unknown) =>
     app.inject({ method: 'POST', url: path, headers: { authorization: `Bearer ${token}` }, body });
 
-  return { app, get, post };
+  return { app, get, post, token };
+}
+
+/**
+ * A claim made the way an agent actually makes one — through the tool surface,
+ * where a question can be put to a person.
+ *
+ * The REST endpoint has no channel to a human and never will: an approval has to
+ * come from somebody who was asked, and every other door into this gateway is
+ * one an agent can open by itself.
+ */
+async function claimViaTool(
+  app: Awaited<ReturnType<typeof harness>>['app'],
+  token: string,
+  args: Record<string, unknown>,
+  askHuman?: AskHuman,
+) {
+  const deps = {
+    app,
+    pool,
+    plane: null,
+    rest: fakePlane(),
+    ...(askHuman ? { askHuman } : {}),
+  } as unknown as Parameters<typeof callTool>[0];
+  const actor = {
+    holder: 'agent:t-asg/worker',
+    principal: 'human:me@example.com',
+    defaultProjectId: PROJECT,
+    capabilities: [],
+  } as unknown as Actor;
+  const out = await callTool(deps, actor, `Bearer ${token}`, 'claim', args);
+  return { isError: out.isError === true, text: out.content[0]?.text ?? '' };
 }
 
 const idsIn = (body: { items: Array<{ workItemId: string }> }) => body.items.map((i) => i.workItemId);
@@ -354,34 +386,65 @@ describe('claim', () => {
     await app.close();
   });
 
-  it('refuses a takeover that names no item', async () => {
-    // A human approved taking a specific piece of work off someone, not whatever
-    // the gateway happens to pick next.
-    const { app, post } = await harness();
-    const res = await post('/v1/claim', { projectId: PROJECT, takeover: true });
-    expect(res.statusCode).toBe(400);
-    expect(res.json().message).toContain('one named item');
+  it('never asks about an item the gateway picked itself', async () => {
+    // A person approves taking a specific piece of work off somebody, not
+    // whatever comes next off the queue — and an unnamed claim only ever picks
+    // from what is already free.
+    const { app, token } = await harness();
+    const asked: string[] = [];
+    const out = await claimViaTool(app, token, { projectId: PROJECT }, async (m) => {
+      asked.push(m);
+      return 'approved';
+    });
+    expect(asked).toEqual([]);
+    expect(out.text).not.toContain(THEIRS);
     await app.close();
   });
 });
 
-describe('takeover', () => {
-  it('lets an approved claim through', async () => {
-    const { app, post } = await harness();
-    const res = await post('/v1/claim', {
-      projectId: PROJECT,
-      workItemId: THEIRS,
-      takeover: true,
+describe('taking work off a person', () => {
+  /**
+   * `takeover: true` used to be how this worked: an argument the model set to
+   * assert that somebody had agreed. The gateway could not tell the model's word
+   * from a person's, so the argument WAS the trust — one boolean between an agent
+   * and somebody else's work. The server now asks, over a channel the model does
+   * not author.
+   */
+  it('asks a person, naming the item and who has it', async () => {
+    const { app, token } = await harness();
+    const asked: string[] = [];
+    await claimViaTool(app, token, { projectId: PROJECT, workItemId: THEIRS }, async (m) => {
+      asked.push(m);
+      return 'approved';
     });
-    expect(res.statusCode).toBe(200);
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toContain('Dana');
+    await app.close();
+  });
+
+  it('lets the claim through once they say yes', async () => {
+    const { app, token } = await harness();
+    const out = await claimViaTool(
+      app,
+      token,
+      { projectId: PROJECT, workItemId: THEIRS },
+      async () => 'approved',
+    );
+    expect(out.isError).toBe(false);
     await app.close();
   });
 
   it('records the approval against the item, so nobody has to ask twice', async () => {
     // Recorded rather than remembered: a compaction, a restart, or a different
-    // agent picking the work up would otherwise lose the human's answer.
-    const { app, post } = await harness();
-    await post('/v1/claim', { projectId: PROJECT, workItemId: THEIRS, takeover: true });
+    // agent picking the work up would otherwise lose the human's answer — and an
+    // approval prompt people see repeatedly is one they stop reading.
+    const { app, token } = await harness();
+    await claimViaTool(
+      app,
+      token,
+      { projectId: PROJECT, workItemId: THEIRS },
+      async () => 'approved',
+    );
     const { rows } = await pool.query<{ approved_by: string; taken_from: string }>(
       'select approved_by, taken_from from takeover_approval where work_item_id = $1',
       [THEIRS],
@@ -391,9 +454,68 @@ describe('takeover', () => {
     await app.close();
   });
 
-  it('leaves the item claimable afterwards without repeating the approval', async () => {
+  it('refuses and records nothing when they say no', async () => {
+    const { app, token } = await harness();
+    const out = await claimViaTool(
+      app,
+      token,
+      { projectId: PROJECT, workItemId: THEIRS },
+      async () => 'refused',
+    );
+    expect(out.isError).toBe(true);
+    expect(out.text).toContain('said no');
+    const { rows } = await pool.query('select 1 from takeover_approval where work_item_id = $1', [
+      THEIRS,
+    ]);
+    expect(rows).toHaveLength(0);
+    await app.close();
+  });
+
+  it('leaves the refusal standing when there is nobody to ask', async () => {
+    // Measured: `claude -p` declares elicitation at initialize and then refuses
+    // the form when asked. A headless run has no human, and "could not ask" must
+    // never read as "was approved".
+    const { app, token } = await harness();
+    const out = await claimViaTool(
+      app,
+      token,
+      { projectId: PROJECT, workItemId: THEIRS },
+      async () => 'unavailable',
+    );
+    expect(out.isError).toBe(true);
+    expect(out.text).toContain('NEEDS_APPROVAL');
+    await app.close();
+  });
+
+  it('refuses on a path that has no way to reach a person at all', async () => {
+    const { app, token } = await harness();
+    const out = await claimViaTool(app, token, { projectId: PROJECT, workItemId: THEIRS });
+    expect(out.isError).toBe(true);
+    expect(out.text).toContain('NEEDS_APPROVAL');
+    await app.close();
+  });
+
+  it('is not something the caller can assert for itself', async () => {
+    // The whole point. An argument the model sets cannot grant this any more.
     const { app, post } = await harness();
-    await post('/v1/claim', { projectId: PROJECT, workItemId: THEIRS, takeover: true });
+    const res = await post('/v1/claim', {
+      projectId: PROJECT,
+      workItemId: THEIRS,
+      takeover: true,
+    });
+    expect(res.statusCode).toBeGreaterThanOrEqual(400);
+    expect(res.json().error).toBe('NEEDS_APPROVAL');
+    await app.close();
+  });
+
+  it('leaves the item claimable afterwards without repeating the approval', async () => {
+    const { app, token, post } = await harness();
+    await claimViaTool(
+      app,
+      token,
+      { projectId: PROJECT, workItemId: THEIRS },
+      async () => 'approved',
+    );
     await post('/v1/release', { workItemId: THEIRS, epoch: 1, reason: 'handing back' });
 
     const { app: app2, post: post2 } = await harness();
@@ -408,8 +530,13 @@ describe('who the item ends up with', () => {
   it('moves an approved takeover to the human who authorised it', async () => {
     // Their decision, so their name on it — the agent executing it is what the
     // lease is for.
-    const { app, post } = await harness();
-    await post('/v1/claim', { projectId: PROJECT, workItemId: THEIRS, takeover: true });
+    const { app, token } = await harness();
+    await claimViaTool(
+      app,
+      token,
+      { projectId: PROJECT, workItemId: THEIRS },
+      async () => 'approved',
+    );
     await new Promise((r) => setImmediate(r));
     const assign = updates.find((u) => u.id === THEIRS && 'assignees' in u.body);
     expect(assign?.body['assignees']).toEqual([ME]);

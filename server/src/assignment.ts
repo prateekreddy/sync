@@ -49,6 +49,7 @@
 import type { Actor } from './auth.js';
 import type { Pool } from './db.js';
 import type { Member, PlaneClient, WorkItem } from './plane.js';
+import { readableId } from './view.js';
 
 /** Work item id -> the Plane user this gateway assigned it to. */
 export type GatewayWrites = Map<string, string>;
@@ -131,12 +132,55 @@ export async function assigneePass(
 
 /** The reason string the gate reports, with names rather than uuids where we have them. */
 export function assigneeReason(foreign: string[], members: Member[]): string {
-  const byId = new Map(members.map((m) => [m.id, m.name]));
-  const who = foreign.map((u) => byId.get(u) ?? u).join(', ');
   return (
-    `assigned to ${who} — not yours to take. Ask the human you are working with, ` +
-    `and claim with takeover: true once they agree`
+    `assigned to ${namesOf(foreign, members)} — not yours to take. Ask the person you are ` +
+    `working with; if they agree, claim again and the gateway will put the question to them`
   );
+}
+
+/** Display names for a set of Plane users, falling back to the raw id. */
+export const namesOf = (ids: string[], members: Member[]): string => {
+  const byId = new Map(members.map((m) => [m.id, m.name]));
+  return ids.map((u) => byId.get(u) ?? u).join(', ');
+};
+
+/**
+ * Whether this claim is blocked *only* by somebody's name being on the item, and
+ * who that is.
+ *
+ * Split out from the gate's reason strings because the answer has to be acted on
+ * rather than read: it is what turns a refusal into a question for a human, and
+ * matching on prose to find that out would break the first time the wording
+ * improved.
+ *
+ * Returns null when the item is free, already approved, assigned to the caller,
+ * or unreadable — anything that is not a clear "a person owns this". Asking a
+ * human to approve a takeover that was never needed trains them to click yes.
+ */
+export async function approvalNeeded(
+  plane: PlaneClient,
+  pool: Pool,
+  opts: { projectId: string; workItemId: string; viewer: string | null },
+): Promise<{ assignees: string[]; names: string; readableId: string } | null> {
+  const [item, wrote, approved] = await Promise.all([
+    plane.getWorkItem(opts.projectId, opts.workItemId).catch(() => null),
+    gatewayWrites(pool, [opts.workItemId]),
+    approvedTakeovers(pool, [opts.workItemId]),
+  ]);
+  if (!item || approved.has(opts.workItemId)) return null;
+
+  const foreign = foreignAssignees(item, opts.viewer, wrote);
+  if (!foreign?.length) return null;
+
+  return {
+    assignees: foreign,
+    names: namesOf(foreign, await plane.members()),
+    // Formatted here because this is the layer holding the item. The question
+    // this ends up in is read by a person, and going back for the number would
+    // put a request on the path of asking one — the mistake that cost 85 seconds
+    // on one test file when the readable id was threaded through the read tools.
+    readableId: readableId(item.sequence_id, plane.identifierFor(opts.projectId)),
+  };
 }
 
 /** A Plane user as a person would recognise them, falling back to the raw id. */
@@ -232,6 +276,27 @@ export async function approveTakeover(pool: Pool, t: Takeover): Promise<void> {
            created_at  = now()`,
     [t.workItemId, t.approvedBy, t.takenFrom ?? null, t.reason ?? ''],
   );
+}
+
+/**
+ * The recorded approval for one item, if there is one.
+ *
+ * `takenFrom` is why this is read on the claim path rather than only checked:
+ * claiming overwrites the assignee, so the one fact the whole exchange was about
+ * — whose work this was — is gone the moment the claim lands unless it was
+ * captured when the human answered.
+ */
+export async function takeoverApproval(
+  pool: Pool,
+  workItemId: string,
+): Promise<{ approvedBy: string; takenFrom: string | null } | null> {
+  if (uuidsOnly([workItemId]).length === 0) return null;
+  const { rows } = await pool.query<{ approved_by: string; taken_from: string | null }>(
+    'select approved_by, taken_from from takeover_approval where work_item_id = $1',
+    [workItemId],
+  );
+  const row = rows[0];
+  return row ? { approvedBy: row.approved_by, takenFrom: row.taken_from } : null;
 }
 
 /** Items in this set that a human has already cleared for takeover. */

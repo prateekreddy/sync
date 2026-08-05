@@ -127,15 +127,20 @@ authenticates *as its owner*, so if you and your human share a Plane account, wo
 themselves reads as assigned to you. On that setup a human cannot fend you off by assigning
 something to themselves — they have to say so.
 
-**Once they agree, `claim` with `takeover: true`.** It has to name a `workItemId`: they approved
-taking a specific piece of work off someone, not whatever the gateway picks next. One call does the
-lot — records the approval against the item, moves it to the human who authorised it, takes the
-lease, and comments on the item so the original assignee learns what happened and who decided. The
-approval is stored, not remembered, so a later claim of the same item does not ask again and a
-compaction cannot lose it.
+**Once they agree, just `claim` it again, naming the `workItemId`.** The gateway puts the question
+to your human itself — a prompt they answer in the client, not something you assert on their behalf.
+Say who has it before you do, so they know what they are agreeing to.
 
-Never pass `takeover` on your own initiative. The gateway cannot tell your word from your human's:
-that argument **is** the trust.
+If they say yes, one call does the lot: records the approval against the item, moves it to the human
+who authorised it, takes the lease, and comments on the item so the original assignee learns what
+happened and who decided. The approval is stored rather than remembered, so a later claim of the
+same item does not ask again and a compaction cannot lose it. If they say no, the item is not yours
+— do not ask again for it in this session.
+
+There is no argument that grants this, deliberately. There used to be, and it was one boolean
+between you and somebody else's work. If nobody can be asked — a headless run has no human at the
+other end — the claim stays refused, and the way through is for a person to unassign the item in
+Plane, which works whether or not anyone is watching a terminal.
 
 **Three things a name can mean**, and the gate already tells them apart, so read a refusal literally
 rather than second-guessing it:

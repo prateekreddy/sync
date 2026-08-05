@@ -9,7 +9,7 @@ import {
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { Actor } from './auth.js';
 import { GatewayError, RECOVERY } from './errors.js';
-import { callTool, listTools, type ToolDeps } from './tools.js';
+import { callTool, listTools, type AskHuman, type ToolDeps } from './tools.js';
 
 /**
  * MCP straight over HTTPS, so onboarding an agent is one command with nothing
@@ -75,14 +75,67 @@ comments, worklogs. Two things are restricted: you cannot set assignees or state
 on an item you do not hold (that would bypass the lease), and deleting states or
 labels needs a capability you probably do not have.`;
 
+/**
+ * Put a yes/no question to the person at the other end of the client.
+ *
+ * This is the whole of the transport-specific part of human approval, and it is
+ * deliberately this small. Under 2025-11-25 the server sends `elicitation/create`
+ * as a request of its own; under 2026-07-28 the same question travels as an
+ * `InputRequiredResult` the client answers by retrying the call. Same question,
+ * same verdict, different envelope — so when the SDK ships MRTR this function
+ * changes and nothing that decides anything does.
+ *
+ * Three outcomes, not two. "Nobody could be asked" is not "somebody said no":
+ * a headless run has no human at the other end, and telling the agent it was
+ * refused would be a lie about a conversation that never happened.
+ *
+ * Measured, and the reason this cannot be decided from capabilities alone:
+ * `claude -p` declares `elicitation` at initialize and then answers "Client does
+ * not support form elicitation" when actually asked. The declaration is a
+ * promise the headless client does not keep, so the only reliable test is to ask
+ * and handle the refusal.
+ */
+function asker(server: Server): AskHuman {
+  return async (message) => {
+    let answer;
+    try {
+      answer = await server.elicitInput({
+        message,
+        requestedSchema: {
+          type: 'object',
+          properties: {
+            approve: {
+              type: 'boolean',
+              title: 'Approve',
+              description: 'Yes takes the item from its current assignee.',
+            },
+          },
+          required: ['approve'],
+        },
+      });
+    } catch {
+      return 'unavailable';
+    }
+    return answer.action === 'accept' && answer.content?.['approve'] === true
+      ? 'approved'
+      : 'refused';
+  };
+}
+
 function build(deps: ToolDeps, actor: Actor, authorization: string): Server {
   const server = new Server(
     { name: 'sync', version: '0.3.0' },
     { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
   );
 
+  // Only this path can ask a person anything. The REST surface has no channel to
+  // one, which is correct rather than a gap: an approval must come from a human
+  // who was actually asked, and every other door into this gateway is one an
+  // agent can open by itself.
+  const withHuman: ToolDeps = { ...deps, askHuman: asker(server) };
+
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    const tools = await listTools(deps);
+    const tools = await listTools(withHuman);
     return {
       tools: tools.map((t) => ({
         name: t.name,
@@ -98,7 +151,7 @@ function build(deps: ToolDeps, actor: Actor, authorization: string): Server {
       // Cast because the SDK's result union also covers long-running "task"
       // results, which nothing here produces.
       return (await callTool(
-        deps,
+        withHuman,
         actor,
         authorization,
         name,

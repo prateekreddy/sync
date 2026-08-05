@@ -28,6 +28,14 @@ export type ErrorCode =
    */
   | 'REVOKED'
   /** Same idempotency key replayed with a different body. Caller bug. */
+  /**
+   * The item is assigned to a person, and no human has approved taking it. The
+   * agent cannot clear this by itself — that is the whole point — so it is kept
+   * apart from NOT_CLAIMABLE, whose advice is "pick a different item" and would
+   * be wrong here: this item may well become claimable the moment somebody says
+   * yes.
+   */
+  | 'NEEDS_APPROVAL'
   | 'IDEMPOTENCY_MISMATCH'
   /** The agent's token lacks a capability this tool requires. Not retryable. */
   | 'FORBIDDEN'
@@ -57,6 +65,7 @@ export class GatewayError extends Error {
 export const HTTP_STATUS: Record<ErrorCode, number> = {
   NO_WORK: 404,
   NOT_CLAIMABLE: 409,
+  NEEDS_APPROVAL: 409,
   NOT_HOLDER: 403,
   STALE_EPOCH: 409,
   LEASE_EXPIRED: 410,
@@ -82,6 +91,8 @@ export const RECOVERY: Record<ErrorCode, string> = {
     'This lease was already completed or released. The work is finished — do not re-submit; claim fresh work instead.',
   REVOKED:
     'A person took this item back in Plane while you held it. Stop, discard what you did on it, and do NOT claim it again — claiming it again would undo their decision. Pick different work, and if you think this was a mistake, say so rather than working around it.',
+  NEEDS_APPROVAL:
+    'This item is assigned to somebody. Ask the person you are working with whether you may take it, and say who it is currently assigned to. If they agree, they can approve it in the moment — or unassign it in Plane, which has the same effect and outlasts this conversation. Do not work the item until one of those has happened.',
   IDEMPOTENCY_MISMATCH: 'That idempotency key was used with a different body. Use a new key.',
   FORBIDDEN:
     'Your token does not carry the capability this tool needs. Do not retry — ask your operator to grant it, or use a tool that does not need it.',

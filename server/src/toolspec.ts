@@ -221,18 +221,6 @@ export const ClaimBody = z.object({
         'headers. Do not invent a value — a wrong one is worse than none, because ' +
         'two agents that guess the same string are treated as one session.',
     ),
-  takeover: z
-    .boolean()
-    .optional()
-    .describe(
-      'Only after a human has said yes. An item assigned to someone else is refused; ' +
-        'this says they agreed you may take it, moves it to them as the person who ' +
-        'authorised it, and comments on the item so the original assignee can see what ' +
-        'happened and who decided. The approval is recorded against the item, so nobody ' +
-        'has to ask twice. Requires workItemId — there is no approving an item you have ' +
-        'not named. Never pass it on your own initiative: the gateway cannot tell your ' +
-        'word from theirs, so this argument IS the trust.',
-    ),
 });
 
 export const Held = z.object({

@@ -31,7 +31,7 @@ import {
 } from './oauth.js';
 import { assertCanRead } from './access.js';
 import { closeWatch, mintWatch, pollWatch } from './watch.js';
-import { approveTakeover } from './assignment.js';
+import { approvalNeeded, takeoverApproval } from './assignment.js';
 import { board } from './board.js';
 import { buildIdentity, schemaLevel } from './build.js';
 import { capture } from './capture.js';
@@ -1022,34 +1022,12 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     await canRead(actor, b.projectId);
     const chain = chainFor(actor, b.spawnedBy);
 
-    if (b.takeover && !b.workItemId) {
-      throw new GatewayError(
-        'INVALID',
-        'takeover applies to one named item. A human approved taking a specific piece of ' +
-          'work from its assignee, not whatever the gateway happens to pick.',
-      );
-    }
-
     if (b.workItemId) {
-      // Recorded BEFORE the gate runs, because it is an input to the gate rather
-      // than an override of it: `verifyClaimable` reads the approval table and
-      // stops reporting the assignee once permission is on record. That ordering
-      // is also what makes the permission outlive this call — a compaction between
-      // the human's yes and the claim would otherwise lose it.
-      let takenFrom: string | null = null;
-      if (b.takeover) {
-        // Read before the claim, because claiming overwrites it. Who the work was
-        // taken from is the one fact this exchange is about, and it would
-        // otherwise be gone by the time anyone asked.
-        const current = await plane.getWorkItem(b.projectId, b.workItemId).catch(() => null);
-        takenFrom = current?.assignees?.[0] ?? null;
-        await approveTakeover(pool, {
-          workItemId: b.workItemId,
-          approvedBy: actor.principal,
-          takenFrom,
-          reason: `approved for ${actor.holder}`,
-        });
-      }
+      // An approval already on record is an input to the gate rather than an
+      // override of it: `verifyClaimable` reads the table and stops reporting the
+      // assignee once permission is there. Recording it outlives this call, so a
+      // compaction between the human's yes and the claim cannot lose it.
+      const approval = await takeoverApproval(pool, b.workItemId);
 
       const blockers = await verifyClaimable(plane, b.projectId, b.workItemId, {
         checkChildren: true,
@@ -1057,6 +1035,28 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         viewer: actor.planeUserId,
       });
       if (blockers.length) {
+        // A name on the item is the one refusal an agent cannot clear by itself,
+        // and the one a human can clear in seconds. Reported as its own code with
+        // the assignee attached, so the MCP layer can put the question to a person
+        // rather than the agent having to parse a sentence to find out what to ask.
+        const needs = await approvalNeeded(plane, pool, {
+          projectId: b.projectId,
+          workItemId: b.workItemId,
+          viewer: actor.planeUserId,
+        });
+        if (needs && blockers.length === 1) {
+          throw new GatewayError(
+            'NEEDS_APPROVAL',
+            `${needs.readableId} is assigned to ${needs.names}. Taking it needs their agreement.`,
+            {
+              workItemId: b.workItemId,
+              projectId: b.projectId,
+              readableId: needs.readableId,
+              assignedTo: needs.names,
+              takenFrom: needs.assignees[0] ?? null,
+            },
+          );
+        }
         throw new GatewayError('NOT_CLAIMABLE', `Not ready: ${blockers.join('; ')}`, {
           workItemId: b.workItemId,
           blockers,
@@ -1085,7 +1085,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
           actor,
           epoch: l.epoch,
           expiresAt: l.expiresAt,
-          ...(b.takeover ? { takeover: { takenFrom: takenFrom ?? null } } : {}),
+          ...(approval ? { takeover: { takenFrom: approval.takenFrom } } : {}),
         });
       } catch (err) {
         // Not on a retry: that lease was granted and mirrored by the original
