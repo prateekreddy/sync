@@ -155,19 +155,66 @@ It is idempotent — re-run it to add agents or repair a half-finished setup.
 If a Plane upgrade breaks it, do the same four things in the UI (sign up, workspace,
 project, API token) and put the token in `deploy/.env`.
 
-### Point an agent at it
+### Connect Claude Code
 
-No server access and no admin role needed.
+You do not need server access or an administrator role.
 
-```bash
-claude mcp add --transport http sync https://<gateway-host>/mcp
-claude mcp login sync
-```
+1. Add the Sync gateway.
 
-`login` opens a browser, you paste a Plane personal token once (avatar → Settings
-→ Personal access tokens, any role), pick the agent name and project, and Claude
-Code keeps the result in your system keychain — nothing in a config file or shell
-history. `/mcp` inside a session does the same.
+   ```bash
+   claude mcp add --transport http sync https://<gateway-host>/mcp
+   ```
+
+2. Start the sign-in flow.
+
+   ```bash
+   claude mcp login sync
+   ```
+
+3. In the browser, paste a Plane personal token.
+4. Select the agent name and project.
+5. Make sure that Claude Code can connect.
+
+   ```bash
+   claude mcp list
+   ```
+
+Create the Plane token under **Avatar → Settings → Personal access tokens**. Any
+Plane role can create this token. Claude Code stores the agent token in the system
+keychain. It does not write the token to a configuration file or shell history.
+
+You can also open `/mcp` in a Claude Code session. This command shows the server
+status and starts sign-in when authentication is necessary.
+
+### Connect Codex
+
+You do not need server access or an administrator role.
+
+1. Add the Sync gateway.
+
+   ```bash
+   codex mcp add sync --url https://<gateway-host>/mcp
+   ```
+
+2. Start the sign-in flow.
+
+   ```bash
+   codex mcp login sync
+   ```
+
+3. In the browser, paste a Plane personal token.
+4. Select the agent name and project.
+5. Make sure that Codex can connect.
+
+   ```bash
+   codex mcp list
+   ```
+
+Create the Plane token under **Avatar → Settings → Personal access tokens**. Any
+Plane role can create this token. Codex stores the OAuth credential for later
+sessions.
+
+You can also open `/mcp` in a Codex session to see the server status.
 
 **For headless agents** — `claude -p`, the Agent SDK, CI — there is no browser, so
 exchange the Plane token for an agent token and pass it as a header:
