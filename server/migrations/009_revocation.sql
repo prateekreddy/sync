@@ -1,0 +1,24 @@
+-- ---------------------------------------------------------------------------
+-- A lease can now end because a human took the work back.
+--
+-- Until now a lease ended in one of four ways: the agent finished it, the agent
+-- handed it back, the TTL lapsed, or another agent took it over. None of those
+-- describe the case that actually happens on a shared board -- somebody opens
+-- Plane, unassigns the agent or closes the item, and reasonably expects that to
+-- mean something. It did not: the agent kept its lease, kept working, and
+-- eventually submitted work against an item the human had already moved on from.
+--
+-- `revoked` is a distinct state rather than a reuse of `released` because the two
+-- must be told apart at exactly one point that matters. `released` and
+-- `completed` are endings the agent chose, and the watch endpoint passes over
+-- them in silence -- saying "stop, this is not yours" after a successful complete
+-- would be a lie that costs real work. A revocation is the opposite: the agent
+-- does not know, is still working, and must be told loudly. Folding it into
+-- `released` would put it on the silent path, which is the one behaviour it can
+-- least afford.
+--
+-- Postgres cannot add an enum value inside a transaction block on every version
+-- this has to run against, so this migration deliberately contains nothing else.
+-- ---------------------------------------------------------------------------
+
+alter type lease_state add value if not exists 'revoked';

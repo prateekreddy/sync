@@ -20,6 +20,13 @@ export type ErrorCode =
   | 'LEASE_EXPIRED'
   /** Lease was already completed or released. Terminal — a re-claim is not the fix. */
   | 'LEASE_ENDED'
+  /**
+   * A human took the work back in Plane while the agent held it — unassigned it,
+   * or closed the item. Distinct from `LEASE_EXPIRED`, whose advice is to claim
+   * again: here somebody decided this is not the agent's work, and claiming again
+   * would undo their decision.
+   */
+  | 'REVOKED'
   /** Same idempotency key replayed with a different body. Caller bug. */
   | 'IDEMPOTENCY_MISMATCH'
   /** The agent's token lacks a capability this tool requires. Not retryable. */
@@ -54,6 +61,7 @@ export const HTTP_STATUS: Record<ErrorCode, number> = {
   STALE_EPOCH: 409,
   LEASE_EXPIRED: 410,
   LEASE_ENDED: 409,
+  REVOKED: 409,
   IDEMPOTENCY_MISMATCH: 422,
   FORBIDDEN: 403,
   UNAUTHENTICATED: 401,
@@ -72,6 +80,8 @@ export const RECOVERY: Record<ErrorCode, string> = {
   LEASE_EXPIRED: 'Your lease expired. Claim it again before continuing.',
   LEASE_ENDED:
     'This lease was already completed or released. The work is finished — do not re-submit; claim fresh work instead.',
+  REVOKED:
+    'A person took this item back in Plane while you held it. Stop, discard what you did on it, and do NOT claim it again — claiming it again would undo their decision. Pick different work, and if you think this was a mistake, say so rather than working around it.',
   IDEMPOTENCY_MISMATCH: 'That idempotency key was used with a different body. Use a new key.',
   FORBIDDEN:
     'Your token does not carry the capability this tool needs. Do not retry — ask your operator to grant it, or use a tool that does not need it.',

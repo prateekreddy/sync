@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import { createPool } from './db.js';
 import { setLogger } from './log.js';
 import { sweepExpired } from './lease.js';
+import { reconcileLeases } from './revoke.js';
 import { mirrorReturn } from './mirror.js';
 import { PlaneClient } from './plane.js';
 import { PlaneMcp } from './planemcp.js';
@@ -114,6 +115,18 @@ async function sweep(): Promise<void> {
     }
   } catch (err) {
     app.log.error({ err }, 'sweep failed');
+  }
+
+  // Separate try: a board that will not answer must not stop expired leases from
+  // being reclaimed, and the two failures have nothing to do with each other.
+  try {
+    // Nothing is mirrored back to Plane here, deliberately. This runs *because*
+    // of what Plane already says — the item is closed, or the agent is off it —
+    // so writing to Plane would be the gateway arguing with a human's edit. The
+    // agent learns through its monitor, and its next call refuses with REVOKED.
+    await reconcileLeases(plane, pool);
+  } catch (err) {
+    app.log.error({ err }, 'reconcile failed');
   }
 }
 

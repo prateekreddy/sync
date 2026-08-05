@@ -1,7 +1,13 @@
 import type { Pool } from './db.js';
 import { GatewayError } from './errors.js';
 
-export type LeaseState = 'held' | 'released' | 'expired' | 'completed';
+/**
+ * `revoked` is separate from `released` on purpose. Both mean the lease is over,
+ * but only one of them is news to the agent: `released` and `completed` are
+ * endings it chose, while a revocation happened in Plane while it was working and
+ * it has no way to know. The watch endpoint keys on exactly that difference.
+ */
+export type LeaseState = 'held' | 'released' | 'expired' | 'completed' | 'revoked';
 
 export interface Lease {
   workItemId: string;
@@ -246,8 +252,11 @@ async function explainFailure(
   holder: string,
   epoch: number,
 ): Promise<never> {
-  const { rows } = await pool.query<Row>(
-    `select ${RETURNING} from lease where work_item_id = $1`,
+  // `end_reason` beyond the usual set: a revocation's reason is a human's action
+  // described in their terms, and paraphrasing it here would lose the only part
+  // the agent can act on.
+  const { rows } = await pool.query<Row & { end_reason: string | null }>(
+    `select ${RETURNING}, end_reason from lease where work_item_id = $1`,
     [workItemId],
   );
   const row = rows[0];
@@ -266,6 +275,18 @@ async function explainFailure(
       currentHolder: row.holder,
     });
   }
+  // Before the expiry branch, because that one says "claim it again" and here
+  // that is precisely the wrong move: a person decided this is not the agent's
+  // work, and re-claiming would undo their decision. The reason carries their
+  // action rather than our summary of it.
+  if (row.state === 'revoked') {
+    throw new GatewayError(
+      'REVOKED',
+      row.end_reason ?? 'This item was taken back in Plane while you held it.',
+      { workItemId, state: row.state },
+    );
+  }
+
   // Distinguish "your lease lapsed, claim it again" from "this lease is finished,
   // there is nothing more to do here" — the recovery advice is opposite.
   if (row.state === 'completed' || row.state === 'released') {

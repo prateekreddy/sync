@@ -293,6 +293,20 @@ this while working on that", which constrains nothing.
 
 ## Operating notes
 
+**Taking work back from an agent.** Do it in Plane, the way you would with a
+person: unassign them, or close the item. Within about thirty seconds the lease is
+revoked, the agent is told in plain words on its next check, and its next attempt
+to write anything against that item is refused — with advice not to re-claim it,
+because you decided it was not theirs.
+
+Nothing is written back to Plane when this happens. The revocation exists
+*because* of what Plane says, so mirroring would be the gateway arguing with your
+edit.
+
+Only those two acts count. Retitling, reprioritising or relabelling an item does
+not take it away from anyone, and neither does an unreachable Plane — a revocation
+stops an agent mid-task, so it needs an act that can only mean one thing.
+
 **Which build is running.** `curl <gateway>/healthz` — no token needed, because the
 question comes up before you have one:
 

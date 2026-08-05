@@ -140,6 +140,16 @@ export async function pollWatch(
   let stale = false;
 
   for (const row of rows) {
+    // Taken back in Plane while the agent was working. This is the one ending it
+    // cannot find out about any other way — nobody told it, and from inside the
+    // conversation nothing looks different — so it is said plainly and the reason
+    // a human's action produced is passed through verbatim.
+    if (row.state === 'revoked') {
+      stale = true;
+      say.push(row.end_reason ?? `${row.work_item_id} is no longer yours — stop and discard that work.`);
+      continue;
+    }
+
     // Finished on purpose, by this session. Not a lapse and not a theft, so
     // neither reinstate it nor cry stale — the agent already knows, and telling
     // it to "discard that work" after a successful complete would be a lie that
@@ -189,10 +199,11 @@ export async function pollWatch(
               end_reason   = null
         where work_item_id = $1
           and watch_sha256 = $3
-          -- Expired or lapsed only. A finished lease is excluded here as well as
-          -- above: this statement is the actual guard, and a reinstate that
-          -- reopened a completed item would be silent and unrecoverable.
-          and state not in ('completed', 'released')
+          -- Expired or lapsed only. A finished or revoked lease is excluded here
+          -- as well as above: this statement is the actual guard, and a reinstate
+          -- that reopened a completed item, or handed back one a human had just
+          -- taken away, would be silent and unrecoverable.
+          and state not in ('completed', 'released', 'revoked')
           and (state <> 'held' or expires_at <= now())`,
       [row.work_item_id, EXTEND_S, hash],
     );
