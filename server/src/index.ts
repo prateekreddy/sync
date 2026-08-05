@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import { createPool } from './db.js';
 import { setLogger } from './log.js';
 import { sweepExpired } from './lease.js';
+import { drainMirrors } from './drain.js';
 import { reconcileLeases } from './revoke.js';
 import { mirrorReturn } from './mirror.js';
 import { PlaneClient } from './plane.js';
@@ -127,6 +128,16 @@ async function sweep(): Promise<void> {
     await reconcileLeases(plane, pool);
   } catch (err) {
     app.log.error({ err }, 'reconcile failed');
+  }
+
+  try {
+    // The queue `mirrored = false` always claimed to be. Runs last, so a write
+    // this sweep just queued gets its first retry on the next pass rather than
+    // immediately after failing.
+    const drained = await drainMirrors(plane, pool);
+    if (drained.attempted) app.log.info(drained, 'drained queued plane writes');
+  } catch (err) {
+    app.log.error({ err }, 'mirror drain failed');
   }
 }
 

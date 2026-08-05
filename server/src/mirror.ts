@@ -17,10 +17,15 @@ import type { PlaneClient } from './plane.js';
  * doing.
  *
  * Best-effort everywhere except one place. For completion and return the lease
- * row is the commit point: if a mirror write fails the lease still stands, and
- * `mirrored = false` leaves it on the retry queue. There is deliberately no
+ * row is the commit point: if a mirror write fails the lease still stands and the
+ * write is queued on the row for `drain.ts` to retry. There is deliberately no
  * distributed transaction between the gateway and Plane -- the gateway is
  * authoritative for *who holds what*, Plane for *what it is*.
+ *
+ * "Queued" is now literal. It used to mean `mirrored = false`, which recorded
+ * that a write was owed but not what it was, so nothing could replay it and
+ * nothing did -- the sentence above was true of the intent and false of the
+ * code for months.
  *
  * `mirrorClaim` is the exception, and it earns it. A claim exists to tell people
  * the work is taken; a claim that Plane never heard about is a lease held where
@@ -55,6 +60,76 @@ import type { PlaneClient } from './plane.js';
  * writes, which Plane does not offer; the lease table remains the source of
  * truth either way, so the failure would stay confined to the display.
  */
+/**
+ * The Plane write a lease still owes, in a form that survives a restart.
+ *
+ * Only what cannot be read back off the lease row: the outcome text, whether the
+ * item closes, the labels, and enough of the actor to attribute a comment. The
+ * agent's Plane token is deliberately absent — it is a credential, this is a
+ * database column, and a retry running as the service account is a small loss of
+ * byline against a large one of storing tokens we do not need to store.
+ */
+export type MirrorIntent =
+  | {
+      kind: 'complete';
+      projectId: string;
+      outcome: string;
+      close: boolean;
+      labels?: string[];
+      actor: PortableActor;
+    }
+  | {
+      kind: 'return';
+      projectId: string;
+      reason: string;
+      holder: string;
+      expiryCount?: number;
+    };
+
+export interface PortableActor {
+  holder: string;
+  principal: string;
+  planeUserId: string | null;
+}
+
+const portable = (a: Actor): PortableActor => ({
+  holder: a.holder,
+  principal: a.principal,
+  planeUserId: a.planeUserId ?? null,
+});
+
+/**
+ * Record the debt before attempting it.
+ *
+ * The counter and the backoff are initialised only when there was no debt
+ * already. The drain replays by calling these same functions, so resetting
+ * unconditionally would clear the attempt count on every retry — the row would
+ * always look new, always be due, and be retried forever. The bound would exist
+ * and never once fire.
+ */
+async function owe(pool: Pool, workItemId: string, intent: MirrorIntent): Promise<void> {
+  await pool.query(
+    `update lease
+        set pending_mirror  = $2::jsonb,
+            mirror_attempts = case when pending_mirror is null then 0 else mirror_attempts end,
+            mirror_after    = case when pending_mirror is null then now() else mirror_after end
+      where work_item_id = $1`,
+    [workItemId, JSON.stringify(intent)],
+  );
+}
+
+/** Clear it, once Plane has actually accepted the write. */
+async function settled(pool: Pool, workItemId: string): Promise<void> {
+  await pool.query(
+    `update lease
+        set mirrored       = true,
+            pending_mirror = null,
+            mirror_after   = null
+      where work_item_id = $1`,
+    [workItemId],
+  );
+}
+
 const chains = new Map<string, Promise<void>>();
 
 function serial(workItemId: string, fn: () => Promise<void>): Promise<void> {
@@ -244,6 +319,18 @@ export async function mirrorComplete(
   },
 ): Promise<void> {
   return serial(args.workItemId, async () => {
+    // Recorded before the attempt, cleared after it succeeds — the ordinary
+    // outbox order. A crash in between costs a repeat rather than a loss, and
+    // these writes are idempotent, so a repeat is harmless. The other order
+    // loses the write entirely, which is the bug this exists to end.
+    await owe(pool, args.workItemId, {
+      kind: 'complete',
+      projectId: args.projectId,
+      outcome: args.outcome,
+      close: args.close,
+      ...(args.labels?.length ? { labels: args.labels } : {}),
+      actor: portable(args.actor),
+    });
     try {
       // The assignee goes whether or not the item closes, and it is one write
       // with the state rather than two. An assignee means "somebody is on this",
@@ -282,9 +369,13 @@ export async function mirrorComplete(
           log.warn({ err, workItemId: args.workItemId, labels: args.labels }, 'labelling failed');
         }
       }
-      await pool.query('update lease set mirrored = true where work_item_id = $1', [args.workItemId]);
+      await settled(pool, args.workItemId);
     } catch (err) {
-      log.warn({ err, workItemId: args.workItemId, op: 'complete' }, 'plane mirror failed');
+      // Deliberately not rethrown and deliberately not cleared: the debt stays on
+      // the row and the drain will try again. Before this, the warning below was
+      // the entire response to a failed completion mirror, and the board kept
+      // showing finished work as in progress until a human noticed.
+      log.warn({ err, workItemId: args.workItemId, op: 'complete' }, 'plane mirror failed, queued');
     }
   });
 }
@@ -307,6 +398,13 @@ export async function mirrorReturn(
   },
 ): Promise<void> {
   return serial(args.workItemId, async () => {
+    await owe(pool, args.workItemId, {
+      kind: 'return',
+      projectId: args.projectId,
+      reason: args.reason,
+      holder: args.holder,
+      ...(args.expiryCount === undefined ? {} : { expiryCount: args.expiryCount }),
+    });
     try {
       const todo = await plane.stateByGroup(args.projectId, 'unstarted');
       await plane.updateWorkItem(args.projectId, args.workItemId, {
@@ -329,9 +427,11 @@ export async function mirrorReturn(
         args.workItemId,
         `<p>Returned to the pool: ${args.reason} (was held by ${args.holder}).</p>${repeat}`,
       );
-      await pool.query('update lease set mirrored = true where work_item_id = $1', [args.workItemId]);
+      await settled(pool, args.workItemId);
     } catch (err) {
-      log.warn({ err, workItemId: args.workItemId, op: 'return' }, 'plane mirror failed');
+      // Left owed on purpose. This is the path a dead agent's item takes, so a
+      // failure here is exactly when nobody is watching.
+      log.warn({ err, workItemId: args.workItemId, op: 'return' }, 'plane mirror failed, queued');
     }
   });
 }

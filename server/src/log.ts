@@ -11,11 +11,16 @@
  * health check stays green.
  */
 export interface Logger {
+  // `info` exists for the things that are neither a problem nor silent — a
+  // queued write finally landing is the case that added it, and logging that at
+  // `warn` would train people to ignore warnings.
+  info(obj: unknown, msg?: string): void;
   warn(obj: unknown, msg?: string): void;
   error(obj: unknown, msg?: string): void;
 }
 
 const fallback: Logger = {
+  info: (obj, msg) => console.error(JSON.stringify({ level: 'info', msg, obj })),
   warn: (obj, msg) => console.error(JSON.stringify({ level: 'warn', msg, obj })),
   error: (obj, msg) => console.error(JSON.stringify({ level: 'error', msg, obj })),
 };
@@ -27,6 +32,7 @@ export const setLogger = (l: Logger): void => {
 };
 
 export const log: Logger = {
+  info: (obj, msg) => current.info(obj, msg),
   warn: (obj, msg) => current.warn(obj, msg),
   error: (obj, msg) => current.error(obj, msg),
 };

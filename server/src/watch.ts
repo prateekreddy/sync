@@ -242,12 +242,25 @@ export async function pollWatch(
 export async function closeWatch(pool: Pool, raw: string): Promise<string[]> {
   const { rows } = await pool.query<{ work_item_id: string }>(
     `update lease
-        set state        = 'released',
-            ended_at     = now(),
-            end_reason   = 'session ended with the item still held',
-            expires_at   = now(),
-            mirrored     = false,
-            watch_sha256 = null
+        set state          = 'released',
+            ended_at       = now(),
+            end_reason     = 'session ended with the item still held',
+            expires_at     = now(),
+            mirrored       = false,
+            watch_sha256   = null,
+            -- Queued rather than merely flagged. This used to set the mirrored
+            -- flag and stop, and nothing anywhere acted on it -- so every session
+            -- that ended holding work left it assigned and in progress on the
+            -- board, permanently, with no record that anything had been skipped.
+            -- The drain performs the return; this only records that one is owed.
+            pending_mirror = jsonb_build_object(
+              'kind',      'return',
+              'projectId', project_id,
+              'reason',    'the agent''s session ended while it still held this',
+              'holder',    holder
+            ),
+            mirror_attempts = 0,
+            mirror_after    = now()
       where watch_sha256 = $1 and state = 'held'
     returning work_item_id`,
     [sha256(raw)],

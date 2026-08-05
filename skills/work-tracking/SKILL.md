@@ -340,8 +340,10 @@ Two consequences worth knowing before you act on what you see:
 - **A blocker you just finished can still block its dependant** for a second or so, because the
   readiness gate asks Plane. Wait and retry rather than concluding the link is wrong.
 - **A board still showing "In Progress" for finished work** means a mirror write failed, not that
-  the lease is confused. Say so; do not reach for `update_issue` to "fix" the state, which is exactly
-  the write the gateway refuses on an item you no longer hold.
+  the lease is confused. It is queued and retried automatically, so give it a minute rather than
+  reaching for `plane_issues` to "fix" the state — that is exactly the write the gateway refuses on
+  an item you no longer hold. If it is still wrong well after that, say so; the gateway gives up
+  after several attempts and logs that it did.
 
 ## Going further
 
