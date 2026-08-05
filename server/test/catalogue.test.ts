@@ -33,7 +33,12 @@ function deps(upstream: string[]): ToolDeps {
 
 // Deliberately not in registration order and not alphabetical, so a merge that
 // happens to sort would fail rather than pass by coincidence.
-const UPSTREAM = ['list_issue_types', 'get_issue_type', 'create_label', 'add_cycle_issues'];
+//
+// Names no group claims, on purpose: these tests are about ordering, and a tool
+// that gets folded into a group loses its own position by design. Grouping has
+// its own file. Using real Plane names here would have made this test measure
+// two things and fail for the wrong reason.
+const UPSTREAM = ['ungrouped_alpha', 'ungrouped_delta', 'ungrouped_beta', 'ungrouped_charlie'];
 
 describe('the tool catalogue is ordered deterministically', () => {
   it('returns the same sequence across independent builds', async () => {
@@ -65,11 +70,11 @@ describe('the tool catalogue is ordered deterministically', () => {
   it('drops a Plane tool that would shadow ours, without disturbing the rest', async () => {
     // The shadow check runs inside the same loop that builds the order, so it is
     // the most likely place for a `continue` to take the wrong entry with it.
-    const d = deps(['list_issue_types', 'claim', 'create_label']);
+    const d = deps(['ungrouped_alpha', 'claim', 'ungrouped_beta']);
     const names = (await listTools(d)).map((t) => t.name);
 
     expect(names.filter((n) => n === 'claim')).toHaveLength(1);
-    expect(names.slice(NATIVE_TOOLS.length)).toEqual(['list_issue_types', 'create_label']);
+    expect(names.slice(NATIVE_TOOLS.length)).toEqual(['ungrouped_alpha', 'ungrouped_beta']);
   });
 
   it('serves the coordination tools alone when the child is unreachable', async () => {

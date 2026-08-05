@@ -78,48 +78,53 @@ still does, it predates that.
 
 Keeping the board true is part of the work, not overhead. Once you hold an item:
 
-**Comments — `add_issue_comment`, `get_issue_comments`.** Put the reasoning where the work is. A
-decision, a dead end, a measurement, a question for the human: comment on the item rather than
-letting it evaporate with your context. Read the comments before starting — someone may have already
-tried your first idea.
+Each of these takes an `action`. The tool's own description lists every action it has and the
+arguments each one needs, so read that rather than guessing — what follows is when to reach for
+them, not their signatures.
 
-**Cycles (sprints) — `list_cycles`, `get_cycle`, `create_cycle`, `update_cycle`, `list_cycle_issues`,
-`add_cycle_issues`, `delete_cycle_issue`, `transfer_cycle_issues`.** There is no "current cycle"
-tool: list them and pick by date. Add what you claim to the active cycle so the humans' board shows
-reality, and use `transfer_cycle_issues` to move unfinished work forward rather than leaving it
-stranded in a closed cycle.
+**`comments`** — `list`, `add`. Put the reasoning where the work is. A decision, a dead end, a
+measurement, a question for the human: comment on the item rather than letting it evaporate with
+your context. Read the comments before starting — someone may have already tried your first idea.
 
-**Modules (features / epics) — `list_modules`, `get_module`, `create_module`, `update_module`,
-`list_module_issues`, `add_module_issues`, `delete_module_issue`.** Group a body of related work
-under a module before you fan it out into sub-items; it is how anyone later answers "how far along
-is this feature?".
+**`cycles`** (sprints) — `list`, `get`, `create`, `update`, `delete`, `list_issues`, `add_issues`,
+`remove_issue`, `transfer_issues`. There is no "current cycle" action: `list` them and pick by date.
+Add what you claim to the active cycle so the humans' board shows reality, and use
+`transfer_issues` to move unfinished work forward rather than leaving it stranded in a closed cycle.
 
-**Labels — `list_labels`, `get_label`, `create_label`, `update_label`.** Labels are routing, and the
-most under-used surface here. Reuse what exists (`list_labels` first — a near-duplicate label is
-worse than none). Four are load-bearing: `needs-human`, `needs-refinement`, `blocked`, `wontfix`
-make an item unclaimable. A token's `capabilities` are matched against label names too, so labels
-are how work reaches the agent equipped for it.
+**`modules`** (features / epics) — same actions as cycles, minus the transfer. Group a body of
+related work under a module before you fan it out into sub-items; it is how anyone later answers
+"how far along is this feature?".
+
+**`labels`** — `list`, `get`, `create`, `update`, `delete`. Labels are routing, and the most
+under-used surface here. Reuse what exists (`list` first — a near-duplicate label is worse than
+none). Four are load-bearing: `needs-human`, `needs-refinement`, `blocked`, `wontfix` make an item
+unclaimable. A token's `capabilities` are matched against label names too, so labels are how work
+reaches the agent equipped for it.
 
 `capture(labels: ["backend"])` takes names and creates the label if the project lacks it, so
 labelling costs nothing. A name one character from a load-bearing label (`needs-humans`, `blockd`)
 is refused rather than created — that failure would be silent, withholding nothing while looking
 right. Plane's own tools still take uuids; only `capture` resolves names.
 
-**States — `list_states`, `get_state`.** Read them to understand a project's workflow. Creating,
-updating or deleting a state needs the `destructive` capability you almost certainly do not have,
-and for good reason: the readiness gate reads state *groups*, so removing one strands every item
-that referenced it.
+**`states`** — `list`, `get` freely. Read them to understand a project's workflow. `create`,
+`update` and `delete` need the `destructive` capability you almost certainly do not have, and for
+good reason: the readiness gate reads state *groups*, so removing one strands every item that
+referenced it.
 
-**Work item types — `list_issue_types`, `get_issue_type`, `create_issue_type`, `update_issue_type`.**
-Use the project's own taxonomy (bug / task / spike) rather than encoding it in the title.
+**`issue_types`** — `list`, `get`, `create`, `update`, `delete`. Use the project's own taxonomy
+(bug / task / spike) rather than encoding it in the title.
 
-**Worklogs — `create_worklog`, `get_issue_worklogs`, `get_total_worklogs`, `update_worklog`.** Log
-the real effort when you complete. It is the only way anyone ever learns what this class of work
-actually costs, and estimates without it are folklore.
+**`worklogs`** — `list`, `total`, `create`, `update`, `delete`. Log the real effort when you
+complete. It is the only way anyone ever learns what this class of work actually costs, and
+estimates without it are folklore.
 
-**Lookup and people — `get_issue_using_readable_identifier`** (resolve a human's "PROJ-142" to the
-real item — do this instead of guessing from a title), **`list_project_issues`**, `create_issue`,
-`update_issue`, `get_projects`, `create_project`, `get_user`, `get_workspace_members`.
+**`issues`** — `get_by_identifier` resolves a human's "PROJ-142" to the real item; do that instead
+of guessing from a title. Also `list`, `create`, `update`. For *taking* work use `claim` and for
+writing something down use `capture` — both do more than these, and neither can be replaced by
+them. `update` cannot set `assignees` or `state` on an item you do not hold; that would bypass the
+lease.
+
+**`projects`** — `list`, `create`. **`people`** — `me`, `members`.
 
 A good claimed-work rhythm: claim → comment what you intend → add to the current cycle/module →
 work → comment anything a human would want to know → `complete` with evidence → worklog. And

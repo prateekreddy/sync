@@ -4,6 +4,14 @@ import type { Pool } from './db.js';
 import type { Actor } from './auth.js';
 import { GatewayError, HTTP_STATUS, RECOVERY } from './errors.js';
 import type { PlaneMcp, ToolSpec } from './planemcp.js';
+import {
+  GROUPED_UPSTREAM,
+  PLANE_GROUPS,
+  groupDescription,
+  groupSchema,
+  resolveGroup,
+  type PlaneGroup,
+} from './planegroups.js';
 import { projectToolResult } from './projection.js';
 import { checkToolCall } from './toolpolicy.js';
 import { NATIVE_TOOLS } from './toolspec.js';
@@ -97,14 +105,39 @@ export async function listTools(deps: ToolDeps): Promise<ToolCatalogue[]> {
   }
 
   const taken = new Set(native.map((t) => t.name));
+  const byName = new Map(upstream.map((t) => [t.name, t.inputSchema]));
+
+  // Plane's tools are advertised grouped by the thing they act on. One tool per
+  // REST endpoint is right for an API and wrong for a tool list: the list is what
+  // the model reads to work out what it can do, and 47 near-identical CRUD entries
+  // crowd out the few that matter. The raw names stay callable, just unlisted.
   const proxied: ToolCatalogue[] = [];
-  for (const t of upstream) {
-    // Ours win. A Plane tool that ever takes one of our names would shadow the
-    // only safe way to claim work, so it is dropped loudly instead.
-    if (taken.has(t.name)) {
-      deps.app.log.warn({ tool: t.name }, 'plane mcp tool shadows a gateway tool; not exposed');
+  for (const group of PLANE_GROUPS) {
+    if (taken.has(group.name)) {
+      deps.app.log.warn({ tool: group.name }, 'plane group shadows a gateway tool; not exposed');
       continue;
     }
+    // Only advertise what this Plane actually serves. The upstream surface is a
+    // moving target across versions, and a group offering an action that 404s is
+    // worse than one that never mentions it.
+    const present = Object.entries(group.actions).filter(([, t]) => byName.has(t));
+    if (present.length === 0) continue;
+    const live: PlaneGroup = { ...group, actions: Object.fromEntries(present) };
+
+    proxied.push({
+      name: live.name,
+      description: groupDescription(live, byName),
+      inputSchema: withVerbose(groupSchema(live, byName)),
+      source: 'plane',
+    });
+  }
+
+  // Anything upstream serves that no group covers stays listed on its own, so a
+  // new Plane tool is reachable the day it appears rather than the day someone
+  // remembers to add it here.
+  const covered = new Set(GROUPED_UPSTREAM);
+  for (const t of upstream) {
+    if (covered.has(t.name) || taken.has(t.name)) continue;
     proxied.push({
       name: t.name,
       description: t.description ?? t.name,
@@ -210,12 +243,11 @@ export async function callTool(
   name: string,
   rawArgs: Record<string, unknown>,
 ): Promise<ToolResult> {
-  const spec = (await listTools(deps)).find((t) => t.name === name);
-  const args = withDefaultProject(spec, rawArgs, actor.defaultProjectId);
-
   const native = NATIVE_TOOLS.find((t) => t.name === name);
 
   if (native) {
+    const spec = (await listTools(deps)).find((t) => t.name === name);
+    const args = withDefaultProject(spec, rawArgs, actor.defaultProjectId);
     const { path, body } = native.request(args);
     const res = await deps.app.inject({
       method: native.method,
@@ -254,10 +286,37 @@ export async function callTool(
 
   // `verbose` and `fields` are ours, not Plane's. Strip them before forwarding or
   // the upstream schema rejects the call for an unknown property.
-  const { verbose, fields, ...forwarded } = args;
+  const { verbose, fields, ...rest } = rawArgs;
 
-  const checked = await checkToolCall({ pool: deps.pool, actor }, name, forwarded);
-  const out = await deps.plane.call(actor.planeToken, name, checked);
+  // A grouped name resolves to exactly one upstream tool. Deliberately before the
+  // policy check below: resolving first means a guarded operation is guarded
+  // however it was asked for, rather than only under the name the guard knows.
+  const resolved = resolveGroup(name, rest);
+  if (resolved && 'error' in resolved) {
+    return errorResult('INVALID', resolved.error, RECOVERY.INVALID);
+  }
+  const upstreamName = resolved ? resolved.tool : name;
+  const upstreamArgs = resolved ? resolved.args : rest;
+
+  // Defaulting reads the schema of the tool actually being called, not the group's
+  // — a group's schema is the union of its actions, so an action that takes no
+  // project would otherwise be handed one and rejected upstream for a field it
+  // never asked for.
+  let forwarded = upstreamArgs;
+  try {
+    const specs = await deps.plane.tools();
+    forwarded = withDefaultProject(
+      specs.find((t) => t.name === upstreamName),
+      upstreamArgs,
+      actor.defaultProjectId,
+    );
+  } catch {
+    // Catalogue unavailable: forward what the caller sent. Losing the default is
+    // a worse error message, not a wrong call.
+  }
+
+  const checked = await checkToolCall({ pool: deps.pool, actor }, upstreamName, forwarded);
+  const out = await deps.plane.call(actor.planeToken, upstreamName, checked);
   // An explicit field list wins over verbose: a caller who named fields has said
   // precisely what they want, and honouring the broader flag instead would ignore
   // the more specific request.

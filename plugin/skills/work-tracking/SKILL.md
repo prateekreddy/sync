@@ -20,8 +20,10 @@ Two halves live on one MCP server. Do not confuse them:
   | `link` `unlink` `constrain` | typed edges; take a blocker back; a requirement on existing work |
   | `held` | what am I holding |
 
-- **Plane's own tools** — currently 47 — are a faithful wrapper over Plane's API and have **no
-  notion of a lease**. Everything below the coordination loop is theirs.
+- **Plane's own surface** — 10 tools, grouped by the thing they act on: `cycles`, `modules`,
+  `labels`, `states`, `issue_types`, `worklogs`, `comments`, `issues`, `projects`, `people`. Each
+  takes an `action` (`list`, `get`, `create`, `update`, `delete`, and a few of its own); the tool's
+  description lists every action with the arguments it needs. They have **no notion of a lease**.
 
 Both halves are served *by the gateway*, not by anything installed here, so the catalogue grows on a
 gateway deploy with nothing to reinstall. Treat the tool list you were handed as authoritative rather
