@@ -1,0 +1,126 @@
+# Organising work: decomposition, relations, and the rest of Plane
+
+## Contents
+- The levels you actually have — modules, sub-items, labels
+- Decomposing an item into children
+- Typed relations between items
+- Plane's own surface: cycles, modules, labels, states, comments, worklogs
+
+Read this when you are structuring work rather than taking it. The loop itself —
+`held` → `claim` → `complete` — is in [SKILL.md](SKILL.md).
+
+## Decomposition and relations
+
+**The levels you actually have** (measured against Plane 1.3.1, not assumed):
+
+| Level | Nests? | Use it for |
+|---|---|---|
+| Module | **no** — one flat layer | the epic: a feature or workstream |
+| Work item → sub-item | **yes, arbitrarily deep** | decomposition; verified three levels, a child can itself be a parent |
+| Label | n/a — many per item | cross-cutting dimensions: area, capability, risk |
+
+Modules are the epic layer. They do not nest — `parent` on a module is accepted and silently
+dropped, so code written against "sub-modules" looks like it worked and did nothing. Depth below the
+epic comes from sub-items, which do nest and which the readiness gate understands transitively.
+
+**A module has to earn its existence.** One per feature or workstream, never one per task. The
+threshold: would a human ask "how far along is *that*?" as a question in its own right, over weeks
+rather than hours? If not, it is a parent work item with sub-items, or just a label. Forty modules
+is not an epic layer — it is a second copy of the backlog with worse tooling, and it makes the
+progress rollup that justifies modules meaningless. Check `list_modules` before creating one; a
+near-duplicate module is worse than none.
+
+**Modules and labels are orthogonal, and that is the point.** An item sits in exactly one module and
+one parent chain, but carries as many labels as apply. So "which feature is this part of" is a
+module, "what kind of work is it" is a label. Reaching for a module because you want two groupings
+at once is the mistake — that is what labels are for.
+
+- **`tree(workItemId)`** shows what is already under an item — every sub-item with its state and,
+  if someone is working it, the holder and lease expiry. Call it *before* decomposing: it is the
+  only way to see whether the work was already broken up, and "unfinished" without a holder is a
+  different thing from "unfinished and already being worked".
+- **`decompose`** writes every child in one call, and is the right tool for breaking work up.
+  `capture(parentId: …)` makes a single sub-item and is for adding one child to a plan that already
+  exists. The difference matters because a parent with unfinished children stops being claimable —
+  which is what you want, it is a container rather than a task, and it composes up the tree so a
+  grandparent stays unclaimable while any leaf under it is open. But it also means the plan goes
+  live at its *first* child: written one capture at a time, another agent can claim child 1 and
+  start work while children 2–5 are still in your head. `decompose` is not a transaction — if some
+  children fail the rest still land — so read `complete` in the reply, and `failed`, which names
+  exactly which children did not.
+- **`discoveredFrom`** is provenance, not structure — usually derived from your lease rather than
+  passed. If you pass it where you meant `parentId`, the fleet will happily claim the parent as
+  well as the child. Giving `parentId` suppresses the provenance edge, because a parent already
+  places the item and says something stronger.
+- **`link`** records `blocking`, `blocked_by`, `duplicate`, `relates_to`. Plane's vocabulary is
+  `blocking`, not "blocks" — anything else is accepted and then silently ignored. Link a blocker the
+  moment you find one; the readiness gate reads it and will stop another agent burning a run on it.
+- **`unlink`** is how you take a `blocked_by` back. Read the reply to `link`: Plane keeps *every*
+  relation on a pair rather than replacing one, so re-linking the same pair as `relates_to` adds an
+  edge and leaves the `blocked_by` gating. `link` names those under `conflicts` — before this it
+  returned `ok` and an agent correcting a mistake believed it had.
+
+  What `unlink` does **not** do is delete the edge, because Plane's API has no way to: the relations
+  endpoint is get and post only, at every version. It stops the readiness gate honouring it, writes
+  a comment on the item saying so, and records who decided and why — `reason` is required. Plane's
+  UI will still draw the edge until a human deletes it there. Retract when a dependency stops being
+  true, not to hurry past one you find inconvenient; `reinstate: true` puts it back.
+
+### What you can see
+
+Your token is scoped to the projects **your own Plane user** is a member of. `find`, `next`,
+`board`, `tree`, `why`, `history`, `search` and `claim` all refuse a project you are not in, and the
+refusal names the projects you *can* see — so if you get a `FORBIDDEN`, read the list rather than
+guessing at ids. Before 2026-08-03 most of these read any project in the workspace; if a gateway
+still does, it predates that.
+
+## Use the rest of Plane
+
+Keeping the board true is part of the work, not overhead. Once you hold an item:
+
+**Comments — `add_issue_comment`, `get_issue_comments`.** Put the reasoning where the work is. A
+decision, a dead end, a measurement, a question for the human: comment on the item rather than
+letting it evaporate with your context. Read the comments before starting — someone may have already
+tried your first idea.
+
+**Cycles (sprints) — `list_cycles`, `get_cycle`, `create_cycle`, `update_cycle`, `list_cycle_issues`,
+`add_cycle_issues`, `delete_cycle_issue`, `transfer_cycle_issues`.** There is no "current cycle"
+tool: list them and pick by date. Add what you claim to the active cycle so the humans' board shows
+reality, and use `transfer_cycle_issues` to move unfinished work forward rather than leaving it
+stranded in a closed cycle.
+
+**Modules (features / epics) — `list_modules`, `get_module`, `create_module`, `update_module`,
+`list_module_issues`, `add_module_issues`, `delete_module_issue`.** Group a body of related work
+under a module before you fan it out into sub-items; it is how anyone later answers "how far along
+is this feature?".
+
+**Labels — `list_labels`, `get_label`, `create_label`, `update_label`.** Labels are routing, and the
+most under-used surface here. Reuse what exists (`list_labels` first — a near-duplicate label is
+worse than none). Four are load-bearing: `needs-human`, `needs-refinement`, `blocked`, `wontfix`
+make an item unclaimable. A token's `capabilities` are matched against label names too, so labels
+are how work reaches the agent equipped for it.
+
+`capture(labels: ["backend"])` takes names and creates the label if the project lacks it, so
+labelling costs nothing. A name one character from a load-bearing label (`needs-humans`, `blockd`)
+is refused rather than created — that failure would be silent, withholding nothing while looking
+right. Plane's own tools still take uuids; only `capture` resolves names.
+
+**States — `list_states`, `get_state`.** Read them to understand a project's workflow. Creating,
+updating or deleting a state needs the `destructive` capability you almost certainly do not have,
+and for good reason: the readiness gate reads state *groups*, so removing one strands every item
+that referenced it.
+
+**Work item types — `list_issue_types`, `get_issue_type`, `create_issue_type`, `update_issue_type`.**
+Use the project's own taxonomy (bug / task / spike) rather than encoding it in the title.
+
+**Worklogs — `create_worklog`, `get_issue_worklogs`, `get_total_worklogs`, `update_worklog`.** Log
+the real effort when you complete. It is the only way anyone ever learns what this class of work
+actually costs, and estimates without it are folklore.
+
+**Lookup and people — `get_issue_using_readable_identifier`** (resolve a human's "PROJ-142" to the
+real item — do this instead of guessing from a title), **`list_project_issues`**, `create_issue`,
+`update_issue`, `get_projects`, `create_project`, `get_user`, `get_workspace_members`.
+
+A good claimed-work rhythm: claim → comment what you intend → add to the current cycle/module →
+work → comment anything a human would want to know → `complete` with evidence → worklog. And
+`capture` everything you noticed on the way.

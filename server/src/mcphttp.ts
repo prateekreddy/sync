@@ -56,8 +56,11 @@ Three rules, in order of how easy they are to get wrong:
 
 3. FINISH EXPLICITLY. End with complete (include the evidence — a PR link, a
    commit, what you verified) or release. Going silent means the lease expires
-   and someone else redoes your work. On long tasks call heartbeat periodically,
-   or the lease lapses while you are still working.
+   and someone else redoes your work.
+
+An item you claim stays yours for as long as you are working on it, however long
+that takes. If it is ever taken from you, you will be told so in plain words —
+stop then, and discard that work rather than submitting it.
 
 After a restart, call held first to find out what you were in the middle of.
 

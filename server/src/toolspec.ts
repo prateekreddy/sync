@@ -500,16 +500,19 @@ export const NATIVE_TOOLS: NativeTool[] = [
     method: 'POST',
     request: (a) => ({ path: '/v1/claim', body: a }),
   },
-  {
-    name: 'heartbeat',
-    title: 'Keep your claim alive',
-    description:
-      'Extend the lease on an item you hold. Call this periodically during long work — if the ' +
-      'lease lapses the item returns to the pool and another agent may take it.',
-    schema: HeartbeatBody,
-    method: 'POST',
-    request: (a) => ({ path: '/v1/heartbeat', body: a }),
-  },
+  // `heartbeat` is deliberately not a tool.
+  //
+  // A monitor outside the conversation keeps leases alive, so an agent has no
+  // reason to call this — and offering it anyway is not free. A tool in the list
+  // is a thing the model has to consider and can misuse, and one described as
+  // "call periodically during long work" reintroduces exactly the obligation the
+  // monitor exists to remove. Naming it only to say "you will not need this"
+  // teaches the concept and then spends words unteaching it, which lands as
+  // doubt rather than as nothing.
+  //
+  // POST /v1/heartbeat remains, for clients running without the plugin and for
+  // extending a lease meant to outlive its session. It is reachable by anything
+  // that speaks HTTP; it is simply not put in front of the model.
   {
     name: 'release',
     title: 'Give work back',

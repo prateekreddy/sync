@@ -130,9 +130,10 @@ describe('the field detail survives the trip to the model', () => {
       plane: null,
     } as unknown as Parameters<typeof callTool>[0];
 
-    const out = await callTool(plain, {} as never, 'Bearer t', 'heartbeat', {
+    const out = await callTool(plain, {} as never, 'Bearer t', 'release', {
       workItemId: '00000000-0000-4000-8000-000000000000',
       epoch: 1,
+      reason: 'handing it back',
     });
     const rendered = out.content.map((c) => ('text' in c ? c.text : '')).join('\n');
 

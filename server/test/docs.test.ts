@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { NATIVE_TOOLS } from '../src/toolspec.js';
 import { INSTRUCTIONS } from '../src/mcphttp.js';
@@ -19,6 +19,13 @@ import { INSTRUCTIONS } from '../src/mcphttp.js';
 const repo = (p: string) => fileURLToPath(new URL(`../../${p}`, import.meta.url));
 const read = (p: string) => readFileSync(repo(p), 'utf8');
 
+/** Every file the playbook is made of, SKILL.md and the references beside it. */
+const skillFiles = (): string[] => readdirSync(repo('skills/work-tracking')).sort();
+const skillText = (): string =>
+  skillFiles()
+    .map((f) => read(`skills/work-tracking/${f}`))
+    .join('\n');
+
 describe('the skill covers the surface it claims to', () => {
   /**
    * The general check, and the one worth having: a tool that exists and is not in
@@ -27,9 +34,121 @@ describe('the skill covers the surface it claims to', () => {
    * is the only moment anyone has the context to write it down well.
    */
   it('names every coordination tool', () => {
-    const skill = read('skills/work-tracking/SKILL.md');
-    const missing = NATIVE_TOOLS.map((t) => t.name).filter((n) => !skill.includes(`\`${n}\``));
+    // Across the whole skill, not just SKILL.md: reference material moved into
+    // sibling files when the playbook outgrew the 500-line budget, and a tool
+    // documented in one of those is still documented.
+    const missing = NATIVE_TOOLS.map((t) => t.name).filter((n) => !skillText().includes(`\`${n}\``));
     expect(missing).toEqual([]);
+  });
+
+  /**
+   * The plugin has to ship a real copy -- an installed plugin cannot reach back
+   * into this repository -- and two copies of anything drift. This is the cheapest
+   * thing that makes the drift loud: editing one and not the other fails here,
+   * rather than shipping rules that quietly disagree with the ones we develop
+   * against. The plugin directory was already advertising a skill it did not
+   * contain, which is the same failure one step earlier.
+   */
+  it('ships the same playbook in the plugin', () => {
+    for (const f of skillFiles()) {
+      expect(read(`plugin/skills/work-tracking/${f}`)).toBe(read(`skills/work-tracking/${f}`));
+    }
+  });
+
+  it('ships every file the skill has, and no stale extras', () => {
+    // A file added here and not copied would leave the installed plugin with a
+    // dangling link; one deleted here and left there would ship rules we no
+    // longer keep.
+    expect(readdirSync(repo('plugin/skills/work-tracking')).sort()).toEqual(skillFiles());
+  });
+});
+
+/**
+ * The limits Anthropic publishes for skill authoring, checked rather than
+ * remembered. Each of these was already wrong once: the body ran past the budget,
+ * and the plugin advertised a skill directory that was empty.
+ */
+describe('the playbook obeys the authoring limits', () => {
+  it('keeps SKILL.md under the 500-line budget', () => {
+    // Past this the body starts competing with conversation history, and the
+    // guidance is to split into files that load only when needed.
+    expect(read('skills/work-tracking/SKILL.md').split('\n').length).toBeLessThan(500);
+  });
+
+  it('keeps every reference one level deep from SKILL.md', () => {
+    // Claude partially reads files reached through another reference -- it will
+    // `head` them rather than read them -- so a link from a linked file silently
+    // yields incomplete instructions. Every reference must hang off SKILL.md.
+    const links = (text: string): string[] =>
+      [...text.matchAll(/\]\((?!https?:)([^)]+\.md)\)/g)].map((m) => m[1]!);
+
+    for (const f of skillFiles()) {
+      if (f === 'SKILL.md') continue;
+      expect(links(read(`skills/work-tracking/${f}`))).toEqual(['SKILL.md']);
+    }
+  });
+
+  it('points at reference files that exist', () => {
+    const skill = read('skills/work-tracking/SKILL.md');
+    const targets = [...skill.matchAll(/\]\((?!https?:)([^)]+\.md)\)/g)].map((m) => m[1]!);
+    expect(targets.length).toBeGreaterThan(0);
+    expect(targets.filter((t) => !skillFiles().includes(t))).toEqual([]);
+  });
+
+  it('gives every reference file a table of contents', () => {
+    // For anything past ~100 lines, so a partial read still shows the full scope
+    // of what is in the file.
+    for (const f of skillFiles()) {
+      if (f === 'SKILL.md') continue;
+      expect(read(`skills/work-tracking/${f}`)).toMatch(/^## Contents$/m);
+    }
+  });
+
+  it('describes the skill in the third person, with when to use it', () => {
+    // The description is injected into the system prompt and is what selection
+    // runs on; first or second person there measurably hurts discovery.
+    const front = read('skills/work-tracking/SKILL.md').split('---')[1] ?? '';
+    const description = /description:\s*(.+)/.exec(front)?.[1] ?? '';
+    expect(description.length).toBeGreaterThan(0);
+    expect(description.length).toBeLessThanOrEqual(1024);
+    expect(description).toMatch(/use when/i);
+    expect(description).not.toMatch(/\b(I can|you can help|I will)\b/i);
+  });
+});
+
+describe('what the agent is told to keep doing', () => {
+  /**
+   * Liveness moved out of the model and into a monitor, and an instruction to
+   * heartbeat is now worse than merely stale: it describes an obligation the
+   * agent will fail to meet, and the whole point of the change is that it no
+   * longer has to. The old wording survived in three places at once, which is
+   * why this is checked rather than remembered.
+   */
+  const promisesToHeartbeat = (text: string): boolean =>
+    /heartbeat (every|periodically|roughly every)|call heartbeat periodically/i.test(text);
+
+  it('does not ask for a heartbeat in the server instructions', () => {
+    expect(promisesToHeartbeat(INSTRUCTIONS)).toBe(false);
+  });
+
+  it('does not ask for a heartbeat in the playbook', () => {
+    expect(promisesToHeartbeat(read('skills/work-tracking/SKILL.md'))).toBe(false);
+  });
+
+  it('tells the agent its claim holds, without naming the machinery', () => {
+    // Silence is not reassurance: an agent that reads no mention of leases at all
+    // reasonably assumes a long task is unprotected. But the reassurance has to be
+    // positive. Saying "you do not need to call heartbeat" teaches the tool and
+    // then spends words unteaching it, which lands as doubt rather than as nothing
+    // — so the fact is stated and the mechanism is not mentioned.
+    expect(INSTRUCTIONS).toMatch(/stays yours for as long as you are working on it/i);
+    expect(INSTRUCTIONS).not.toMatch(/heartbeat/i);
+  });
+
+  it('keeps the tool off the surface the model chooses from', () => {
+    // A tool in the list is one the model must consider and can misuse. The HTTP
+    // endpoint stays for clients without the plugin; it is simply not offered.
+    expect(NATIVE_TOOLS.map((t) => t.name)).not.toContain('heartbeat');
   });
 });
 
