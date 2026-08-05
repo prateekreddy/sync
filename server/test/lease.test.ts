@@ -102,6 +102,118 @@ describe('claim', () => {
   });
 });
 
+/**
+ * A claim that never arrived, sent again.
+ *
+ * The 2026-07-28 MCP revision removed stream resumability, so a client whose
+ * connection drops mid-request is expected to re-issue it. The gateway therefore
+ * has to answer the same `claim` twice, and the honest answer to "did I get it?"
+ * is yes -- the first one succeeded, the reply is what was lost.
+ *
+ * Telling the agent "another agent holds this item" would be true only in the
+ * uselessly literal sense that the other agent is itself, and the recovery advice
+ * attached to that error sends it off to find different work while its own lease
+ * sits there held and unworked until it expires.
+ */
+describe('a retried claim', () => {
+  it('returns the same lease rather than reporting a conflict', async () => {
+    const workItemId = randomUUID();
+    const session = `s-${randomUUID()}`;
+    const first = await claim(pool, {
+      workItemId, projectId: PROJECT, holder: 'a', ttlSeconds: 60, sessionId: session,
+    });
+    const again = await claim(pool, {
+      workItemId, projectId: PROJECT, holder: 'a', ttlSeconds: 60, sessionId: session,
+    });
+
+    expect(again).not.toBeNull();
+    expect(again!.epoch).toBe(first!.epoch);
+  });
+
+  it('does not restart the clock the maximum-hold cap is measured against', async () => {
+    // If a retry reset claimed_at, an agent that retried periodically would push
+    // the ceiling out forever -- the runaway case that cap exists to bound.
+    const workItemId = randomUUID();
+    const session = `s-${randomUUID()}`;
+    const first = await claim(pool, {
+      workItemId, projectId: PROJECT, holder: 'a', ttlSeconds: 60, sessionId: session,
+    });
+    await sleep(50);
+    const again = await claim(pool, {
+      workItemId, projectId: PROJECT, holder: 'a', ttlSeconds: 60, sessionId: session,
+    });
+
+    expect(again!.claimedAt.getTime()).toBe(first!.claimedAt.getTime());
+  });
+
+  it('is not confused with a second window belonging to the same human', async () => {
+    // The dangerous near-miss. Agents authenticate as the person running them, so
+    // `holder` alone is the same across every window they open; matching on it
+    // would let a second session silently join the first one's lease and both
+    // would work the item believing they owned it.
+    const workItemId = randomUUID();
+    expect(await claim(pool, {
+      workItemId, projectId: PROJECT, holder: 'a', ttlSeconds: 60, sessionId: 's-one',
+    })).not.toBeNull();
+    expect(await claim(pool, {
+      workItemId, projectId: PROJECT, holder: 'a', ttlSeconds: 60, sessionId: 's-two',
+    })).toBeNull();
+  });
+
+  it('refuses when the session is unknown, rather than guessing', async () => {
+    // A client that reports no session gets today's semantics: degraded, never
+    // wrong. Treating null as matching null would make every such client share
+    // one identity, which is the failure above with no way to detect it.
+    const workItemId = randomUUID();
+    expect(await claim(pool, {
+      workItemId, projectId: PROJECT, holder: 'a', ttlSeconds: 60,
+    })).not.toBeNull();
+    expect(await claim(pool, {
+      workItemId, projectId: PROJECT, holder: 'a', ttlSeconds: 60,
+    })).toBeNull();
+  });
+
+  it('still refuses a different agent in the same session', async () => {
+    const workItemId = randomUUID();
+    expect(await claim(pool, {
+      workItemId, projectId: PROJECT, holder: 'a', ttlSeconds: 60, sessionId: 's-one',
+    })).not.toBeNull();
+    expect(await claim(pool, {
+      workItemId, projectId: PROJECT, holder: 'b', ttlSeconds: 60, sessionId: 's-one',
+    })).toBeNull();
+  });
+
+  it('does not revive a lease the session already finished', async () => {
+    // `complete` then `claim` is not a retry, it is starting over -- and it must
+    // go through the normal path so the epoch moves.
+    const workItemId = randomUUID();
+    const session = `s-${randomUUID()}`;
+    const l = await claim(pool, {
+      workItemId, projectId: PROJECT, holder: 'a', ttlSeconds: 60, sessionId: session,
+    });
+    await release(pool, { workItemId, holder: 'a', epoch: l!.epoch, reason: 'done for now' });
+
+    const again = await claim(pool, {
+      workItemId, projectId: PROJECT, holder: 'a', ttlSeconds: 60, sessionId: session,
+    });
+    expect(again!.epoch).toBe(2);
+  });
+
+  it('survives the same claim being sent twice at once', async () => {
+    // Not hypothetical: a client that retries on timeout can have both requests
+    // in flight, since the first was never cancelled -- only unanswered.
+    const workItemId = randomUUID();
+    const session = `s-${randomUUID()}`;
+    const both = await Promise.all([
+      claim(pool, { workItemId, projectId: PROJECT, holder: 'a', ttlSeconds: 60, sessionId: session }),
+      claim(pool, { workItemId, projectId: PROJECT, holder: 'a', ttlSeconds: 60, sessionId: session }),
+    ]);
+
+    expect(both.every((l) => l !== null)).toBe(true);
+    expect(new Set(both.map((l) => l!.epoch)).size).toBe(1);
+  });
+});
+
 describe('fencing', () => {
   it('rejects a late-waking agent whose item was reclaimed', async () => {
     // The failure that silently corrupts state without a fencing token: agent A

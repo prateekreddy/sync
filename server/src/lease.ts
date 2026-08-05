@@ -113,6 +113,50 @@ export async function claim(pool: Pool, opts: ClaimOpts): Promise<Lease | null> 
       opts.sessionId ?? null,
     ],
   );
+  if (rows[0]) return toLease(rows[0]);
+
+  // The statement above refused, which normally means somebody else holds it.
+  // One case hiding in there is this caller's own lease: the 2026-07-28 MCP
+  // revision dropped stream resumability, so a client whose connection breaks
+  // mid-request re-issues it, and the honest answer to "did I get it?" is yes --
+  // the claim landed, the reply is what was lost.
+  //
+  // Answered here rather than by widening the predicate above, so that the one
+  // statement responsible for mutual exclusion keeps meaning exactly one thing.
+  // This costs a round trip only on the path that was about to fail anyway, and
+  // it stays correct when both copies of a retried request arrive at once: the
+  // insert is still what decides, and the loser reads back the winner's row.
+  return retryOf(pool, opts);
+}
+
+/**
+ * Recognise a re-sent claim, and nothing else.
+ *
+ * The match is deliberately narrow, because the near-miss is dangerous. Agents
+ * authenticate as the person running them, so `holder` is identical across every
+ * window that person has open; matching on holder alone would let a second
+ * session join the first one's lease with both believing they owned the item --
+ * the collision this design exists to prevent, reintroduced as a convenience.
+ *
+ * So the session must be known and equal. A client that reports no session gets
+ * today's behaviour, which is a refusal: degraded, never wrong. Treating null as
+ * matching null would collapse every such client into one identity.
+ */
+async function retryOf(pool: Pool, opts: ClaimOpts): Promise<Lease | null> {
+  if (!opts.sessionId) return null;
+  const { rows } = await pool.query<Row>(
+    `select ${RETURNING} from lease
+      where work_item_id = $1
+        and session_id   = $2
+        and holder       = $3
+        and state        = 'held'
+        and expires_at   > now()`,
+    [opts.workItemId, opts.sessionId, opts.holder],
+  );
+  // Returned exactly as it stands: same epoch, same claimed_at. Bumping the
+  // epoch would invalidate work the agent has already done under it, and moving
+  // claimed_at would push out the maximum-hold ceiling, so an agent that retried
+  // often enough could hold an item indefinitely.
   return rows[0] ? toLease(rows[0]) : null;
 }
 
