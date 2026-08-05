@@ -32,10 +32,20 @@ input=$(cat 2>/dev/null || true)
 jqr() { printf '%s' "$input" | "$(dirname "$0")/sync-json" "$1" 2>/dev/null; }
 get() { printf '%s' "$1" | "$(dirname "$0")/sync-json" "$2" 2>/dev/null; }
 
+# Hook input first, environment second. The fallback matters more than it looks:
+# it named CLAUDE_SESSION_ID, which is not a variable Claude Code sets, so every
+# hook that could not parse its stdin quietly agreed on the session "default" --
+# and two windows both called "default" share one watch file, which is precisely
+# the confusion between concurrent sessions this design removes. A wrong name
+# fails silently here; there is no error, only a wrong answer.
 SESSION=$(jqr '.session_id')
 case "$SESSION" in
-  ''|null) SESSION="${CLAUDE_SESSION_ID:-default}" ;;
+  ''|null) SESSION="${CLAUDE_CODE_SESSION_ID:-}" ;;
 esac
+# Still nothing: use a per-process name rather than a shared one. Being unable to
+# group this session's state is a small loss; merging it with an unrelated
+# session's is a real one.
+[ -n "$SESSION" ] || SESSION="pid-$PPID"
 WATCH_FILE="$STATE_DIR/$SESSION.watch"
 
 case "$CMD" in

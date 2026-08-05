@@ -24,6 +24,21 @@ on that. If none of the three exists, the push fence and session tracking are
 That is the whole reason the check exists: a guard nobody knows is disabled is
 worse than no guard, because you push stale work believing something checked it.
 
+## Pointing it at your own gateway
+
+sync is self-hosted, so the bundled URL is a default rather than an address you
+are stuck with. Set `SYNC_MCP_URL`:
+
+```jsonc
+// ~/.claude/settings.json — or .claude/settings.json to scope it to one repo
+{ "env": { "SYNC_MCP_URL": "https://sync.your-company.internal/mcp" } }
+```
+
+That is enough on its own; the variable is read where the plugin's `.mcp.json`
+declares the server, so there is nothing to edit inside the plugin and nothing to
+re-do when it updates. Exporting it in your shell works too, but only for windows
+launched from that shell, which is a confusing way to lose half your sessions.
+
 ## What it installs
 
 | | |

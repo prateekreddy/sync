@@ -2,7 +2,10 @@
   "mcpServers": {
     "sync": {
       "type": "http",
-      "url": "https://mcp.plane.shipitnow.dev/mcp"
+      "url": "${SYNC_MCP_URL:-https://mcp.plane.shipitnow.dev/mcp}",
+      "headers": {
+        "X-Sync-Session": "${CLAUDE_CODE_SESSION_ID}"
+      }
     }
   }
 }

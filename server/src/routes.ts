@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { Pool } from './db.js';
 import {
@@ -160,6 +160,36 @@ export function sizeSuffix(
  * an ordinary one. Past it the search falls back to titles and says so.
  */
 const WORKSPACE_SWEEP_LIMIT = 25;
+
+/**
+ * Which client session this request belongs to.
+ *
+ * Carried by a header the plugin sets from `${CLAUDE_CODE_SESSION_ID}`, which the
+ * client substitutes when it connects. That is the whole point: the model is
+ * never asked for it, never sees it, and cannot forget or invent it. A body field
+ * that the model has to populate would be exactly the kind of promise-for-later
+ * this design exists to stop relying on.
+ *
+ * The header therefore wins over the body. The body remains as a fallback for
+ * clients that are not the plugin, and it is the less trustworthy of the two:
+ * anything the model types is a guess about its own identity.
+ *
+ * An unsubstituted `${...}` is treated as absent rather than as a session id. A
+ * client that failed to expand it would otherwise send one identical literal from
+ * every window on every machine -- collapsing every agent everywhere into a single
+ * session, which is worse than having no session at all: retries would match
+ * across unrelated agents and hand one the other's lease.
+ */
+export function sessionOf(
+  req: Pick<FastifyRequest, 'headers'>,
+  body?: { sessionId?: string | undefined },
+): string | null {
+  const raw = req.headers['x-sync-session'];
+  const header = Array.isArray(raw) ? raw[0] : raw;
+  const usable =
+    header && header.trim() && !header.includes('${') ? header.trim().slice(0, 200) : null;
+  return usable ?? body?.sessionId ?? null;
+}
 
 export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   const { pool, plane } = deps;
@@ -1038,7 +1068,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         holder: actor.holder,
         holderChain: chain,
         ttlSeconds: b.ttlSeconds,
-        sessionId: b.sessionId ?? null,
+        sessionId: sessionOf(req, b),
       });
       if (!l) {
         throw new GatewayError('NOT_CLAIMABLE', 'Another agent holds this item', {
@@ -1062,7 +1092,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       // makes it the only place a credential can be issued without inventing a
       // new obligation for something that forgets.
       const watch = await mintWatch(pool, {
-        sessionId: b.sessionId ?? null,
+        sessionId: sessionOf(req, b),
         workItemId: l.workItemId,
       });
       return {
@@ -1100,7 +1130,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         holder: actor.holder,
         holderChain: chain,
         ttlSeconds: b.ttlSeconds,
-        sessionId: b.sessionId ?? null,
+        sessionId: sessionOf(req, b),
       });
       if (!l) continue; // lost the race; try the next one
       void mirrorClaim(plane.as(actor.planeToken), pool, {

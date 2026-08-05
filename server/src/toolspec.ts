@@ -216,10 +216,10 @@ export const ClaimBody = z.object({
     .max(200)
     .optional()
     .describe(
-      'Your client session id, if your client supplies one. Sent by the sync plugin ' +
-        'automatically. Agents authenticate as the human running them, so without this ' +
-        'two windows of the same person are indistinguishable and one can keep the ' +
-        "other's lease alive.",
+      'Leave this alone. The sync plugin sends your session on a header, which ' +
+        'overrides anything set here; it exists only for clients that cannot set ' +
+        'headers. Do not invent a value — a wrong one is worse than none, because ' +
+        'two agents that guess the same string are treated as one session.',
     ),
   takeover: z
     .boolean()
