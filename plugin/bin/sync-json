@@ -1,0 +1,59 @@
+#!/usr/bin/env sh
+#
+# Read one field out of JSON on stdin. Prints nothing if it is absent.
+#
+#   printf '%s' "$body" | sync-json tool_response.watchUrl
+#
+# Exists for two reasons, and the second is the important one.
+#
+# It removes a hard dependency: requiring jq would mean the fence and the session
+# bracket silently stop working on a machine without it, and silence is the
+# failure mode this whole design is trying to eliminate. Any one of jq, node or
+# python3 will do, and a machine running Claude Code has at least one.
+#
+# And it replaces parsing JSON with sed, which was what these scripts did first.
+# That works right up until a value contains an escaped quote or the fields come
+# back in a different order, at which point it does not fail -- it quietly returns
+# the wrong string. A fence that reads the wrong field is worse than no fence.
+set -u
+
+path="${1:-}"
+[ -n "$path" ] || exit 0
+# Accept both `.a.b` and `a.b`. Callers write it either way depending on whether
+# they are thinking in jq or in dotted paths, and a silent empty answer because
+# of a leading dot is exactly the kind of failure this helper exists to prevent.
+path="${path#.}"
+
+if command -v jq >/dev/null 2>&1; then
+  jq -r "try (.${path}) // empty" 2>/dev/null
+elif command -v node >/dev/null 2>&1; then
+  node -e '
+    let raw = "";
+    process.stdin.on("data", (d) => (raw += d));
+    process.stdin.on("end", () => {
+      try {
+        const v = process.argv[1]
+          .split(".")
+          .reduce((o, k) => (o == null ? o : o[k]), JSON.parse(raw));
+        if (v !== undefined && v !== null) process.stdout.write(String(v));
+      } catch {
+        // Absent, or not JSON at all. Both mean "no value", and neither is worth
+        // failing a hook over.
+      }
+    });
+  ' "$path" 2>/dev/null
+elif command -v python3 >/dev/null 2>&1; then
+  python3 -c '
+import json, sys
+try:
+    v = json.load(sys.stdin)
+    for k in sys.argv[1].split("."):
+        v = v[k]
+    if v is not None:
+        sys.stdout.write(str(v))
+except Exception:
+    pass
+' "$path" 2>/dev/null
+fi
+
+exit 0

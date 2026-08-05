@@ -58,16 +58,15 @@ while true; do
       # Rotation: the reply carries the URL to use next. Written before anything
       # else is reported, so a crash mid-pass loses a message rather than the
       # credential.
-      next=$(printf '%s' "$body" | sed -n 's/.*"watchUrl":"\([^"]*\)".*/\1/p')
+      next=$(printf '%s' "$body" | "$(dirname "$0")/sync-json" watchUrl)
       [ -n "$next" ] && printf '%s' "$next" > "$WATCH_FILE"
 
       # Anything the human or agent needs to know arrives as a line on stdout,
       # which Claude Code delivers into the session as a notification. The
       # gateway decides what is worth saying; this only relays it, so what an
       # agent gets told can change without shipping a new plugin.
-      printf '%s' "$body" | sed -n 's/.*"say":"\([^"]*\)".*/\1/p' | while read -r line; do
-        [ -n "$line" ] && echo "sync: $line"
-      done
+      say=$(printf '%s' "$body" | "$(dirname "$0")/sync-json" say)
+      [ -n "$say" ] && echo "sync: $say"
     else
       # 410 means the credential is spent -- after a long sleep, or once the
       # session ended. Not an error worth reporting: the lease it protected is

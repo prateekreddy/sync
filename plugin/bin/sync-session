@@ -23,12 +23,11 @@ CMD="${1:-}"
 STATE_DIR="${SYNC_STATE_DIR:-$HOME/.claude/sync}"
 mkdir -p "$STATE_DIR" 2>/dev/null || true
 
-# No jq, no parsing, no hook. Exiting quietly beats failing an unrelated tool
-# call because a helper is missing on someone's machine.
-command -v jq >/dev/null 2>&1 || exit 0
-
 input=$(cat 2>/dev/null || true)
-jqr() { printf '%s' "$input" | jq -r "$1" 2>/dev/null || true; }
+# Portable across jq / node / python3 -- see bin/sync-json. No hard dependency,
+# because a missing helper would disable the fence silently.
+jqr() { printf '%s' "$input" | "$(dirname "$0")/sync-json" "$1"; }
+get() { printf '%s' "$1" | "$(dirname "$0")/sync-json" "$2"; }
 
 SESSION=$(jqr '.session_id')
 case "$SESSION" in
@@ -56,9 +55,8 @@ case "$CMD" in
     # produced the original bug -- state it up front, where it cannot be skipped.
     [ -r "$WATCH_FILE" ] || exit 0
     body=$(curl -fsS -m 10 "$(cat "$WATCH_FILE")" 2>/dev/null) || exit 0
-    printf '%s' "$body" | sed -n 's/.*"holding":"\([^"]*\)".*/\1/p' | while read -r held; do
-      [ -n "$held" ] && echo "You are still holding $held. Resume it or release it."
-    done
+    held=$(get "$body" holding)
+    [ -n "$held" ] && echo "You are still holding $held. Resume it or release it." 
     ;;
 
   close)
@@ -80,18 +78,15 @@ case "$CMD" in
     # must not make it impossible to push. Fail open, loudly.
     [ -r "$WATCH_FILE" ] || exit 0
     body=$(curl -fsS -m 10 "$(cat "$WATCH_FILE")" 2>/dev/null) || exit 0
-    case "$body" in
-      *'"stale":true'*)
-        reason=$(printf '%s' "$body" | sed -n 's/.*"say":"\([^"]*\)".*/\1/p' | head -1)
-        jq -n --arg r "${reason:-Your lease was revoked or has lapsed. Do not push this work.}" '{
-          hookSpecificOutput: {
-            hookEventName: "PreToolUse",
-            permissionDecision: "deny",
-            permissionDecisionReason: $r
-          }
-        }'
-        ;;
-    esac
+    if [ "$(get "$body" stale)" = "true" ]; then
+      reason=$(get "$body" say)
+      [ -n "$reason" ] || reason="Your lease was revoked or has lapsed. Do not push this work."
+      # Emitted by hand rather than with jq: this is the one path that must work
+      # on a machine with no JSON tooling at all, because failing open here means
+      # publishing work the lease no longer covers.
+      printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
+        "$(printf '%s' "$reason" | sed 's/\\/\\\\/g; s/"/\\"/g; s/^/"/; s/$/"/')"
+    fi
     ;;
 esac
 
