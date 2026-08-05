@@ -1,0 +1,7 @@
+[
+  {
+    "name": "lease",
+    "command": "${CLAUDE_PLUGIN_ROOT}/bin/sync-monitor",
+    "description": "Keeps your claim alive while you work, and says so if it is taken away"
+  }
+]

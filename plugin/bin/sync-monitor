@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+#
+# Keeps a claim alive without the agent having to remember anything.
+#
+# The heartbeat used to be the agent's job: call it periodically or lose the
+# lease. That failed exactly as you would expect -- an agent worked for an hour
+# without calling it, the lease lapsed, another agent took the item, and the two
+# collided. An obligation that comes due *later* is one a model will eventually
+# drop, because it has no clock and forgets its own history at every compaction.
+#
+# So liveness moved here. This is a process, not a promise: Claude Code starts it
+# with the session and it dies with the session. It has no opinions and cannot be
+# talked out of running.
+#
+# It also solves the case no hook can see. Closing a laptop fires no event -- the
+# session neither ends nor restarts, it suspends. This process suspends with it
+# and resumes with it, so the first poll after a gap *is* the resume signal, and
+# the gateway can say "your lease lapsed but the item is still free, reinstated"
+# or "someone else took it, stop and discard".
+#
+# Deliberately dumb. It re-reads the credential every pass rather than caching it,
+# which is what makes it self-healing: rotate the URL, expire it, mint a new one
+# after a long sleep -- the next pass picks it up with no restart and no
+# coordination. Nothing here needs to be maintained, which is the point.
+set -uo pipefail
+
+# The credential is a capability URL: possession is authorisation, and it can do
+# exactly two things -- extend this session's leases and report their state. It
+# cannot claim, complete, capture, or read a work item. That is why a generous
+# lifetime is safe, and why this file only needs to be user-readable rather than
+# guarded like a password.
+TOKEN_DIR="${SYNC_STATE_DIR:-$HOME/.claude/sync}"
+WATCH_FILE="$TOKEN_DIR/${CLAUDE_SESSION_ID:-default}.watch"
+
+INTERVAL="${SYNC_POLL_SECONDS:-120}"
+# Backoff is per-process and resets on any success. A gateway that is down must
+# not turn into a poll every two seconds from every open session.
+BACKOFF=0
+MAX_BACKOFF=900
+
+while true; do
+  # Re-read every pass. See the note above: this is the self-healing property,
+  # not laziness. A cached URL is one that cannot be rotated or reissued.
+  if [ -r "$WATCH_FILE" ]; then
+    url=$(cat "$WATCH_FILE" 2>/dev/null || true)
+  else
+    # No lease held, so nothing to keep alive. Costing nothing in this state is
+    # what makes it acceptable to run always.
+    url=""
+  fi
+
+  if [ -n "$url" ]; then
+    body=$(curl -fsS -m 20 "$url" 2>/dev/null) && rc=0 || rc=$?
+
+    if [ "$rc" -eq 0 ]; then
+      BACKOFF=0
+
+      # Rotation: the reply carries the URL to use next. Written before anything
+      # else is reported, so a crash mid-pass loses a message rather than the
+      # credential.
+      next=$(printf '%s' "$body" | sed -n 's/.*"watchUrl":"\([^"]*\)".*/\1/p')
+      [ -n "$next" ] && printf '%s' "$next" > "$WATCH_FILE"
+
+      # Anything the human or agent needs to know arrives as a line on stdout,
+      # which Claude Code delivers into the session as a notification. The
+      # gateway decides what is worth saying; this only relays it, so what an
+      # agent gets told can change without shipping a new plugin.
+      printf '%s' "$body" | sed -n 's/.*"say":"\([^"]*\)".*/\1/p' | while read -r line; do
+        [ -n "$line" ] && echo "sync: $line"
+      done
+    else
+      # 410 means the credential is spent -- after a long sleep, or once the
+      # session ended. Not an error worth reporting: the lease it protected is
+      # long gone, and the next tool call mints a fresh one. Staying quiet here
+      # is deliberate; a monitor that narrates its own failures trains people to
+      # ignore it, and then it cannot tell them the one thing that matters.
+      BACKOFF=$(( BACKOFF == 0 ? 30 : BACKOFF * 2 ))
+      [ "$BACKOFF" -gt "$MAX_BACKOFF" ] && BACKOFF=$MAX_BACKOFF
+    fi
+  fi
+
+  sleep "$(( INTERVAL + BACKOFF ))"
+done

@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+#
+# The four moments the gateway cannot see for itself.
+#
+# The gateway knows everything about a lease except what is happening to the
+# agent holding it. It cannot tell a session ending from an agent thinking, and
+# it cannot see git at all. These hooks supply exactly those facts and nothing
+# else -- every one of them is an accelerator, and the gateway's own timeout
+# remains the guarantee. That layering is deliberate: a hook that fails must cost
+# latency, never correctness, because hooks do not run when a process is killed.
+#
+#   harvest  after claim   -- capture the watch URL for the monitor
+#   report   on resume     -- say what is still held, so a restored session knows
+#   close    on session end-- hand back what is still held
+#   fence    before push   -- refuse to publish work the lease no longer covers
+#
+# Hook input arrives as JSON on stdin. Every path here exits 0 unless it means to
+# block, because a hook that errors on an unrelated failure would wedge the agent
+# for a reason that has nothing to do with it.
+set -uo pipefail
+
+CMD="${1:-}"
+STATE_DIR="${SYNC_STATE_DIR:-$HOME/.claude/sync}"
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+
+# No jq, no parsing, no hook. Exiting quietly beats failing an unrelated tool
+# call because a helper is missing on someone's machine.
+command -v jq >/dev/null 2>&1 || exit 0
+
+input=$(cat 2>/dev/null || true)
+jqr() { printf '%s' "$input" | jq -r "$1" 2>/dev/null || true; }
+
+SESSION=$(jqr '.session_id')
+case "$SESSION" in
+  ''|null) SESSION="${CLAUDE_SESSION_ID:-default}" ;;
+esac
+WATCH_FILE="$STATE_DIR/$SESSION.watch"
+
+case "$CMD" in
+  harvest)
+    # `claim` is the one call an agent must make, so it is the one place a
+    # credential can be handed over without adding an obligation. The model never
+    # sees this happen and cannot forget to do it.
+    url=$(jqr '.tool_response.watchUrl')
+    if [ -n "$url" ] && [ "$url" != "null" ]; then
+      # 0600: possession of this URL is authorisation. Its powers are small --
+      # extend this session's leases and report them -- but small is not none.
+      umask 077
+      printf '%s' "$url" > "$WATCH_FILE"
+    fi
+    ;;
+
+  report)
+    # A resumed or compacted session has no memory of what it holds. Rather than
+    # trusting the agent to call `held` -- the same "remember to do it later" that
+    # produced the original bug -- state it up front, where it cannot be skipped.
+    [ -r "$WATCH_FILE" ] || exit 0
+    body=$(curl -fsS -m 10 "$(cat "$WATCH_FILE")" 2>/dev/null) || exit 0
+    printf '%s' "$body" | sed -n 's/.*"holding":"\([^"]*\)".*/\1/p' | while read -r held; do
+      [ -n "$held" ] && echo "You are still holding $held. Resume it or release it."
+    done
+    ;;
+
+  close)
+    # Best-effort by design. This does not fire on a crash or a killed terminal,
+    # which is exactly why the gateway's timeout has to be the real guarantee --
+    # this only makes the common case fast.
+    [ -r "$WATCH_FILE" ] || exit 0
+    curl -fsS -m 10 -X DELETE "$(cat "$WATCH_FILE")" >/dev/null 2>&1 || true
+    rm -f "$WATCH_FILE"
+    ;;
+
+  fence)
+    # The lease protects the gateway's bookkeeping; it cannot stop an agent
+    # writing files. A push is where private work becomes everyone's problem, so
+    # it is the last moment a stale holder can be stopped cheaply -- and the only
+    # one that would have prevented the collision this design exists to fix.
+    #
+    # Refusing to reach the gateway is NOT a reason to block: a network failure
+    # must not make it impossible to push. Fail open, loudly.
+    [ -r "$WATCH_FILE" ] || exit 0
+    body=$(curl -fsS -m 10 "$(cat "$WATCH_FILE")" 2>/dev/null) || exit 0
+    case "$body" in
+      *'"stale":true'*)
+        reason=$(printf '%s' "$body" | sed -n 's/.*"say":"\([^"]*\)".*/\1/p' | head -1)
+        jq -n --arg r "${reason:-Your lease was revoked or has lapsed. Do not push this work.}" '{
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "deny",
+            permissionDecisionReason: $r
+          }
+        }'
+        ;;
+    esac
+    ;;
+esac
+
+exit 0
