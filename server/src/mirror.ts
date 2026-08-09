@@ -6,6 +6,8 @@ import { UNVERIFIED_LABEL } from './evidence.js';
 import { resolveLabels } from './labels.js';
 import { log } from './log.js';
 import type { PlaneClient } from './plane.js';
+import { rollUp } from './rollup.js';
+import { serial } from './serial.js';
 
 /**
  * Reflects lease state into Plane so humans watching a board see what agents are
@@ -34,27 +36,6 @@ import type { PlaneClient } from './plane.js';
  * costs a note while losing the assignment costs duplicated work.
  */
 
-/**
- * Mirror writes for one work item, run strictly in order.
- *
- * Every mirror call is fired and forgotten so an agent never waits on Plane. That
- * is right, but it means two mirrors for the same item are in flight at once
- * whenever an agent claims and finishes quickly — and each is several requests
- * long (look up a state, PATCH it, post a comment). If the claim's PATCH lands
- * after the completion's, Plane is left showing "In Progress" for an item that is
- * done, and it stays that way: nothing ever recomputes it.
- *
- * That is not cosmetic. The readiness gate answers "is this blocker finished?"
- * and "does this parent still have open children?" by reading Plane, so a lost
- * completion strands every item downstream of it.
- *
- * Chaining per item costs nothing — the common case has an empty chain — and
- * makes the last call win, which is the only ordering that can be correct.
- *
- * Scope: one gateway process. Two replicas would need Plane-side conditional
- * writes, which Plane does not offer; the lease table remains the source of
- * truth either way, so the failure would stay confined to the display.
- */
 /**
  * The Plane write a lease still owes, in a form that survives a restart.
  *
@@ -123,27 +104,6 @@ async function settled(pool: Pool, workItemId: string): Promise<void> {
       where work_item_id = $1`,
     [workItemId],
   );
-}
-
-const chains = new Map<string, Promise<void>>();
-
-function serial(workItemId: string, fn: () => Promise<void>): Promise<void> {
-  const prev = chains.get(workItemId) ?? Promise.resolve();
-  const next = prev.then(fn, fn); // a failed predecessor must not block the rest
-  chains.set(workItemId, next);
-  void next
-    .finally(() => {
-      // Only the tail clears the entry, or a slow early write would drop a chain
-      // that later calls are still queued behind.
-      if (chains.get(workItemId) === next) chains.delete(workItemId);
-    })
-    // The cleanup is a second branch off `next`, so a rejection travels down it
-    // as well as to the caller. Nobody is listening on this one, and since
-    // `mirrorClaim` began throwing to trigger a rollback that surfaces as an
-    // unhandled rejection -- which newer Node treats as fatal. The caller still
-    // gets the error through the returned promise; this only silences the copy.
-    .catch(() => {});
-  return next;
 }
 
 /**
@@ -288,6 +248,11 @@ export async function mirrorClaim(
       // The claim stands and is visible; only the annotation is missing.
       log.warn({ err, workItemId: args.workItemId, op: 'claim' }, 'plane claim note failed');
     }
+
+    // Deliberately not awaited: `claim` waits for this whole function, and an
+    // item having a parent is not a reason for the agent that claimed it to wait
+    // longer. The rollup is best-effort by design and says so in rollup.ts.
+    void rollUp(plane, args.projectId, args.workItemId).catch(() => {});
   });
 }
 
@@ -362,6 +327,12 @@ export async function mirrorComplete(
         }
       }
       await settled(pool, args.workItemId);
+
+      // Only when the item actually closed. A completion that leaves the item
+      // open changed no state a container could be derived from, so nudging
+      // would be a project listing spent to decide nothing. The claim path has
+      // no such test because a claim always moves the item to `started`.
+      if (args.close) void rollUp(plane, args.projectId, args.workItemId).catch(() => {});
     } catch (err) {
       // Deliberately not rethrown and deliberately not cleared: the debt stays on
       // the row and the drain will try again. Before this, the warning below was
@@ -377,6 +348,10 @@ export async function mirrorComplete(
  *
  * Always comments — a lease that lapsed because an agent died is exactly the kind
  * of event that is invisible and expensive if it happens silently.
+ *
+ * No container rollup here, unlike claim and complete. Returning an item moves it
+ * back to `unstarted`, and `rolledGroup` never un-starts a container that has
+ * genuinely been worked on — so the nudge could only ever decide nothing.
  */
 export async function mirrorReturn(
   plane: PlaneClient,
