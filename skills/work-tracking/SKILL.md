@@ -13,7 +13,7 @@ Two halves live on one MCP server. Do not confuse them:
 
   | | Answers |
   |---|---|
-  | `capture` `decompose` | write it down; break it up in one call |
+  | `capture` `decompose` `gather` | write it down; break it up in one call; file loose items under one container |
   | `next` `find` `search` `board` | what is there — ready, filtered, workspace-wide, rolled up |
   | `why` `tree` `history` | why not this one; what is under it — or, with no item, the top level; has it been tried before |
   | `claim` `complete` `release` | the loop |

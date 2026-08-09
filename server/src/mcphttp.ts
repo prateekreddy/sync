@@ -107,7 +107,11 @@ function asker(server: Server): AskHuman {
             approve: {
               type: 'boolean',
               title: 'Approve',
-              description: 'Yes takes the item from its current assignee.',
+              // Neutral, because two different calls ask through here — taking an
+              // item off its assignee, and regrouping a pile of them. What is at
+              // stake is in the message; repeating a guess about it here could
+              // contradict the question actually being asked.
+              description: 'Yes goes ahead with what the message describes. No changes nothing.',
             },
           },
           required: ['approve'],

@@ -146,6 +146,40 @@ export const TreeQuery = z.object({
   fields,
 });
 
+export const GatherBody = z.object({
+  projectId: uuid,
+  workItemIds: z
+    .array(uuid)
+    .min(1)
+    .max(50)
+    .describe('The loose items to file. They keep their own state, priority and labels.'),
+  containerId: uuid
+    .optional()
+    .describe('An existing item to file them under. Give this or title, not both.'),
+  title: titleField
+    .optional()
+    .describe(
+      'Make a new container with this name instead. Name the outcome the group delivers, ' +
+        'not the category it belongs to — "Agents can find work without being told where it is" ' +
+        'reads as something that finishes; "Search improvements" never does.',
+    ),
+  body: z.string().optional().describe('What this group is, for whoever opens it later.'),
+  reparent: z
+    .boolean()
+    .optional()
+    .describe(
+      'Move items that already hang off something else. Off by default: that overrules a ' +
+        'placement somebody made, and the call is refused naming those items so you can decide.',
+    ),
+  approvedBy: z
+    .string()
+    .optional()
+    .describe(
+      'Filled in by the server after a person answers. Anything you send here is discarded — ' +
+        'the point of the field is that it records an answer you did not write.',
+    ),
+});
+
 export const DecomposeBody = z.object({
   projectId: uuid,
   parentId: uuid.describe('The item being broken up. It becomes a container and stops being claimable.'),
@@ -377,6 +411,23 @@ export const NATIVE_TOOLS: NativeTool[] = [
     schema: DecomposeBody,
     method: 'POST',
     request: (a) => ({ path: '/v1/decompose', body: a }),
+  },
+  {
+    name: 'gather',
+    title: 'File loose items under one container',
+    description:
+      'The inverse of decompose: take items that already exist and put them under one parent, ' +
+      'either an item you name or a new one this creates. Use it when a project has gone flat — ' +
+      'lots of open items hanging off nothing, which tree with no workItemId and board\'s ' +
+      'rootlessOpen both show — because the alternative is editing each item by hand, which is ' +
+      'why flat boards stay flat. A person is asked before anything moves, and shown the list: ' +
+      'deciding what belongs under what is a judgement about somebody\'s work, so propose it and ' +
+      'let them answer. If they say no, write the proposal down rather than filing it anyway. ' +
+      'Items that already hang off something else are left alone unless you pass reparent. ' +
+      'Not a transaction — check `complete` and `failed`.',
+    schema: GatherBody,
+    method: 'POST',
+    request: (a) => ({ path: '/v1/gather', body: a }),
   },
   {
     name: 'next',

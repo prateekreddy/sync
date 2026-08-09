@@ -306,7 +306,7 @@ const errorResult = (
   };
 };
 
-/** What the claim endpoint tells us about a refusal a person could lift. */
+/** What an endpoint tells us about a refusal a person could lift. */
 interface ApprovalDetail {
   workItemId?: string;
   projectId?: string;
@@ -314,7 +314,35 @@ interface ApprovalDetail {
   readableId?: string;
   assignedTo?: string;
   takenFrom?: string | null;
+  /**
+   * The question to put, composed by the endpoint that raised the refusal.
+   *
+   * Present when the permission is carried in the retry rather than recorded in
+   * the database — `gather` works this way. The endpoint writes the question
+   * because it is the layer holding the items; making the transport reassemble it
+   * would put a board listing in front of a yes/no prompt.
+   */
+  question?: string;
+  /**
+   * Which request field a yes gets written into.
+   *
+   * The endpoint names it, so adding a second approvable call needs no change
+   * here. Whatever the model sent under that name is discarded first — see
+   * `GRANT_FIELDS`.
+   */
+  grant?: string;
 }
+
+/**
+ * Fields an agent may never author, because their whole value is that a human
+ * put them there.
+ *
+ * Stripped from every incoming call before the request is built, and set only
+ * after an elicitation actually returned an approval. Without the strip the field
+ * would be exactly as trustworthy as `takeover: true` was — a boolean the model
+ * sets to assert that somebody agreed.
+ */
+const GRANT_FIELDS = ['approvedBy'];
 
 /**
  * Put the takeover to a human, and record their answer if they say yes.
@@ -342,7 +370,14 @@ async function requestApproval(
   actor: Actor,
   detail: ApprovalDetail,
 ): Promise<'approved' | 'refused' | 'unavailable'> {
-  if (!deps.askHuman || !detail.workItemId) return 'unavailable';
+  if (!deps.askHuman) return 'unavailable';
+
+  // The endpoint wrote its own question and wants the answer handed back in the
+  // retry. Nothing is recorded: unlike a takeover, the write happens immediately
+  // in this same call, so there is no gap for a compaction to lose the yes in.
+  if (detail.question) return deps.askHuman(detail.question);
+
+  if (!detail.workItemId) return 'unavailable';
 
   // The readable id arrives already formatted, from the layer that was holding
   // the item. Looking it up here would put a board listing on the path of asking
@@ -387,20 +422,26 @@ export async function callTool(
     // handed straight to claim without a translation step the agent has to know
     // about. Costs nothing when the value is already a uuid — the lookup is not
     // even consulted.
-    const args = deps.rest
+    const resolved = deps.rest
       ? await resolveIds(
           new NameBook(deps.rest),
           withProject,
           projectArg(withProject) ?? actor.defaultProjectId,
         )
       : withProject;
+    // Before anything is built from them. A model that sent `approvedBy` is not
+    // refused, it is simply not believed — the field means "a person answered",
+    // and the only thing that can put it there is an answer.
+    const args = { ...resolved };
+    for (const f of GRANT_FIELDS) delete args[f];
+
     const { path, body } = native.request(args);
-    const send = () =>
+    const send = (grant?: Record<string, unknown>) =>
       deps.app.inject({
         method: native.method,
         url: path,
         headers: { authorization, ...(body ? { 'content-type': 'application/json' } : {}) },
-        ...(body ? { payload: body as object } : {}),
+        ...(body ? { payload: { ...(body as object), ...grant } } : {}),
       });
 
     let res = await send();
@@ -411,16 +452,26 @@ export async function callTool(
     // human; the endpoint stays the single implementation and is simply called
     // again once permission exists.
     if (res.statusCode >= 400 && (parsed as { error?: string }).error === 'NEEDS_APPROVAL') {
-      const outcome = await requestApproval(deps, actor, parsed as ApprovalDetail);
+      const detail = parsed as ApprovalDetail;
+      const outcome = await requestApproval(deps, actor, detail);
       if (outcome === 'refused') {
-        return errorResult(
-          'NEEDS_APPROVAL',
-          'The person you are working with said no. This item is not yours to take.',
-          'Do not ask again for this item in this session, and do not work it. Pick different work.',
-        );
+        return detail.question
+          ? errorResult(
+              'NEEDS_APPROVAL',
+              'The person you are working with said no, so nothing was changed.',
+              'Do not send this again. Write down what you proposed — a capture, or a comment on ' +
+                'the item it concerned — so the suggestion survives even though it was declined.',
+            )
+          : errorResult(
+              'NEEDS_APPROVAL',
+              'The person you are working with said no. This item is not yours to take.',
+              'Do not ask again for this item in this session, and do not work it. Pick different work.',
+            );
       }
       if (outcome === 'approved') {
-        res = await send();
+        // A takeover's yes lives in the database, so its retry is the same call
+        // again. A yes that lives in the request has to be carried into it.
+        res = await send(detail.grant ? { [detail.grant]: actor.principal } : undefined);
         parsed = res.body ? JSON.parse(res.body) : {};
       }
       // 'unavailable' falls through to the original refusal, whose recovery line

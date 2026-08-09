@@ -59,6 +59,19 @@ at once is the mistake — that is what labels are for.
   start work while children 2–5 are still in your head. `decompose` is not a transaction — if some
   children fail the rest still land — so read `complete` in the reply, and `failed`, which names
   exactly which children did not.
+- **`gather`** is the inverse of `decompose`: it takes items that already exist and files them
+  under one container, either an item you name or a new one it creates. Reach for it when the top
+  level has stopped being scannable — that is what a long `roots` list and a high `rootlessOpen`
+  are telling you. **A person is asked before anything moves**, and shown the list; deciding what
+  belongs under what is a judgement about somebody's work, so propose it rather than doing it. If
+  they say no, capture the proposal instead of filing it anyway. Items that already hang off
+  something else are left alone unless you pass `reparent`, because moving those overrules a
+  placement somebody made.
+
+  Name a container by the **outcome it delivers**, not the category it belongs to: "Agents can find
+  work without being told where it is" reads as something that finishes, "Search improvements"
+  never does. Aim for a top level of roughly five to nine containers — that is a screen a person
+  can hold in their head — and prefer a group whose members are only finished together.
 - **`discoveredFrom`** is provenance, not structure — usually derived from your lease rather than
   passed. If you pass it where you meant `parentId`, the fleet will happily claim the parent as
   well as the child. Giving `parentId` suppresses the provenance edge, because a parent already

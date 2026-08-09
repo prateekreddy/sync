@@ -45,6 +45,7 @@ import {
   type EvidencePolicy,
 } from './evidence.js';
 import { ABSENT_LABEL, absent, checkEvidence, type GitHubConfig } from './ghcheck.js';
+import { gather } from './gather.js';
 import { decompose } from './decompose.js';
 import { GatewayError, HTTP_STATUS, RECOVERY } from './errors.js';
 import * as lease from './lease.js';
@@ -66,6 +67,7 @@ import {
   CaptureBody,
   ClaimBody,
   DecomposeBody,
+  GatherBody,
   CompleteBody,
   HeartbeatBody,
   HistoryQuery,
@@ -803,6 +805,14 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     const actor = await actorOf(req);
     const b = DecomposeBody.parse(req.body);
     return decompose(plane.as(actor.planeToken), pool, actor, b);
+  });
+
+  // ── gather ───────────────────────────────────────────────────────────────
+  app.post('/v1/gather', async (req) => {
+    const actor = await actorOf(req);
+    const b = GatherBody.parse(req.body);
+    await canRead(actor, b.projectId);
+    return gather(plane.as(actor.planeToken), actor, b);
   });
 
   // ── next (read-only) ─────────────────────────────────────────────────────
