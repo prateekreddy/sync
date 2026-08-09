@@ -39,6 +39,11 @@ at once is the mistake — that is what labels are for.
   if someone is working it, the holder and lease expiry. Call it *before* decomposing: it is the
   only way to see whether the work was already broken up, and "unfinished" without a holder is a
   different thing from "unfinished and already being worked".
+- **`tree(projectId)` with no `workItemId`** answers the other direction: `roots`, every item with
+  no parent, two levels deep. This is where to start on a project you do not know, or after a break
+  — it is the shape of the work, which a flat listing cannot show. A long `roots` list *is* the
+  finding: a top level nobody can scan means the work has never been grouped, and `board`'s
+  `rootlessOpen` puts a number on it.
 - **`decompose`** writes every child in one call, and is the right tool for breaking work up.
   `capture(parentId: …)` makes a single sub-item and is for adding one child to a plan that already
   exists. The difference matters because a parent with unfinished children stops being claimable —

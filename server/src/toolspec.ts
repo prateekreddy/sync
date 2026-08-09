@@ -120,8 +120,22 @@ export const WhyQuery = z.object({
 
 export const TreeQuery = z.object({
   projectId: uuid,
-  workItemId: uuid,
-  depth: z.coerce.number().int().min(1).max(10).default(5),
+  workItemId: uuid
+    .optional()
+    .describe(
+      'Omit to see the top level of the project — every item with no parent, with ' +
+        'what is under it. That is the question to start from when you do not already ' +
+        'know which item you want.',
+    ),
+  // No `.default()`: the right depth differs between the two questions, and only
+  // the handler knows which was asked. See tree.ts.
+  depth: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(10)
+    .optional()
+    .describe('Levels to expand. Defaults to 5 under a named item, 2 for the top level.'),
   ready: z.coerce
     .boolean()
     .optional()
@@ -391,7 +405,7 @@ export const NATIVE_TOOLS: NativeTool[] = [
   },
   {
     name: 'tree',
-    title: 'What is under this item?',
+    title: 'What is under this item — or at the top of this project?',
     description:
       'The sub-tree under a work item — every sub-item with its state, priority and, if someone ' +
       'is working it right now, the holder and when their lease runs out. Also returns the path ' +
@@ -399,7 +413,10 @@ export const NATIVE_TOOLS: NativeTool[] = [
       'openDescendants, the count of unfinished work below it. Use this before decomposing ' +
       'further, and instead of listing the project and reassembling it yourself. Pass ' +
       'ready: true to see only what you could claim, with the containers holding it kept so ' +
-      'the tree still makes sense.',
+      'the tree still makes sense. Omit workItemId to get the top level instead: every item with ' +
+      'no parent, in `roots`, each with its own children. Start there when you are new to a ' +
+      'project or picking up after a break — it is the shape of the work, which a flat listing ' +
+      'cannot show you.',
     schema: TreeQuery,
     method: 'GET',
     request: (a) => ({ path: q('/v1/tree', a) }),

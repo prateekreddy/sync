@@ -31,8 +31,26 @@ export type TreeNode = WorkItemView & {
 export interface Tree {
   /** Root first, ending at the requested item's parent. Empty when it is a root. */
   path: Array<{ workItemId: string; readableId: string; title: string }>;
-  node: TreeNode;
-  /** Unfinished descendants, at any depth. What "how much is left" means. */
+  /**
+   * The addressed item. Present when `workItemId` was given, absent otherwise —
+   * exactly one of this and `roots` is ever set.
+   */
+  node?: TreeNode;
+  /**
+   * Every item with no parent, when no item was addressed.
+   *
+   * This is the question a person opens a tracker with — "what are the top-level
+   * things here" — and until now nothing could answer it. `tree` could only drill
+   * down from an id you already had, which assumes you know what you are looking
+   * for; `board` counts modules, which is a different cut and says nothing about
+   * what any item is part of.
+   */
+  roots?: TreeNode[];
+  /**
+   * Unfinished work below the top of whatever was asked for. Descendants of the
+   * addressed item, or — since the implicit parent of a forest is the project —
+   * every unfinished item in the project when none was addressed.
+   */
   openDescendants: number;
 }
 
@@ -45,15 +63,20 @@ export async function tree(
     projectId: string;
     /** The caller's Plane user id; see `Predicate.viewer`. */
     viewer: string | null;
-    workItemId: string;
-    depth?: number;
+    /** Omit for the forest of top-level items. */
+    workItemId?: string | undefined;
+    depth?: number | undefined;
     fields?: string[] | undefined;
     /** Show only what could be claimed — and the containers holding it. */
     ready?: boolean | undefined;
     capabilities?: string[] | undefined;
   },
 ): Promise<Tree> {
-  const depth = opts.depth ?? 5;
+  // Two defaults because they answer different questions. Drilling into an item
+  // you named, five levels is generous and cheap. Opening a whole project, the
+  // point is a screen a person can read, and a forest expanded five deep is the
+  // project listing again — which is what `tree` exists to avoid handing anyone.
+  const depth = opts.depth ?? (opts.workItemId ? 5 : 2);
 
   // `all` rather than the matched set: a tree needs every item to resolve parent
   // links, even the ones a `ready` filter would exclude from its own nodes.
@@ -65,8 +88,8 @@ export async function tree(
   });
 
   const byId = new Map(items.map((i) => [i.id, i]));
-  const root = byId.get(opts.workItemId);
-  if (!root) {
+  const root = opts.workItemId ? byId.get(opts.workItemId) : undefined;
+  if (opts.workItemId && !root) {
     throw new GatewayError('NOT_FOUND', 'No such work item in this project', {
       workItemId: opts.workItemId,
     });
@@ -111,6 +134,29 @@ export async function tree(
       });
     return node;
   };
+
+  if (!root) {
+    // An item whose parent is not in this project's listing counts as a root
+    // rather than being dropped. Plane allows the parent to be deleted from
+    // under it, and an item that appears in no tree at all is work nobody can
+    // find — the failure this view exists to end, arriving by another door.
+    const roots = items
+      .filter((i) => !i.parent || !byId.has(i.parent))
+      .sort((a, b) => a.sequence_id - b.sequence_id)
+      .filter((i) => !opts.ready || reasons(i).length === 0 || hasOpenDescendant(i))
+      .map((i) => {
+        // Counted here, unlike the addressed case, because the implicit parent of
+        // a forest is the project: a top-level item IS a descendant of what was
+        // asked about. Leaving them out would report `openDescendants: 0` for a
+        // board of nothing but unparented open work, which is the exact shape
+        // this whole change exists to make visible.
+        if (!DONE.has(groupOf.get(i.state) as State['group'])) open++;
+        // One level shallower: the roots themselves occupy the first level of the
+        // requested depth.
+        return build(i, depth - 1, new Set([i.id]));
+      });
+    return { path: [], roots, openDescendants: open };
+  }
 
   const node = build(root, depth, new Set([root.id]));
 

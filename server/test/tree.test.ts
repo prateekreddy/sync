@@ -63,7 +63,6 @@ const wi = (key: string, over: Partial<WorkItem> = {}): WorkItem => ({
   labels: [],
   parent: null,
   is_draft: false,
-  assignees: [],
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
   ...over,
@@ -178,5 +177,87 @@ describe('tree', () => {
 
   it('refuses an item that is not in this project', async () => {
     await expect(ask([wi('other')], 'missing')).rejects.toThrow(GatewayError);
+  });
+});
+
+/**
+ * The top level, asked for without knowing an id first.
+ *
+ * This is the question a person opens a tracker with, and until now nothing could
+ * answer it: `tree` needed an id you already had, which assumes you know what you
+ * are looking for, and `board` counts modules, which is a different cut and says
+ * nothing about what any item is part of.
+ */
+const askRoots = (items: WorkItem[], over: { depth?: number; ready?: boolean } = {}) =>
+  tree(fakePlane(items), pool, { projectId: PROJECT, ...over });
+
+describe('tree of a whole project', () => {
+  it('answers with the top-level items when no item is named', async () => {
+    const got = await askRoots([
+      wi('epic-a'),
+      wi('epic-b'),
+      wi('task', { parent: 'epic-a' }),
+    ]);
+    expect(got.roots?.map((r) => r.title)).toEqual(['epic-a', 'epic-b']);
+    expect(got.node).toBeUndefined();
+    expect(got.path).toEqual([]);
+  });
+
+  it('shows what is under each root, not just the roots', async () => {
+    const got = await askRoots([wi('epic'), wi('a', { parent: 'epic' }), wi('b', { parent: 'epic' })]);
+    expect(got.roots?.[0]?.children?.map((c) => c.title)).toEqual(['a', 'b']);
+  });
+
+  it('counts top-level work as unfinished, not only what is under it', async () => {
+    // The failure this guards: a board of nothing but unparented open items would
+    // otherwise report openDescendants 0 and read as an empty project. The
+    // implicit parent of a forest is the project, so a root IS a descendant of
+    // what was asked about.
+    const got = await askRoots([wi('loose-one'), wi('loose-two')]);
+    expect(got.openDescendants).toBe(2);
+  });
+
+  it('stops two levels down by default, so a project is a screen and not a listing', async () => {
+    const got = await askRoots([
+      wi('epic'),
+      wi('story', { parent: 'epic' }),
+      wi('task', { parent: 'story' }),
+    ]);
+    const story = got.roots?.[0]?.children?.[0];
+    expect(story?.title).toBe('story');
+    expect(story?.truncated).toBe(true);
+    expect(story?.children).toBeUndefined();
+  });
+
+  it('expands further when asked', async () => {
+    const got = await askRoots(
+      [wi('epic'), wi('story', { parent: 'epic' }), wi('task', { parent: 'story' })],
+      { depth: 3 },
+    );
+    expect(got.roots?.[0]?.children?.[0]?.children?.[0]?.title).toBe('task');
+  });
+
+  it('keeps an item whose parent was deleted rather than hiding it', async () => {
+    // Plane allows the parent to go while the child stays. An item that appears
+    // in no tree at all is work nobody can find, which is the failure this view
+    // exists to end, arriving by another door.
+    const got = await askRoots([wi('orphan', { parent: 'long-gone' })]);
+    expect(got.roots?.map((r) => r.title)).toEqual(['orphan']);
+  });
+
+  it('narrows the top level to what could actually be picked up', async () => {
+    const got = await askRoots(
+      [wi('ready-one'), wi('draft', { is_draft: true })],
+      { ready: true },
+    );
+    expect(got.roots?.map((r) => r.title)).toEqual(['ready-one']);
+  });
+
+  it('keeps a container at the top level when the claimable work is inside it', async () => {
+    // A parent is unclaimable *because* the work is in its children, so pruning
+    // it under `ready` would prune the answer.
+    const got = await askRoots([wi('epic'), wi('task', { parent: 'epic' })], { ready: true });
+    expect(got.roots?.map((r) => r.title)).toEqual(['epic']);
+    expect(got.roots?.[0]?.children?.map((c) => c.title)).toEqual(['task']);
   });
 });

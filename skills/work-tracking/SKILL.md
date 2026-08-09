@@ -15,7 +15,7 @@ Two halves live on one MCP server. Do not confuse them:
   |---|---|
   | `capture` `decompose` | write it down; break it up in one call |
   | `next` `find` `search` `board` | what is there — ready, filtered, workspace-wide, rolled up |
-  | `why` `tree` `history` | why not this one; what is under it; has it been tried before |
+  | `why` `tree` `history` | why not this one; what is under it — or, with no item, the top level; has it been tried before |
   | `claim` `complete` `release` | the loop |
   | `link` `unlink` `constrain` | typed edges; take a blocker back; a requirement on existing work |
   | `held` | what am I holding |
