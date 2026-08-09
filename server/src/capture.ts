@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Pool } from './db.js';
 import type { Actor } from './auth.js';
-import { heldBy } from './lease.js';
+import { lastWorkedOn } from './lease.js';
 import { GatewayError } from './errors.js';
 import { resolveLabels } from './labels.js';
 import type { PlaneClient } from './plane.js';
@@ -56,6 +56,18 @@ export interface CaptureInput {
    */
   moduleId?: string | undefined;
   idempotencyKey?: string | undefined;
+  /**
+   * Which client session this capture was written in, from the header the plugin
+   * sets. Used only to pick between things this holder was working on: agents
+   * authenticate as the human running them, so two windows open at once share a
+   * holder, and a note written here should not be attributed to work happening
+   * over there.
+   *
+   * Deliberately not in `CaptureBody`. It is not something a model should be
+   * asked to supply, and unlike `claim` there is nothing here it could break by
+   * getting it wrong — an absent session just falls back to recency.
+   */
+  sessionId?: string | null | undefined;
 }
 
 export interface CaptureResult {
@@ -86,10 +98,21 @@ export interface CaptureResult {
   discoveredFrom?: string | undefined;
   /**
    * True when nobody said where this came from and the gateway worked it out from
-   * the caller's live lease. Reported rather than hidden: an agent should be able
-   * to see that a link it did not ask for was made, and correct it if wrong.
+   * what the caller was working on. Reported rather than hidden: an agent should
+   * be able to see that a link it did not ask for was made, and correct it if
+   * wrong.
    */
   discoveredFromInferred?: boolean | undefined;
+  /**
+   * Set to 'recent' when the guess came from work that has already finished
+   * rather than from a lease still held.
+   *
+   * Two guesses of different strength should not look identical in a reply. "You
+   * are holding this right now" is nearly a fact; "you finished this two hours
+   * ago" is an inference about a session, and an agent deciding whether to correct
+   * it needs to know which one it got.
+   */
+  discoveredFromBasis?: 'held' | 'recent' | undefined;
   /** Set when the item was created but could not be put in the module. */
   moduleError?: string | undefined;
   /**
@@ -127,30 +150,49 @@ export interface CaptureResult {
  * added by hand on the same day. Structure that costs an extra argument does not
  * get built.
  *
- * Three cases where it deliberately infers nothing:
+ * It used to answer only when the agent held EXACTLY ONE lease in the project,
+ * on the reasoning that several leases give no way to tell which one was being
+ * looked at. That was right about ambiguity and wrong about frequency: the way
+ * work is actually noticed here is a design session holding nothing at all, so
+ * the precondition was almost never met and the link was almost never made. Eight
+ * shipped fixes did not move the number, because none of them touched the case
+ * that occurs — see SYNC-36.
+ *
+ * So it now asks the lease table what this agent was doing, rather than only what
+ * it is holding: the rows are already there — completing a lease sets `ended_at`
+ * rather than deleting it — and recency inside one session is what "I noticed
+ * this while working on that" actually means. Several live leases resolve to the
+ * most recent instead of declining, for the same reason.
+ *
+ * Two cases still infer nothing:
  *
  * - **`parentId` was given.** A parent is a stronger statement than provenance
  *   and already places the item; adding a relates_to edge to the same work would
  *   be noise on both.
- * - **The agent holds several items in this project.** There is no way to tell
- *   which one it was looking at, and a confidently wrong provenance edge is worse
- *   than an absent one — a human reading the graph cannot tell a guess from a
- *   fact, so this refuses to make one.
- * - **The agent holds nothing.** Capture is deliberately callable with no lease.
+ * - **Nothing in the window.** A cold start with no history is not a guess worth
+ *   making, and a confidently wrong provenance edge is worse than an absent one.
+ *
+ * What this never does is write a PARENT. Provenance is a fact about history and
+ * costs nothing if it is wrong; a parent is a claim about structure, and a wrong
+ * one hides work under a heading nobody drilling down will look at — which is
+ * worse than leaving it at the top level where it is at least visible. Provenance
+ * is the raw material, `gather` is the act, and a human is the authority.
  */
 async function inferSource(
   pool: Pool,
   actor: Actor,
   input: CaptureInput,
-): Promise<{ id: string; inferred: boolean } | null> {
-  if (input.discoveredFrom) return { id: input.discoveredFrom, inferred: false };
+): Promise<{ id: string; inferred: boolean; live: boolean } | null> {
+  if (input.discoveredFrom) return { id: input.discoveredFrom, inferred: false, live: false };
   if (input.parentId) return null;
 
-  const held = (await heldBy(pool, actor.holder).catch(() => [])).filter(
-    (l) => l.projectId === input.projectId,
-  );
-  const only = held.length === 1 ? held[0] : undefined;
-  return only ? { id: only.workItemId, inferred: true } : null;
+  const recent = await lastWorkedOn(pool, {
+    holder: actor.holder,
+    projectId: input.projectId,
+    sessionId: input.sessionId ?? null,
+  }).catch(() => null);
+
+  return recent ? { id: recent.workItemId, inferred: true, live: recent.live } : null;
 }
 
 /**
@@ -397,12 +439,20 @@ export async function capture(
           created.id,
           // Stated and inferred provenance are not equally strong, and a reader
           // deciding what to trust needs to know which this was.
-          source.inferred
-            ? `<p>Captured by ${actor.holder} while it held the linked item. Provenance inferred from the lease, not stated.</p>`
-            : `<p>Discovered while working on a related item, by ${actor.holder}.</p>`,
+          !source.inferred
+            ? `<p>Discovered while working on a related item, by ${actor.holder}.</p>`
+            : source.live
+              ? `<p>Captured by ${actor.holder} while it held the linked item. Provenance inferred from the lease, not stated.</p>`
+              : `<p>Captured by ${actor.holder} shortly after it finished the linked item. Provenance inferred from what it was last working on, not stated.</p>`,
         )
         .catch(() => {});
-      result = { ...result, discoveredFrom: source.id, ...(source.inferred ? { discoveredFromInferred: true } : {}) };
+      result = {
+        ...result,
+        discoveredFrom: source.id,
+        ...(source.inferred
+          ? { discoveredFromInferred: true, discoveredFromBasis: source.live ? ('held' as const) : ('recent' as const) }
+          : {}),
+      };
     }
   }
 

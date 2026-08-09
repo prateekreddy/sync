@@ -412,6 +412,64 @@ export async function heldBy(pool: Pool, holder: string): Promise<Lease[]> {
 }
 
 /**
+ * How far back "what I was just working on" reaches.
+ *
+ * Four hours: long enough to survive a compaction, a restart, or a stretch of
+ * conversation with no tool calls in it, and short enough that yesterday's work
+ * is not offered as the source of today's note. Provenance is a claim about a
+ * session, and this is roughly how long a session lasts.
+ */
+export const RECENT_WORK_MS = 4 * 60 * 60 * 1000;
+
+export interface RecentWork {
+  workItemId: string;
+  /** True when the lease is still live, so the guess is a fact rather than a memory. */
+  live: boolean;
+}
+
+/**
+ * The item this agent was most likely looking at, live lease or not.
+ *
+ * Every lease this gateway has ever granted is still a row — `work_item_id` is
+ * the primary key and completing sets `ended_at` rather than deleting — so "what
+ * was this agent doing an hour ago" is already recorded and was simply never
+ * asked. That matters because the dominant way work gets noticed here is a design
+ * session holding nothing at all, which the held-lease-only rule could never
+ * answer for.
+ *
+ * Ordered by session first, then liveness, then recency. Session before liveness
+ * deliberately: agents authenticate as the human running them, so two windows
+ * open at once share a `holder`, and a live lease in the *other* conversation is
+ * a worse answer than a finished one in this conversation. A capture is a note
+ * about the session it was written in.
+ *
+ * Revoked leases are excluded. Somebody decided that work was not this agent's,
+ * and hanging fresh notes off it argues with them.
+ */
+export async function lastWorkedOn(
+  pool: Pool,
+  opts: { holder: string; projectId: string; sessionId?: string | null; withinMs?: number },
+): Promise<RecentWork | null> {
+  const { rows } = await pool.query<{ work_item_id: string; live: boolean }>(
+    `select work_item_id,
+            (state = 'held' and expires_at > now()) as live
+       from lease
+      where holder = $1
+        and project_id = $2
+        and state <> 'revoked'
+        and ( (state = 'held' and expires_at > now())
+              or coalesce(ended_at, heartbeat_at) > now() - make_interval(secs => $3) )
+      order by ($4::text is not null and session_id = $4) desc,
+               (state = 'held' and expires_at > now()) desc,
+               coalesce(ended_at, heartbeat_at) desc
+      limit 1`,
+    [opts.holder, opts.projectId, (opts.withinMs ?? RECENT_WORK_MS) / 1000, opts.sessionId ?? null],
+  );
+  const row = rows[0];
+  return row ? { workItemId: row.work_item_id, live: row.live } : null;
+}
+
+/**
  * Mark lapsed leases expired so the Plane-side mirror can be repaired.
  *
  * Correctness never depends on this running -- `claim` already treats a lapsed

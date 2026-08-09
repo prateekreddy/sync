@@ -13,9 +13,12 @@ import { PlaneClient } from '../src/plane.js';
  * pressure, mid-task. Measured on the real board: 36 items, two links, both added
  * by hand on one day.
  *
- * What these pin is mostly the *refusals*. An inferred edge that is wrong is
- * worse than none, because a human reading the graph cannot tell a guess from a
- * fact — so every case where the answer is ambiguous must produce no edge at all.
+ * The first version answered only when the agent held exactly one lease, which
+ * was right about ambiguity and wrong about frequency: work here is mostly
+ * noticed in sessions holding nothing, so the link was almost never made. It now
+ * asks what this agent was *doing* — the lease rows outlive the lease — and these
+ * pin both halves: that recency inside a session is used, and that a guess with
+ * nothing behind it is still refused.
  */
 const pool = createPool(
   process.env.GATEWAY_DATABASE_URL ?? 'postgres://agent_gw:agent_gw_dev@localhost:15432/gateway',
@@ -135,22 +138,99 @@ describe('provenance derived from the lease', () => {
   });
 });
 
-describe('when it refuses to guess', () => {
-  it('infers nothing while the agent holds two items in the project', async () => {
-    // Nothing distinguishes which one was being looked at, and a confidently
-    // wrong edge is worse than an absent one.
-    await hold(randomUUID());
-    await hold(randomUUID());
+describe('when the agent is not holding one tidy lease', () => {
+  it('takes the most recent of several, rather than declining', async () => {
+    // Declining here was the old rule, and it was right about the ambiguity and
+    // wrong about the cost: an absent edge is not neutral, it is the reason the
+    // board has nothing to group by. Recency is what a session actually means.
+    const older = randomUUID();
+    const newer = randomUUID();
+    await hold(older);
+    await pool.query("update lease set heartbeat_at = now() - interval '10 minutes'");
+    await hold(newer);
 
     const plane = fakePlane();
     const out = await write(plane);
 
-    expect(out.discoveredFrom).toBeUndefined();
-    expect(plane.rec.related).toEqual([]);
+    expect(out.discoveredFrom).toBe(newer);
+    expect(out.discoveredFromBasis).toBe('held');
   });
 
-  it('infers nothing when the agent holds nothing', async () => {
-    // Capture is deliberately callable with no lease at all.
+  it('remembers what it just finished, which is how most work is noticed here', async () => {
+    // The case the old rule could never answer: a session that completed its item
+    // and then wrote down the three things it noticed on the way.
+    const done = randomUUID();
+    await hold(done);
+    await lease.complete(pool, { workItemId: done, epoch: 1, holder: actor.holder });
+
+    const plane = fakePlane();
+    const out = await write(plane);
+
+    expect(out.discoveredFrom).toBe(done);
+    expect(out.discoveredFromBasis).toBe('recent');
+    expect(plane.rec.comments[0]).toContain('shortly after it finished');
+  });
+
+  it('prefers a live lease over something finished earlier', async () => {
+    const finished = randomUUID();
+    await hold(finished);
+    await lease.complete(pool, { workItemId: finished, epoch: 1, holder: actor.holder });
+    const current = randomUUID();
+    await hold(current);
+
+    expect((await write(fakePlane())).discoveredFrom).toBe(current);
+  });
+
+  it('does not attribute a note in this window to work happening in another one', async () => {
+    // Agents authenticate as the human running them, so two windows open at once
+    // share a holder. Without the session the newer lease would win and one
+    // conversation's note would be filed against the other's work.
+    const elsewhere = randomUUID();
+    const here = randomUUID();
+    await lease.claim(pool, {
+      workItemId: here,
+      projectId: PROJECT,
+      holder: actor.holder,
+      ttlSeconds: 600,
+      sessionId: 'this-window',
+    });
+    await pool.query("update lease set heartbeat_at = now() - interval '20 minutes'");
+    await lease.claim(pool, {
+      workItemId: elsewhere,
+      projectId: PROJECT,
+      holder: actor.holder,
+      ttlSeconds: 600,
+      sessionId: 'other-window',
+    });
+
+    const out = await write(fakePlane(), { sessionId: 'this-window' });
+    expect(out.discoveredFrom).toBe(here);
+  });
+
+  it('does not reach back past the window', async () => {
+    // Yesterday's work is not where today's note came from.
+    const stale = randomUUID();
+    await hold(stale);
+    await pool.query(
+      "update lease set state = 'completed', ended_at = now() - interval '9 hours', heartbeat_at = now() - interval '9 hours'",
+    );
+    expect((await write(fakePlane())).discoveredFrom).toBeUndefined();
+  });
+
+  it('does not hang a note off work somebody took back', async () => {
+    // A revoked lease is a person saying that was not this agent's work.
+    // Attaching fresh notes to it argues with them.
+    const taken = randomUUID();
+    await hold(taken);
+    await pool.query("update lease set state = 'revoked', ended_at = now()");
+    expect((await write(fakePlane())).discoveredFrom).toBeUndefined();
+  });
+});
+
+describe('when it refuses to guess', () => {
+  it('infers nothing when the agent has done nothing here', async () => {
+    // Capture is deliberately callable with no lease at all, and a cold start
+    // has nothing behind a guess.
     const plane = fakePlane();
     const out = await write(plane);
     expect(out.discoveredFrom).toBeUndefined();
@@ -175,13 +255,30 @@ describe('when it refuses to guess', () => {
     expect(plane.rec.related).toEqual([]);
   });
 
-  it('ignores a lapsed lease', async () => {
+  it('still uses a lease that lapsed a minute ago, but does not call it live', async () => {
+    // A lapsed lease means the agent stopped heartbeating, not that it stopped
+    // working — and it certainly does not mean the work never happened. The edge
+    // is worth making; calling it `held` would not be true.
     const working = randomUUID();
     await hold(working);
     await pool.query("update lease set expires_at = now() - interval '1 minute'");
 
-    const plane = fakePlane();
-    expect((await write(plane)).discoveredFrom).toBeUndefined();
+    const out = await write(fakePlane());
+    expect(out.discoveredFrom).toBe(working);
+    expect(out.discoveredFromBasis).toBe('recent');
+  });
+
+  it('never turns any of this into a parent', async () => {
+    // The line the whole design rests on. Provenance costs nothing if it is
+    // wrong; a wrong parent hides work under a heading nobody drilling down will
+    // look at, which is worse than leaving it visible at the top level.
+    const done = randomUUID();
+    await hold(done);
+    await lease.complete(pool, { workItemId: done, epoch: 1, holder: actor.holder });
+
+    const out = await write(fakePlane());
+    expect(out.discoveredFrom).toBe(done);
+    expect(out.parentId).toBeUndefined();
   });
 });
 

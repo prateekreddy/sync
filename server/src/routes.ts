@@ -797,7 +797,13 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     const actor = await actorOf(req);
     const input = CaptureBody.parse(req.body);
     // Created as the agent, so Plane's own activity log names the real author.
-    return capture(plane.as(actor.planeToken), pool, actor, input);
+    // The session comes off the header rather than the body: it decides only
+    // which of this holder's items the provenance points at, and it is not
+    // something the model should be asked to supply.
+    return capture(plane.as(actor.planeToken), pool, actor, {
+      ...input,
+      sessionId: sessionOf(req),
+    });
   });
 
   // ── decompose ────────────────────────────────────────────────────────────

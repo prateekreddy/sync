@@ -311,13 +311,16 @@ Placement is not delivery. A sibling is no more visible to whoever claims the it
 orphan was — that is what the `briefing` on `claim` is for. Filing something correctly does not mean
 anyone will read it.
 
-**Provenance is automatic too.** If you hold exactly one item in the project, whatever you capture
-is linked back to it and the reply says `discoveredFromInferred: true`. You do not have to remember
-`discoveredFrom`, and you should not pass it just to be safe. Pass it only when the gateway cannot
-know: you noticed this while working something you have since released, or you are holding several
-items and only one is the real source. Holding two, it refuses to guess — a confidently wrong
-provenance edge is worse than none, because nobody reading the graph later can tell a guess from a
-fact.
+**Provenance is automatic too.** Whatever you capture is linked back to the last thing you were
+working on in that project — a lease you hold, or one you finished in the last few hours — and the
+reply says `discoveredFromInferred: true` with `discoveredFromBasis` naming which. You do not have
+to remember `discoveredFrom`, and you should not pass it just to be safe. Pass it only when the real
+source is something older, or something other than the last thing you touched.
+
+This matters more than it looks: those edges are what the structural review clusters on, so an
+unlinked capture is one the review cannot later offer to group. It stays provenance either way —
+being wrong about where a note came from costs nothing, while a wrong `parentId` hides work under a
+heading nobody drilling down will look at.
 
 **Deliberately unclaimable is a feature.** Label a capture `needs-human` when it needs a decision
 you should not make alone — that is how you ask a question the fleet will not accidentally answer.

@@ -80,10 +80,11 @@ export const CaptureBody = z.object({
   discoveredFrom: uuid
     .optional()
     .describe(
-      'Work item you were on when you noticed this. Usually leave it out: if you hold exactly ' +
-        'one item in this project, the gateway links it for you and says it inferred that. ' +
-        'Pass it explicitly when you noticed this while working something you no longer hold, ' +
-        'or when you hold several things and only one is the real source.',
+      'Work item you were on when you noticed this. Usually leave it out: the gateway links ' +
+        'whatever you were last working on in this project — a lease you hold, or one you ' +
+        'finished in the last few hours — and says so in the reply, with discoveredFromBasis ' +
+        'telling you which. Pass it explicitly when the real source is something older, or ' +
+        'something other than the last thing you touched.',
     ),
   parentId: uuid
     .optional()
