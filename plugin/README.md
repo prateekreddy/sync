@@ -3,11 +3,37 @@
 Track work in Plane with an atomic claim, so two agents never take the same task.
 
 ```
-/plugin marketplace add <your-org>/sync
-/plugin install sync
+/plugin marketplace add prateekreddy/sync
+/plugin install sync@sync
+```
+
+`sync@sync` is `<plugin>@<marketplace>`; both are called sync because the repo is
+its own single-plugin marketplace. To pick up a new version later:
+
+```
+/plugin marketplace update sync
 ```
 
 Sign-in happens in the browser on first use. Nothing secret lives in this plugin.
+
+## Signing in
+
+There is no token to paste into any config. The first tool call gets a 401 whose
+`WWW-Authenticate` header names the gateway's metadata; Claude Code reads it,
+registers itself as a public OAuth client, and opens a browser.
+
+The page it opens is served by the gateway itself, and asks for three things:
+
+| | |
+|---|---|
+| **Plane personal token** | from Plane → your profile → Personal access tokens |
+| **Agent name** | namespaced to you, so the name is yours alone |
+| **Project** | a dropdown, filled from what that token can see — or blank to choose per call |
+
+The token you hand over is what the gateway writes to Plane *as you*, so your
+name appears on the board rather than a shared service account. What comes back
+to Claude Code is a gateway token, not your Plane one, and it can be revoked on
+its own without touching Plane.
 
 ## Requirements
 
