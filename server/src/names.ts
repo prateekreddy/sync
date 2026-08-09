@@ -71,6 +71,7 @@ const FIELD_KIND: Record<string, Kind> = {
   workItemId: 'item',
   workItemIds: 'item',
   parentId: 'item',
+  containerId: 'item',
   discoveredFrom: 'item',
 };
 

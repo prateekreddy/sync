@@ -158,8 +158,9 @@ const timer = setInterval(() => void sweep(), SWEEP_MS);
 const REVIEW_MS = Number(process.env.REVIEW_INTERVAL_MS ?? 6 * 60 * 60 * 1000);
 const REVIEW_ON = (process.env.REVIEW ?? 'on') !== 'off';
 const REVIEW_THRESHOLDS = {
-  minRootless: Number(process.env.REVIEW_MIN_ROOTLESS ?? DEFAULT_THRESHOLDS.minRootless),
-  ratio: Number(process.env.REVIEW_ROOTLESS_RATIO ?? DEFAULT_THRESHOLDS.ratio),
+  maxRootless: Number(process.env.REVIEW_MAX_ROOTLESS ?? DEFAULT_THRESHOLDS.maxRootless),
+  minContainers: Number(process.env.REVIEW_MIN_CONTAINERS ?? DEFAULT_THRESHOLDS.minContainers),
+  minOpen: Number(process.env.REVIEW_MIN_OPEN ?? DEFAULT_THRESHOLDS.minOpen),
 };
 
 async function review(): Promise<void> {
@@ -173,11 +174,15 @@ async function review(): Promise<void> {
           projectId: r.projectId,
           openItems: r.assessment.openItems,
           rootless: r.assessment.rootless.length,
+          containers: r.assessment.containers,
           ratio: Number(r.assessment.ratio.toFixed(2)),
           raised: r.raised,
+          ...(r.repaired ? { repaired: r.repaired } : {}),
           ...(r.skipped ? { skipped: r.skipped } : {}),
         },
-        r.raised ? 'board has gone flat, review raised' : `structural review: ${r.assessment.reason}`,
+        r.raised
+          ? 'top level is not readable, review raised'
+          : `structural review: ${r.assessment.reason}`,
       );
     }
   } catch (err) {

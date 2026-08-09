@@ -58,6 +58,87 @@ export function rolledGroup(current: Group | undefined, children: Group[]): Grou
 }
 
 /**
+ * Recompute every container in a project, deepest first.
+ *
+ * The nudge below is best-effort: it is fired and not awaited, and a Plane outage
+ * or a gateway restart mid-write loses it silently. Without something that
+ * recomputes from scratch, one lost write leaves a container wrong indefinitely —
+ * and a status that is wrong forever is the exact condition this whole file
+ * exists to remove, arriving by a slower route.
+ *
+ * Takes the items and states it works from rather than fetching them, because its
+ * one caller — the periodic structural review — has already read both. A sweep
+ * that doubled the review's Plane traffic to repair a display would not be worth
+ * running.
+ *
+ * Deepest first so a parent is decided from children this same pass has already
+ * corrected, in one traversal rather than iterating to a fixed point.
+ */
+export async function rollUpProject(
+  plane: PlaneClient,
+  projectId: string,
+  items: WorkItem[],
+  states: State[],
+): Promise<{ changed: number; failed: number }> {
+  const groupOfState = new Map(states.map((s) => [s.id, s.group]));
+  const byId = new Map(items.map((i) => [i.id, i]));
+  const childrenOf = new Map<string, WorkItem[]>();
+  for (const i of items) {
+    if (!i.parent) continue;
+    const kids = childrenOf.get(i.parent);
+    if (kids) kids.push(i);
+    else childrenOf.set(i.parent, [i]);
+  }
+
+  const depth = new Map<string, number>();
+  const depthOf = (id: string, seen: Set<string>): number => {
+    const memo = depth.get(id);
+    if (memo !== undefined) return memo;
+    if (seen.has(id)) return 0; // a cycle Plane should not permit; do not hang on it
+    const parent = byId.get(id)?.parent;
+    seen.add(id);
+    const d = parent && byId.has(parent) ? depthOf(parent, seen) + 1 : 0;
+    depth.set(id, d);
+    return d;
+  };
+
+  const group = new Map<string, Group | undefined>(
+    items.map((i) => [i.id, groupOfState.get(i.state)]),
+  );
+
+  const containers = items
+    .filter((i) => (childrenOf.get(i.id) ?? []).length > 0)
+    .sort((a, b) => depthOf(b.id, new Set()) - depthOf(a.id, new Set()));
+
+  let changed = 0;
+  let failed = 0;
+  for (const container of containers) {
+    const kids = childrenOf.get(container.id) ?? [];
+    const want = rolledGroup(
+      group.get(container.id),
+      kids.map((k) => group.get(k.id)).filter((g): g is Group => g !== undefined),
+    );
+    if (!want) continue;
+    const target = await plane.stateByGroup(projectId, want);
+    if (!target) continue;
+    try {
+      await serial(container.id, async () => {
+        await plane.updateWorkItem(projectId, container.id, { state: target.id });
+      });
+      group.set(container.id, want);
+      changed++;
+      log.info({ workItemId: container.id, group: want }, 'container state repaired by sweep');
+    } catch (err) {
+      // One container that Plane will not take must not stop the rest being
+      // repaired: this is the pass that exists to catch what the live path lost.
+      failed++;
+      log.warn({ err, workItemId: container.id }, 'container state repair failed');
+    }
+  }
+  return { changed, failed };
+}
+
+/**
  * Walk up from a child whose state just changed, fixing every container above it.
  *
  * Called past the commit point of a mirror write and never awaited by the request
