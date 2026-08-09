@@ -166,11 +166,18 @@ const WORKSPACE_SWEEP_LIMIT = 25;
 /**
  * Which client session this request belongs to.
  *
- * Carried by a header the plugin sets from `${CLAUDE_CODE_SESSION_ID}`, which the
- * client substitutes when it connects. That is the whole point: the model is
- * never asked for it, never sees it, and cannot forget or invent it. A body field
- * that the model has to populate would be exactly the kind of promise-for-later
- * this design exists to stop relying on.
+ * Carried by a header the plugin sets from `${CLAUDE_CODE_SESSION_ID}`. The intent
+ * is that the model is never asked for it, never sees it, and cannot forget or
+ * invent it — a body field the model has to populate would be exactly the kind of
+ * promise-for-later this design exists to stop relying on.
+ *
+ * Measured on the first real plugin install, 2026-08-09, and not yet fixed:
+ * Claude Code sets CLAUDE_CODE_SESSION_ID in the environment of processes it
+ * SPAWNS — hooks and Bash see it — but not in its own, which is what the MCP
+ * config is expanded against. So the header arrives empty and every lease is
+ * recorded with a null session. The fallbacks below are correct and the gateway
+ * degrades to holder-level behaviour, which is why this is a quiet loss of
+ * precision rather than a failure. See SYNC-87.
  *
  * The header therefore wins over the body. The body remains as a fallback for
  * clients that are not the plugin, and it is the less trustworthy of the two:

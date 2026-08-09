@@ -16,6 +16,11 @@ its own single-plugin marketplace. To pick up a new version later:
 
 Sign-in happens in the browser on first use. Nothing secret lives in this plugin.
 
+**Already added the gateway by hand?** If you ran `claude mcp add --transport http sync …`
+at some point, that entry wins and the plugin's is skipped with a note saying so —
+you keep the tools, but not the OAuth sign-in. Remove it with `claude mcp remove sync`
+and restart, or keep it and accept a long-lived token sitting in your config.
+
 ## Signing in
 
 There is no token to paste into any config. The first tool call gets a 401 whose
