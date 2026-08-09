@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { tree } from '../src/tree.js';
+import { board } from '../src/board.js';
 import { PlaneClient } from '../src/plane.js';
 import { NO_RELATIONS } from './relations.js';
 import type { State, WorkItem } from '../src/plane.js';
@@ -80,6 +81,9 @@ const fakePlane = (items: WorkItem[]): PlaneClient =>
     // Likewise since SYNC-65: the readiness gate resolves blockers on every
     // browse, not only at claim time.
     relations: async () => NO_RELATIONS,
+    // Only `board` asks, and only so the two can be compared against the same
+    // items — see the per-node rollup tests below.
+    modules: async () => [],
   });
 
 const ask = (items: WorkItem[], key: string, depth?: number) =>
@@ -181,6 +185,79 @@ describe('tree', () => {
 });
 
 /**
+ * "Which of these is nearly finished and which has not started" is what anyone
+ * scanning a list of containers is actually asking, and one figure for the whole
+ * tree cannot answer it.
+ */
+describe('how much is left under each branch', () => {
+  it('reports a leaf as one item in its own bucket', async () => {
+    const got = await ask([wi('epic'), wi('task', { parent: 'epic' })], 'task');
+    expect(got.node?.progress).toMatchObject({ total: 1, ready: 1, done: 0 });
+  });
+
+  it('counts a container together with everything under it', async () => {
+    const got = await ask(
+      [wi('epic'), wi('a', { parent: 'epic', state: 'done' }), wi('b', { parent: 'epic' })],
+      'epic',
+    );
+    // Three, not two: the container counts itself. It sits in `blocked` because
+    // a parent with an open child is unclaimable — and once that child lands the
+    // rollup closes the container and this same node reads 3 done of 3.
+    expect(got.node?.progress).toMatchObject({ total: 3, done: 1, ready: 1, blocked: 1 });
+  });
+
+  it('separates work already being done from work anyone could pick up', async () => {
+    await lease.claim(pool, {
+      workItemId: id('taken'),
+      projectId: PROJECT,
+      holder: 'agent:worker-1',
+      ttlSeconds: 600,
+    });
+    const got = await ask(
+      [wi('epic'), wi('taken', { parent: 'epic' }), wi('free', { parent: 'epic' })],
+      'epic',
+    );
+    expect(got.node?.progress).toMatchObject({ held: 1, ready: 1 });
+  });
+
+  it('rolls counts up through every level, not just the one below', async () => {
+    const got = await ask(
+      [wi('epic'), wi('story', { parent: 'epic' }), wi('task', { parent: 'story', state: 'done' })],
+      'epic',
+    );
+    expect(got.node?.progress.total).toBe(3);
+    expect(got.node?.progress.done).toBe(1);
+    expect(got.node?.children?.[0]?.progress).toMatchObject({ total: 2, done: 1 });
+  });
+
+  it('still says how much is inside a node it stopped expanding', async () => {
+    // The point of counting separately from the walk: a branch you chose not to
+    // open must still be able to tell you how big it is, or truncation hides the
+    // work rather than deferring it.
+    const got = await ask(
+      [wi('epic'), wi('story', { parent: 'epic' }), wi('task', { parent: 'story' })],
+      'epic',
+      1,
+    );
+    const story = got.node?.children?.[0];
+    expect(story?.truncated).toBe(true);
+    expect(story?.progress.total).toBe(2);
+  });
+
+  it('does not let a ready filter change what it says exists', async () => {
+    // The view narrows; the work does not. A branch reporting "1 of 1" because
+    // the finished siblings were filtered out would be a lie about progress.
+    const got = await tree(
+      fakePlane([wi('epic'), wi('done-one', { parent: 'epic', state: 'done' }), wi('open-one', { parent: 'epic' })]),
+      pool,
+      { projectId: PROJECT, viewer: null, workItemId: id('epic'), ready: true },
+    );
+    expect(got.node?.children?.map((c) => c.title)).toEqual(['open-one']);
+    expect(got.node?.progress).toMatchObject({ total: 3, done: 1 });
+  });
+});
+
+/**
  * The top level, asked for without knowing an id first.
  *
  * This is the question a person opens a tracker with, and until now nothing could
@@ -251,6 +328,29 @@ describe('tree of a whole project', () => {
       { ready: true },
     );
     expect(got.roots?.map((r) => r.title)).toEqual(['ready-one']);
+  });
+
+  it('adds up to exactly what the board reports for the project', async () => {
+    // The invariant that makes the two views trustworthy together: every item is
+    // in exactly one root's sub-tree, so the roots partition the project. If a
+    // second copy of the bucket rule ever appears, this is what catches it.
+    const items = [
+      wi('epic'),
+      wi('a', { parent: 'epic' }),
+      wi('b', { parent: 'epic', state: 'done' }),
+      wi('loose'),
+      wi('draft', { is_draft: true }),
+    ];
+    const plane = fakePlane(items);
+    const got = await tree(plane, pool, { projectId: PROJECT, viewer: null });
+    const view = await board(plane, pool, { projectId: PROJECT, viewer: null });
+    const sum = (k: 'total' | 'done' | 'held' | 'ready' | 'blocked') =>
+      (got.roots ?? []).reduce((n, r) => n + r.progress[k], 0);
+
+    expect(sum('total')).toBe(view.project.total);
+    expect(sum('done')).toBe(view.project.done);
+    expect(sum('ready')).toBe(view.project.ready);
+    expect(sum('blocked')).toBe(view.project.blocked);
   });
 
   it('keeps a container at the top level when the claimable work is inside it', async () => {

@@ -127,7 +127,12 @@ describe('every read tool returns the same shape', () => {
 
   it('agrees on the key set, so an agent learns one shape', async () => {
     const plane = fakePlane(items);
-    const keys = (v: WorkItemView) => Object.keys(v).filter((k) => k !== 'children').sort();
+    // What a tree adds because it is a tree — the nodes beneath, whether the walk
+    // stopped, and the rollup over them — is not shared shape, and `why` would be
+    // wrong to carry it. Everything describing the ITEM still has to match, which
+    // is what this is guarding.
+    const STRUCTURAL = new Set(['children', 'truncated', 'progress']);
+    const keys = (v: WorkItemView) => Object.keys(v).filter((k) => !STRUCTURAL.has(k)).sort();
 
     const fromFind = (await find(plane, pool, { projectId: PROJECT })).items[0]!;
     const fromTree = (await tree(plane, pool, { projectId: PROJECT, workItemId: id('root') })).node;

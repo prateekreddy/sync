@@ -196,6 +196,32 @@ function structureOf(
   return s;
 }
 
+/** The four buckets, named. Exhaustive and disjoint — see `Progress`. */
+export type Bucket = 'done' | 'held' | 'ready' | 'blocked';
+
+/**
+ * Which bucket one item falls in.
+ *
+ * Split out from `tally` so that anything else counting the same items counts
+ * them the same way. `tree` reports a rollup per node, and a second copy of these
+ * four lines is how a branch would come to disagree with the board about its own
+ * children — the failure the exhaustive-and-disjoint rule exists to prevent,
+ * reintroduced one file over.
+ *
+ * Order is load-bearing: a held item is usually also unready, and calling it
+ * blocked would double-count it out of the bucket that explains it.
+ */
+export function bucketOf(
+  item: WorkItem,
+  groupOf: Map<string, State['group']>,
+  held: (id: string) => boolean,
+  reasons: (i: WorkItem) => string[],
+): Bucket {
+  if (DONE.has(groupOf.get(item.state) as State['group'])) return 'done';
+  if (held(item.id)) return 'held';
+  return reasons(item).length === 0 ? 'ready' : 'blocked';
+}
+
 const tally = (
   items: WorkItem[],
   groupOf: Map<string, State['group']>,
@@ -203,12 +229,7 @@ const tally = (
   reasons: (i: WorkItem) => string[],
 ): Progress => {
   const p: Progress = { total: items.length, done: 0, held: 0, ready: 0, blocked: 0 };
-  for (const i of items) {
-    if (DONE.has(groupOf.get(i.state) as State['group'])) p.done++;
-    else if (held(i.id)) p.held++;
-    else if (reasons(i).length === 0) p.ready++;
-    else p.blocked++;
-  }
+  for (const i of items) p[bucketOf(i, groupOf, held, reasons)]++;
   return p;
 };
 

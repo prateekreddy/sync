@@ -409,8 +409,10 @@ export const NATIVE_TOOLS: NativeTool[] = [
     description:
       'The sub-tree under a work item — every sub-item with its state, priority and, if someone ' +
       'is working it right now, the holder and when their lease runs out. Also returns the path ' +
-      'up to the root, so an item handed to you in isolation still shows what it is part of, and ' +
-      'openDescendants, the count of unfinished work below it. Use this before decomposing ' +
+      'up to the root, so an item handed to you in isolation still shows what it is part of. Every ' +
+      'node carries progress — total, done, held, ready, blocked over itself and everything beneath ' +
+      'it — so you can see which branch is nearly finished and which has not started without ' +
+      'expanding either. Those are the board\'s own buckets and add up the same way. Use this before decomposing ' +
       'further, and instead of listing the project and reassembling it yourself. Pass ' +
       'ready: true to see only what you could claim, with the containers holding it kept so ' +
       'the tree still makes sense. Omit workItemId to get the top level instead: every item with ' +

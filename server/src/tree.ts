@@ -1,3 +1,4 @@
+import { bucketOf, type Progress } from './board.js';
 import type { Pool } from './db.js';
 import { GatewayError } from './errors.js';
 import type { PlaneClient, State, WorkItem } from './plane.js';
@@ -26,6 +27,21 @@ export type TreeNode = WorkItemView & {
   children?: TreeNode[];
   /** Set when `depth` stopped the walk, so a truncated tree is never mistaken for a complete one. */
   truncated?: true;
+  /**
+   * This item and everything under it, in the board's four buckets.
+   *
+   * Per node rather than one figure for the whole tree, because "which of these
+   * six is nearly finished and which has not started" is the question anyone
+   * scanning a top level is actually asking, and a single total cannot answer it.
+   *
+   * Includes the item itself, so a leaf reports `total: 1` and the totals across
+   * a project's roots add up to exactly the board's. Counted over the real
+   * sub-tree, not the displayed one: a node cut short by `depth` still reports
+   * everything beneath it, and a `ready` filter narrows what is shown without
+   * changing what is counted. The numbers describe the work; the tree describes
+   * the view.
+   */
+  progress: Progress;
 };
 
 export interface Tree {
@@ -115,8 +131,36 @@ export async function tree(
       (k) => reasons(k).length === 0 || hasOpenDescendant(k),
     );
 
+  /**
+   * The four buckets for an item and everything beneath it.
+   *
+   * Deliberately its own walk rather than a fold inside `build`. `build` stops at
+   * `depth` and prunes under `ready`, and neither should change an answer about
+   * how much work exists — a node you chose not to expand must still be able to
+   * tell you how much is inside it. Memoised, so the whole project costs one pass
+   * however many nodes ask.
+   */
+  const subtree = new Map<string, Progress>();
+  const progressOf = (item: WorkItem, seen: Set<string>): Progress => {
+    const memo = subtree.get(item.id);
+    if (memo) return memo;
+    const p: Progress = { total: 1, done: 0, held: 0, ready: 0, blocked: 0 };
+    p[bucketOf(item, groupOf, (id) => ctx.leases.has(id), reasons)]++;
+    for (const k of childrenOf.get(item.id) ?? []) {
+      if (seen.has(k.id)) continue;
+      const sub = progressOf(k, new Set([...seen, k.id]));
+      p.total += sub.total;
+      p.done += sub.done;
+      p.held += sub.held;
+      p.ready += sub.ready;
+      p.blocked += sub.blocked;
+    }
+    subtree.set(item.id, p);
+    return p;
+  };
+
   const build = (item: WorkItem, left: number, seen: Set<string>): TreeNode => {
-    const node: TreeNode = viewOf(item, ctx);
+    const node: TreeNode = { ...viewOf(item, ctx), progress: progressOf(item, new Set([item.id])) };
 
     // A cycle cannot be produced through `capture`, but `update_issue` can set any
     // parent and Plane does not stop it. Recursing forever on someone's mistake is

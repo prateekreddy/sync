@@ -44,6 +44,12 @@ at once is the mistake — that is what labels are for.
   — it is the shape of the work, which a flat listing cannot show. A long `roots` list *is* the
   finding: a top level nobody can scan means the work has never been grouped, and `board`'s
   `rootlessOpen` puts a number on it.
+- **Every node's `progress`** — `total`, `done`, `held`, `ready`, `blocked` over that item and
+  everything beneath it — tells you which branch is nearly finished and which has not started
+  without expanding either. They are the board's own buckets, so a branch's numbers and the
+  project's agree by construction. Counted over the real sub-tree: a node cut short by `depth` still
+  reports how much is inside it, and `ready: true` narrows what you see without changing what it
+  says exists.
 - **`decompose`** writes every child in one call, and is the right tool for breaking work up.
   `capture(parentId: …)` makes a single sub-item and is for adding one child to a plan that already
   exists. The difference matters because a parent with unfinished children stops being claimable —
