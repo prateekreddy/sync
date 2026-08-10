@@ -211,9 +211,37 @@ const reviewTimer = REVIEW_ON ? setInterval(() => void review(), REVIEW_MS) : nu
  */
 const RECONCILE_MS = Number(process.env.RECONCILE_INTERVAL_MS ?? 15 * 60 * 1000);
 
+/**
+ * Repair, separately from detect.
+ *
+ * Its own switch because the two carry completely different risk. Detection is
+ * a read and a count; repair rewrites the board unattended. When a classifier
+ * misfired on 2026-08-10 the only way to keep the count while stopping the
+ * writes was REVIEW=off, which also silenced the structural review — so the
+ * safe response cost more than it should have.
+ */
+const RECONCILE_REPAIR = (process.env.RECONCILE_REPAIR ?? 'on') !== 'off';
+
+/**
+ * The first pass after a boot looks and does not touch.
+ *
+ * A deploy is exactly when a classification rule has just changed, and it is the
+ * one moment a wrong rule is most likely and least expected. One reported-only
+ * pass puts the numbers in the log and in `board` before anything acts on them,
+ * which is precisely what would have caught the 65-item misfire — it was found
+ * by a human reading that output, and this makes reading it a step rather than a
+ * habit.
+ */
+let reconcileDryRun = true;
+
 async function reconciliation(): Promise<void> {
+  const repair = RECONCILE_REPAIR && !reconcileDryRun;
+  if (reconcileDryRun) {
+    app.log.info('first reconciliation since boot: reporting only, repairing nothing');
+    reconcileDryRun = false;
+  }
   try {
-    for (const r of await reconcileAll(plane, pool, { repair: true })) {
+    for (const r of await reconcileAll(plane, pool, { repair })) {
       const total = r.drift.length;
       // Quiet passes are logged too, at debug: the interesting number over time
       // is how often this finds nothing, and a check that only speaks when it
@@ -223,7 +251,14 @@ async function reconciliation(): Promise<void> {
         continue;
       }
       app.log.warn(
-        { projectId: r.projectId, checked: r.checked, ...r.counts, repaired: r.repaired },
+        {
+          projectId: r.projectId,
+          checked: r.checked,
+          ...r.counts,
+          repaired: r.repaired,
+          ...(r.refused ? { refused: r.refused } : {}),
+          ...(repair ? {} : { reportOnly: true }),
+        },
         'plane and the lease table disagree',
       );
       // Named individually only for the two nobody will repair, because those are

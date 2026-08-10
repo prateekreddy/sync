@@ -444,20 +444,27 @@ describe('noticing that a liveness monitor is not running', () => {
     expect(await monitorSeen(pool, h)).toEqual({ known: false, polled: false });
   });
 
-  it('does not lose the proof when the item is claimed again', async () => {
-    // The defect this was rewritten for. Evidence used to live in the lease row
-    // as heartbeat_at > claimed_at, and `claim` upserts that row and resets both
-    // -- so claiming an item erased the proof for the item most likely to carry
-    // it, the one held longest, and then the reply asked whether the proof
-    // existed. Measured 2026-08-10 on SYNC-87: history showed a poll 11s after
-    // the claim, the re-claim wiped it, and the warning fired.
+  it('does not turn a re-claim into a warning', async () => {
+    // The defect this whole column was added for. Evidence used to live in the
+    // lease row as heartbeat_at > claimed_at, and `claim` upserts that row and
+    // resets both -- so claiming an item erased the proof for the item most
+    // likely to carry it, and the reply then asked whether the proof existed.
+    // Measured 2026-08-10 on SYNC-87: history showed a poll 11s after the claim,
+    // the re-claim wiped it, and the warning fired.
+    //
+    // Asserted as "is the agent warned", not as "is polled true". Those differ
+    // after a re-claim -- the lease is a second old, so it no longer qualifies
+    // at all -- and what must never happen is the warning, which is exactly the
+    // conjunction livenessNote uses.
     const h = holder();
     const id = await past(h, { minutes: 45, polled: true });
-    expect((await monitorSeen(pool, h)).polled).toBe(true);
+    const before = await monitorSeen(pool, h);
+    expect(before.known && !before.polled).toBe(false);
 
     await claim(pool, { workItemId: id, projectId: PROJECT, holder: h, ttlSeconds: 600 });
 
-    expect((await monitorSeen(pool, h)).polled).toBe(true);
+    const after = await monitorSeen(pool, h);
+    expect(after.known && !after.polled).toBe(false);
   });
 
   it('still warns when the hooks are polling but the monitor is not', async () => {
@@ -475,13 +482,34 @@ describe('noticing that a liveness monitor is not running', () => {
     expect(await monitorSeen(pool, h)).toEqual({ known: true, polled: false });
   });
 
-  it('stops trusting a monitor that has gone quiet', async () => {
-    // Seen once, long ago, is not seen now: the monitor polls every two minutes,
-    // so half an hour of silence is not a slow network.
+  it('does not call an idle agent\u2019s monitor dead', async () => {
+    // The trap the first version fell into, live, within minutes of shipping.
+    // The monitor only polls when it HAS a credential -- no lease, no watch
+    // file, no request -- so a wall-clock staleness test reads "idle" exactly
+    // like "dead", and the warning fires on the first claim after any quiet
+    // spell. Which is the commonest claim there is.
+    //
+    // Here the agent held something long, its monitor polled, and then it did
+    // nothing for two hours. Nothing is wrong with it.
     const h = holder();
     await past(h, { minutes: 45, polled: true });
     await pool.query(
-      `update agent_token set monitor_seen_at = now() - interval '2 hours'
+      `update lease set claimed_at = claimed_at - interval '2 hours',
+                        ended_at   = ended_at - interval '2 hours'
+        where holder = $1`,
+      [h],
+    );
+
+    expect((await monitorSeen(pool, h)).polled).toBe(true);
+  });
+
+  it('still catches a monitor that was silent while work was held', async () => {
+    // The case that must keep working: the poll predates the lease, so nothing
+    // was heard from during the window when something should have been.
+    const h = holder();
+    await past(h, { minutes: 45, polled: true });
+    await pool.query(
+      `update agent_token set monitor_seen_at = now() - interval '3 days'
         where 'agent:' || name = $1`,
       [h],
     );

@@ -577,16 +577,6 @@ export async function lastWorkedOn(
 const POLL_PROOF_MS = 6 * 60_000;
 
 /**
- * How long a monitor may be quiet before it is treated as gone.
- *
- * It polls every two minutes, so anything beyond a few missed intervals is not
- * a slow network. Generous rather than tight, because the cost of being wrong is
- * asymmetric: a false alarm tells someone to reinstall a working plugin, which
- * is how a real warning gets trained into background noise.
- */
-const MONITOR_QUIET_MS = 30 * 60_000;
-
-/**
  * Whether this agent's liveness monitor is running.
  *
  * This is here because the whole chain was broken for weeks and every part of it
@@ -612,6 +602,20 @@ const MONITOR_QUIET_MS = 30 * 60_000;
  * Now it reads a fact the monitor records about itself (migration 013), on
  * `agent_token`, where no claim can overwrite it.
  *
+ * The remaining trap, and it caught the first version of this: the monitor only
+ * polls when it HAS a credential. No lease, no watch file, no request — that is
+ * what makes it free to run always. So "seen in the last N minutes" ages exactly
+ * like a dead monitor whenever an agent is simply idle, and the warning then
+ * fires on the first claim after any quiet spell, which is the commonest claim
+ * there is.
+ *
+ * So the monitor is judged only over windows where it had something to poll, and
+ * a qualifying lease IS such a window: it was heard from at some point after a
+ * long-held lease began, or it was not. A dead monitor never satisfies that. An
+ * idle agent always does, because its last poll came after its last long lease
+ * started — and no timeout constant is needed, which is the real tell that this
+ * is the right question.
+ *
  * `known` still gates on the lease table, and deliberately: an agent that has
  * never held anything long enough for a poll to be expected gets silence rather
  * than a warning on its very first claim.
@@ -622,22 +626,25 @@ export async function monitorSeen(
 ): Promise<{ known: boolean; polled: boolean }> {
   const { rows } = await pool.query<{ total: string; polled: boolean }>(
     `select count(*)::text as total,
-            -- A scalar subquery, so a holder with no token row still gets an
-            -- honest count rather than no row at all. It reads false, which errs
-            -- toward warning -- the safe direction for a guard.
-            coalesce(
-              ( select t.monitor_seen_at > now() - make_interval(secs => $3)
-                  from agent_token t
-                 where 'agent:' || t.name = $1 ),
-              false) as polled
-       from lease
-      where holder = $1
-        and claimed_at > now() - interval '7 days'
+            -- Was the monitor heard from after any of these leases began?
+            --
+            -- Per lease rather than against the clock, which is what keeps an
+            -- idle agent out of it: no lease means no credential means no poll,
+            -- so a wall-clock staleness test reads "idle" and "dead" the same.
+            coalesce(bool_or(l.claimed_at < t.monitor_seen_at), false) as polled
+       from lease l
+       -- A scalar-free join, but LEFT so a holder with no token row still gets
+       -- an honest count. monitor_seen_at is then null, the comparison is null,
+       -- and bool_or coalesces to false -- erring toward warning, which is the
+       -- safe direction for a guard.
+       left join agent_token t on 'agent:' || t.name = l.holder
+      where l.holder = $1
+        and l.claimed_at > now() - interval '7 days'
         -- Elapsed time, not the TTL. Using expires_at counted a lease claimed one
         -- second ago as ten minutes old, so every agent's first claim warned that
         -- its monitor was missing before the monitor had had a chance to poll.
-        and coalesce(ended_at, now()) - claimed_at > make_interval(secs => $2)`,
-    [holder, POLL_PROOF_MS / 1000, MONITOR_QUIET_MS / 1000],
+        and coalesce(l.ended_at, now()) - l.claimed_at > make_interval(secs => $2)`,
+    [holder, POLL_PROOF_MS / 1000],
   );
   const total = Number(rows[0]?.total ?? 0);
   return { known: total > 0, polled: rows[0]?.polled ?? false };

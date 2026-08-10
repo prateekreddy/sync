@@ -3,7 +3,7 @@ import { GatewayError } from './errors.js';
 import type { PlaneClient, State, WorkItem } from './plane.js';
 import { resolve } from './query.js';
 import { readableId } from './view.js';
-import { classify, leasesOf, type DriftKind } from './reconcile.js';
+import { classify, leasesOf, REPAIRABLE, REPAIR_CEILING, type DriftKind } from './reconcile.js';
 
 /**
  * Where a project stands: progress per module, and what the fleet is holding.
@@ -126,6 +126,11 @@ export interface Board {
    * are here so somebody can see them, not so something can act on them.
    */
   drift?: Record<DriftKind, number>;
+  /**
+   * Set when reconciliation is refusing to repair because there is too much to
+   * repair. Present only in that case, so it never becomes background noise.
+   */
+  driftUnrepaired?: string;
 }
 
 const DONE = new Set<State['group']>(['completed', 'cancelled']);
@@ -272,12 +277,17 @@ export async function board(
   // Read-only, and cheap: both sides are already in hand. Only project-wide,
   // like `structure` and for the same reason -- scoped to one module the lease
   // rows outside it would all read as drift.
-  const drift = opts.moduleId
+  const found = opts.moduleId
     ? []
-    : classify(all, await leasesOf(pool, opts.projectId), (id) => groupOf.get(id)).reduce(
-        (acc, d) => ({ ...acc, [d.kind]: (acc[d.kind] ?? 0) + 1 }),
-        {} as Record<DriftKind, number>,
-      );
+    : classify(all, await leasesOf(pool, opts.projectId), (id) => groupOf.get(id));
+  const drift = found.reduce(
+    (acc, d) => ({ ...acc, [d.kind]: (acc[d.kind] ?? 0) + 1 }),
+    {} as Record<DriftKind, number>,
+  );
+  // Said here as well as in the log, because "nothing is being repaired and
+  // somebody should look" is a fact about the board rather than about the
+  // gateway's plumbing. See REPAIR_CEILING.
+  const wouldRepair = found.filter((d) => REPAIRABLE.has(d.kind)).length;
 
   // One call per module. Membership lives behind its own endpoint, so there is no
   // way to get this from the item listing — worth knowing before pointing this at
@@ -324,6 +334,14 @@ export async function board(
     ...(opts.moduleId ? {} : { structure: structureOf(all, filed, groupOf) }),
     ...(blockersUnchecked ? { blockersUnchecked } : {}),
     ...(Object.keys(drift).length ? { drift: drift as Record<DriftKind, number> } : {}),
+    ...(wouldRepair > REPAIR_CEILING
+      ? {
+          driftUnrepaired:
+            `${wouldRepair} items would be repaired in one pass, over the ceiling of ` +
+            `${REPAIR_CEILING}, so reconciliation is repairing nothing here. That many at ` +
+            'once is more often a broken rule than a broken board — look before clearing it.',
+        }
+      : {}),
     fleet: [...ctx.leases.entries()]
       .map(([id, l]) => {
         const item = byId.get(id);

@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { createPool } from '../src/db.js';
 import { claim } from '../src/lease.js';
-import { classify, leasesOf } from '../src/reconcile.js';
+import { classify, leasesOf, reconcile } from '../src/reconcile.js';
 import type { WorkItem } from '../src/plane.js';
 
 /**
@@ -36,6 +36,20 @@ const STATES = new Map([
   ['done', 'completed'],
 ]);
 const groupOf = (id: string) => STATES.get(id);
+
+/** A Plane that answers with exactly the items a test names. */
+const fakePlane = (items: WorkItem[]) =>
+  ({
+    listWorkItems: async () => items,
+    states: async () => [
+      { id: 'backlog', name: 'Backlog', group: 'backlog', default: true },
+      { id: 'doing', name: 'In Progress', group: 'started', default: false },
+      { id: 'done', name: 'Done', group: 'completed', default: false },
+    ],
+    stateByGroup: async () => ({ id: 'doing' }),
+    updateWorkItem: async () => ({}),
+    comment: async () => ({}),
+  }) as never;
 
 const item = (over: Partial<WorkItem> & { id: string }): WorkItem =>
   ({
@@ -184,4 +198,86 @@ describe('comparing the board with the lease table', () => {
     );
     expect(await kinds([])).toEqual([]);
   });
+});
+
+/**
+ * How much one pass is allowed to break.
+ *
+ * A classification rule is a predicate over a whole board, so being wrong about
+ * it is never wrong about ONE item — it is wrong about every item of that shape
+ * at once, unattended, every fifteen minutes. On 2026-08-10 a missing state
+ * condition matched 65 finished items and the repair for that class returns an
+ * item to the pool; it was caught by a human reading the output before the timer
+ * fired, which is luck rather than design.
+ *
+ * So a large repair set is treated as evidence against the RULE rather than
+ * against the board.
+ */
+describe('refusing to act on an implausible amount of drift', () => {
+  const claimLostFor = async (n: number) => {
+    const items: WorkItem[] = [];
+    for (let i = 0; i < n; i++) {
+      const id = randomUUID();
+      await held(id);
+      // Live lease, Plane shows it free: the repairable class.
+      items.push(item({ id, assignees: [], state: 'backlog' }));
+    }
+    return items;
+  };
+
+  it('repairs a handful, which is what real drift looks like', async () => {
+    const items = await claimLostFor(3);
+    const r = await reconcile(fakePlane(items), pool, { projectId: PROJECT, repair: true });
+    expect(r.counts.claimLost).toBe(3);
+    expect(r.repaired).toBe(3);
+    expect(r.refused).toBeUndefined();
+  }, 30_000);
+
+  it('repairs nothing at all once the set is implausibly large', async () => {
+    const items = await claimLostFor(4);
+    const r = await reconcile(fakePlane(items), pool, {
+      projectId: PROJECT,
+      repair: true,
+      ceiling: 3,
+    });
+    expect(r.refused).toBe(4);
+    expect(r.repaired).toBe(0);
+    // Refused before anything was attempted, not part-way through: a pass that
+    // repaired three and stopped would leave a state nobody chose.
+    const { rows } = await pool.query<{ n: string }>(
+      "select count(*)::text as n from lease where pending_mirror is not null and project_id = $1",
+      [PROJECT],
+    );
+    expect(rows[0]!.n).toBe('0');
+  }, 30_000);
+
+  it('still reports every one of them', async () => {
+    // Refusal stops the writing, not the looking. The count is the thing a
+    // person needs in order to decide.
+    const items = await claimLostFor(4);
+    const r = await reconcile(fakePlane(items), pool, {
+      projectId: PROJECT,
+      repair: true,
+      ceiling: 3,
+    });
+    expect(r.drift).toHaveLength(4);
+    expect(r.counts.claimLost).toBe(4);
+  }, 30_000);
+
+  it('never repairs the two classes that are somebody else’s business', async () => {
+    // humanIntervened is a person taking work back; untracked is work nobody
+    // told the gateway about. Neither is ours to rewrite, and neither counts
+    // toward the ceiling either.
+    const mine = randomUUID();
+    await held(mine);
+    const items = [
+      item({ id: mine, assignees: [HUMAN_USER], state: 'doing' }),
+      item({ id: randomUUID(), assignees: [HUMAN_USER], state: 'doing' }),
+    ];
+    const r = await reconcile(fakePlane(items), pool, { projectId: PROJECT, repair: true });
+    expect(r.counts.humanIntervened).toBe(1);
+    expect(r.counts.untracked).toBe(1);
+    expect(r.repaired).toBe(0);
+    expect(r.refused).toBeUndefined();
+  }, 30_000);
 });

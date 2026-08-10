@@ -59,6 +59,31 @@ export interface Drift {
   detail: string;
 }
 
+/** The classes this pass will act on. The other two are never repaired. */
+export const REPAIRABLE: ReadonlySet<DriftKind> = new Set<DriftKind>(['claimLost', 'staleAssignee']);
+
+/**
+ * More repairs than this in one project and the pass does nothing at all.
+ *
+ * Not a rate limit — a plausibility check, and it exists because of a specific
+ * near-miss. On the first live pass a missing state condition matched 65
+ * finished items, and the repair for that class returns an item to the pool:
+ * unstarted, unassigned, with a comment. It was caught by a human reading the
+ * output before the timer fired, which is luck rather than design.
+ *
+ * The reasoning generalises past that bug. A classification rule is a predicate
+ * over a whole board, so being wrong about it is never wrong about one item — it
+ * is wrong about every item of that shape at once, unattended, every fifteen
+ * minutes. Real drift is a handful: a lost write, a raced replica. Sixty five is
+ * a diagnosis, not a workload.
+ *
+ * So a large repair set is treated as evidence against the rule rather than
+ * against the board. The pass refuses, says so at error, and `board` reports it,
+ * because a genuine backlog of drift is worth a person deciding to clear rather
+ * than a timer clearing it at 3am.
+ */
+export const REPAIR_CEILING = 10;
+
 export interface Reconciliation {
   projectId: string;
   /** Leases examined. */
@@ -67,6 +92,11 @@ export interface Reconciliation {
   counts: Record<DriftKind, number>;
   /** How many repairs were queued. Zero when `repair` was not asked for. */
   repaired: number;
+  /**
+   * Set when repairs were refused because there were implausibly many. The
+   * drift is still reported in full — this stops the writing, not the looking.
+   */
+  refused?: number;
 }
 
 const EMPTY: Record<DriftKind, number> = {
@@ -225,7 +255,7 @@ export async function leasesOf(pool: Pool, projectId: string): Promise<LeaseRow[
 export async function reconcile(
   plane: PlaneClient,
   pool: Pool,
-  opts: { projectId: string; repair?: boolean },
+  opts: { projectId: string; repair?: boolean; ceiling?: number },
 ): Promise<Reconciliation> {
   const [items, states, leases] = await Promise.all([
     plane.listWorkItems(opts.projectId),
@@ -239,10 +269,23 @@ export async function reconcile(
   const counts = { ...EMPTY };
   for (const d of drift) counts[d.kind] += 1;
 
+  const wanted = drift.filter((d) => REPAIRABLE.has(d.kind));
+
+  // Refused before anything is attempted, not part-way through. A pass that
+  // repaired nine and then stopped would leave the board in a state neither the
+  // rule nor a human chose.
+  if (opts.repair && wanted.length > (opts.ceiling ?? REPAIR_CEILING)) {
+    log.error(
+      { projectId: opts.projectId, wouldRepair: wanted.length, ceiling: opts.ceiling ?? REPAIR_CEILING, ...counts },
+      'refusing to reconcile: this many repairs at once is more likely a broken rule than a broken board',
+    );
+    return { projectId: opts.projectId, checked: leases.length, drift, counts, repaired: 0, refused: wanted.length };
+  }
+
   let repaired = 0;
   if (opts.repair) {
     const byId = new Map(leases.map((l) => [l.work_item_id, l]));
-    for (const d of drift) {
+    for (const d of wanted) {
       const l = byId.get(d.workItemId);
       if (!l) continue;
       try {
@@ -263,7 +306,8 @@ export async function reconcile(
           });
           repaired += 1;
         }
-        // humanIntervened and untracked are never repaired. See the header.
+        // No else: `wanted` already excludes humanIntervened and untracked, and
+        // the exclusion lives in REPAIRABLE where it can be read in one place.
       } catch (err) {
         log.warn({ err, workItemId: d.workItemId, kind: d.kind }, 'reconciliation repair failed');
       }
@@ -277,7 +321,7 @@ export async function reconcile(
 export async function reconcileAll(
   plane: PlaneClient,
   pool: Pool,
-  opts: { repair?: boolean } = {},
+  opts: { repair?: boolean; ceiling?: number } = {},
 ): Promise<Reconciliation[]> {
   const projects = await plane.listProjects();
   const out: Reconciliation[] = [];
