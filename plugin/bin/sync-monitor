@@ -30,7 +30,8 @@ set -uo pipefail
 # lifetime is safe, and why this file only needs to be user-readable rather than
 # guarded like a password.
 # shellcheck source=./sync-paths.sh
-. "$(dirname "$0")/sync-paths.sh"
+SYNC_BIN="$(dirname "$0")"
+. "$SYNC_BIN/sync-paths.sh"
 TOKEN_DIR=$(sync_state_dir)
 
 # The monitor has no hook stdin, so the environment is the only thing it and the
@@ -67,7 +68,10 @@ while true; do
 
   if [ -n "$url" ]; then
     tmp="$TOKEN_DIR/.poll.$$"
-    code=$(curl -sS -m 20 -o "$tmp" -w '%{http_code}' "$url" 2>/dev/null) || code=000
+    # Rotation is persisted inside sync_poll now, shared with the fence and the
+    # resume report. It used to be handled only here, which is precisely why the
+    # other two broke the credential.
+    code=$(sync_poll "$WATCH_FILE" "$tmp")
     body=$(cat "$tmp" 2>/dev/null); rm -f "$tmp"
 
     if [ "$code" = "410" ]; then
@@ -81,17 +85,11 @@ while true; do
     elif [ "$code" = "200" ]; then
       BACKOFF=0
 
-      # Rotation: the reply carries the URL to use next. Written before anything
-      # else is reported, so a crash mid-pass loses a message rather than the
-      # credential.
-      next=$(printf '%s' "$body" | "$(dirname "$0")/sync-json" watchUrl)
-      [ -n "$next" ] && printf '%s' "$next" > "$WATCH_FILE"
-
       # Anything the human or agent needs to know arrives as a line on stdout,
       # which Claude Code delivers into the session as a notification. The
       # gateway decides what is worth saying; this only relays it, so what an
       # agent gets told can change without shipping a new plugin.
-      say=$(printf '%s' "$body" | "$(dirname "$0")/sync-json" say)
+      say=$(printf '%s' "$body" | "$SYNC_BIN/sync-json" say)
       [ -n "$say" ] && echo "sync: $say"
     else
       # Could not reach the gateway. Deliberately silent: this is ignorance, not

@@ -12,6 +12,17 @@
 # The same decision made in two places is a missing primitive, so it is made
 # here, once. Neither caller may compute this path itself.
 
+# Where the helper scripts beside this one live.
+#
+# Callers set SYNC_BIN before sourcing. This used to read $(dirname "$0"), which
+# is right only when the sourcing script IS the running program -- source it from
+# anything else and it silently resolved to that program's directory instead,
+# so the rotation below was written by a sync-json that did not exist and the
+# credential was never updated. Silent, naturally.
+sync_bin() {
+  printf '%s' "${SYNC_BIN:-$(dirname "$0")}"
+}
+
 # The directory. Overridable because the tests need somewhere that is not $HOME.
 sync_state_dir() {
   printf '%s' "${SYNC_STATE_DIR:-$HOME/.claude/sync}"
@@ -40,4 +51,44 @@ sync_session_id() {
 # The credential file for a session id, which callers pass from sync_session_id.
 sync_watch_file() {
   printf '%s/%s.watch' "$(sync_state_dir)" "$1"
+}
+
+# Poll the watch credential, keeping the replacement it hands back.
+#
+#   $1  the watch file
+#   $2  where to write the response body
+#   ->  the HTTP status on stdout, or 000 if the gateway could not be reached
+#
+# Every GET rotates: the gateway retires the URL that was used and returns its
+# successor in the body. That makes every reader a writer, and for as long as
+# three callers polled this only one of them kept the new value. The other two
+# left the file holding a credential the gateway had already retired, and the
+# next poll of it came back 410 — which is the same answer the gateway gives when
+# somebody else really has taken the item, because no record of the superseded
+# hash is kept.
+#
+# What that produced, measured live 2026-08-10 within a minute of a good claim:
+# the push fence refused with "this work is no longer yours", the monitor
+# announced the claim lost and deleted the credential, and the lease then stopped
+# being extended and genuinely lapsed. Nobody had touched the item. An agent was
+# told to discard correct work and stopped from pushing it — the worst direction
+# this could fail in.
+#
+# So the rotation is persisted here, once, and all three callers poll through it.
+sync_poll() {
+  _file=$1
+  _body=$2
+  _url=$(cat "$_file" 2>/dev/null || true)
+  [ -n "$_url" ] || { printf '000'; return 1; }
+
+  _code=$(curl -sS -m 20 -o "$_body" -w '%{http_code}' "$_url" 2>/dev/null) || _code=000
+
+  # Written before the caller is told anything, so a crash mid-poll costs a
+  # message rather than the credential.
+  if [ "$_code" = "200" ]; then
+    _next=$("$(sync_bin)/sync-json" watchUrl < "$_body" 2>/dev/null || true)
+    [ -n "$_next" ] && printf '%s' "$_next" > "$_file"
+  fi
+
+  printf '%s' "$_code"
 }

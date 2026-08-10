@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -222,4 +223,107 @@ describe('the hook that starts the chain', () => {
       expect(existsSync(bin(f))).toBe(true);
     }
   });
+});
+
+/**
+ * Polling must leave the credential usable, because three different callers poll.
+ *
+ * Every GET rotates: the gateway retires the URL that was used and returns its
+ * successor in the body. That makes every reader a writer, and only the monitor
+ * kept the new value. The fence and the resume report dropped it, leaving a
+ * credential the gateway had already retired — and the next poll of a retired
+ * credential is answered 410, the same answer given when somebody else really
+ * has taken the item.
+ *
+ * Measured live 2026-08-10, within a minute of a good claim: the fence refused a
+ * push with "this work is no longer yours", the monitor announced the claim lost
+ * and deleted the credential, and the lease then stopped being extended and
+ * lapsed for real. Nobody had touched the item. An agent was told to discard
+ * correct work and stopped from pushing it.
+ */
+describe('polling the watch credential', () => {
+  /**
+   * A fake gateway in its OWN process, which is not fussiness: the scripts are
+   * driven with execFileSync, and that blocks Node's event loop, so a server
+   * living in this process could never answer them. The first version of this
+   * test hung for twenty seconds per poll and reported curl failing.
+   *
+   * It rotates like the real one — every GET retires the URL used and returns
+   * its successor — and answers 410 to anything it has retired, which is exactly
+   * what the real endpoint does and exactly what makes the fence cry theft.
+   */
+  const gateway = async () => {
+    const port = 18100 + Math.floor(process.hrtime()[1] % 400);
+    const script = join(mkdtempSync(join(tmpdir(), 'sync-gw-')), 'gw.py');
+    writeFileSync(
+      script,
+      [
+        'import http.server, json, sys',
+        'state = {"n": 0}',
+        'class H(http.server.BaseHTTPRequestHandler):',
+        '    def do_GET(self):',
+        '        want = "/v1/watch/tok-%d" % state["n"]',
+        '        if self.path != want:',
+        '            self.send_response(410); self.end_headers(); return',
+        '        state["n"] += 1',
+        '        body = json.dumps({"watchUrl": "http://127.0.0.1:%d/v1/watch/tok-%d" % (PORT, state["n"]), "holding": "X"}).encode()',
+        '        self.send_response(200)',
+        '        self.send_header("content-type", "application/json")',
+        '        self.send_header("content-length", str(len(body)))',
+        '        self.end_headers(); self.wfile.write(body)',
+        '    def log_message(self, *a): pass',
+        'PORT = int(sys.argv[1])',
+        'http.server.HTTPServer(("127.0.0.1", PORT), H).serve_forever()',
+      ].join('\n'),
+    );
+    const proc = spawn('python3', [script, String(port)], { stdio: 'ignore', detached: true });
+    // Wait for it to accept, rather than sleeping a guessed amount.
+    for (let i = 0; i < 100; i++) {
+      try {
+        execFileSync('curl', ['-sS', '-o', '/dev/null', `http://127.0.0.1:${port}/ping`], {
+          timeout: 500,
+        });
+        break;
+      } catch {
+        execFileSync('sleep', ['0.05']);
+      }
+    }
+    return { url: `http://127.0.0.1:${port}/v1/watch/tok-0`, stop: () => proc.kill() };
+  };
+
+  const poll = (file: string) =>
+    execFileSync(
+      '/bin/sh',
+      ['-c', `SYNC_BIN="${join(plugin, 'bin')}"; . "$SYNC_BIN/sync-paths.sh"; sync_poll "${file}" "${file}.body"`],
+      { encoding: 'utf8', env: { PATH: process.env['PATH'] ?? '', HOME: '/tmp' } },
+    );
+
+  it('keeps the replacement, so the next poll still works', async () => {
+    const gw = await gateway();
+    const file = join(mkdtempSync(join(tmpdir(), 'sync-poll-')), 'a.watch');
+    writeFileSync(file, gw.url);
+
+    expect(poll(file)).toBe('200');
+    // This is the one that used to come back 410 and be reported to the agent as
+    // somebody else taking its work.
+    expect(poll(file)).toBe('200');
+    expect(poll(file)).toBe('200');
+    expect(readFileSync(file, 'utf8')).toContain('tok-3');
+
+    gw.stop();
+  }, 30_000);
+
+  it('leaves a credential the gateway has retired alone', async () => {
+    // Ignorance, not a verdict: a file that was never rotated forward is stale,
+    // and the honest answer is the gateway's, unchanged.
+    const gw = await gateway();
+    const file = join(mkdtempSync(join(tmpdir(), 'sync-poll-')), 'a.watch');
+    writeFileSync(file, gw.url);
+
+    expect(poll(file)).toBe('200');
+    writeFileSync(file, gw.url); // put the retired one back
+    expect(poll(file)).toBe('410');
+
+    gw.stop();
+  }, 30_000);
 });

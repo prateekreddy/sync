@@ -21,7 +21,8 @@ set -uo pipefail
 
 CMD="${1:-}"
 # shellcheck source=./sync-paths.sh
-. "$(dirname "$0")/sync-paths.sh"
+SYNC_BIN="$(dirname "$0")"
+. "$SYNC_BIN/sync-paths.sh"
 STATE_DIR=$(sync_state_dir)
 mkdir -p "$STATE_DIR" 2>/dev/null || true
 
@@ -31,8 +32,8 @@ input=$(cat 2>/dev/null || true)
 # Quiet on purpose: `preflight` is the one place that reports a missing parser,
 # once per session. Letting every hook invocation shout would be noise people
 # learn to scroll past, which is how a real warning gets missed.
-jqr() { printf '%s' "$input" | "$(dirname "$0")/sync-json" "$1" 2>/dev/null; }
-get() { printf '%s' "$1" | "$(dirname "$0")/sync-json" "$2" 2>/dev/null; }
+jqr() { printf '%s' "$input" | "$SYNC_BIN/sync-json" "$1" 2>/dev/null; }
+get() { printf '%s' "$1" | "$SYNC_BIN/sync-json" "$2" 2>/dev/null; }
 
 # Hook input first, environment second -- resolved in sync-paths.sh, because the
 # monitor has to arrive at the same filename and cannot see this stdin.
@@ -50,7 +51,7 @@ case "$CMD" in
     # fence and the session bracket inert, and an inert guard that nobody knows
     # is inert is worse than no guard -- you push stale work believing something
     # checked it.
-    if ! printf '{"ok":1}' | "$(dirname "$0")/sync-json" ok >/dev/null 2>&1; then
+    if ! printf '{"ok":1}' | "$SYNC_BIN/sync-json" ok >/dev/null 2>&1; then
       echo "sync is degraded: no JSON parser found, so the push fence and session tracking are OFF."
       echo "Install jq to restore them:  brew install jq   |   apt-get install -y jq"
     fi
@@ -119,9 +120,14 @@ case "$CMD" in
     # trusting the agent to call `held` -- the same "remember to do it later" that
     # produced the original bug -- state it up front, where it cannot be skipped.
     [ -r "$WATCH_FILE" ] || exit 0
-    body=$(curl -fsS -m 10 "$(cat "$WATCH_FILE")" 2>/dev/null) || exit 0
+    tmp="$STATE_DIR/.report.$$"
+    # Through sync_poll, so the rotation this GET causes is kept. Reporting used
+    # to discard it and leave the credential dead behind it.
+    code=$(sync_poll "$WATCH_FILE" "$tmp")
+    body=$(cat "$tmp" 2>/dev/null); rm -f "$tmp"
+    [ "$code" = "200" ] || exit 0
     held=$(get "$body" holding)
-    [ -n "$held" ] && echo "You are still holding $held. Resume it or release it." 
+    [ -n "$held" ] && echo "You are still holding $held. Resume it or release it."
     ;;
 
   close)
@@ -148,7 +154,9 @@ case "$CMD" in
     #   else make it impossible to push, or the guard becomes the outage.
     [ -r "$WATCH_FILE" ] || exit 0
     tmp="$STATE_DIR/.fence.$$"
-    code=$(curl -sS -m 10 -o "$tmp" -w '%{http_code}' "$(cat "$WATCH_FILE")" 2>/dev/null) || code=000
+    # Through sync_poll for the same reason: a fence that polls and drops the
+    # rotation leaves the next fence refusing a push that was always legitimate.
+    code=$(sync_poll "$WATCH_FILE" "$tmp")
     body=$(cat "$tmp" 2>/dev/null); rm -f "$tmp"
 
     deny() {
