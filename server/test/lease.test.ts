@@ -12,6 +12,7 @@ import {
   record,
   release,
   sweepExpired,
+  EXPIRED_WHILE_ALIVE,
 } from '../src/lease.js';
 
 const pool = createPool(
@@ -422,5 +423,142 @@ describe('noticing that a liveness monitor is not running', () => {
     const h = holder();
     await past(h, { minutes: 1, polled: false });
     expect(await monitorSeen(pool, h)).toEqual({ known: false, polled: false });
+  });
+});
+
+/**
+ * A lease that lapses under an agent which is demonstrably still working.
+ *
+ * SYNC-73 delivered two of its three parts. The third -- "a lease that expires
+ * while its holder is demonstrably alive is not silently recycled" -- was closed
+ * by prevention: the liveness monitor stops the expiry happening. That holds
+ * only where the monitor can run, and it cannot run for a client that is not the
+ * plugin, or on a box with none of jq, node or python3. There the 2026-08-04
+ * collision is reachable exactly as it was.
+ *
+ * The evidence was already being collected and thrown away: `authenticate`
+ * stamps agent_token.last_seen_at on every call.
+ *
+ * The rule under test needs no tuned window: the previous holder called the
+ * gateway AFTER its own lease had expired.
+ */
+describe('taking work from an agent that never stopped', () => {
+  const token = async (name: string, seenAt: string | null) => {
+    await pool.query(
+      `insert into agent_token (name, token_sha256, last_seen_at)
+       values ($1, $2, $3::timestamptz)
+       on conflict (name) do update set last_seen_at = excluded.last_seen_at`,
+      [name, randomUUID(), seenAt],
+    );
+    return `agent:${name}`;
+  };
+
+  /** A lease held by `holder` that lapsed `agoSeconds` ago. */
+  const lapsed = async (workItemId: string, holder: string, agoSeconds = 60) => {
+    await claim(pool, { workItemId, projectId: PROJECT, holder, ttlSeconds: 600 });
+    await pool.query(
+      `update lease set expires_at = now() - make_interval(secs => $2) where work_item_id = $1`,
+      [workItemId, agoSeconds],
+    );
+  };
+
+  it('says so when the displaced holder was calling after its lease had gone', async () => {
+    // Alive at a moment its lease no longer covered: not a dead agent whose work
+    // is free, but one about to duplicate whatever the new claimant does.
+    const victim = await token(`v-${randomUUID()}`, new Date().toISOString());
+    const id = randomUUID();
+    await lapsed(id, victim);
+
+    const taken = await claim(pool, {
+      workItemId: id,
+      projectId: PROJECT,
+      holder: 'agent:the-next-one',
+      ttlSeconds: 600,
+    });
+
+    expect(taken!.tookOverFrom?.holder).toBe(victim);
+  });
+
+  it('stays quiet when the holder really did stop', async () => {
+    // Last seen before its lease expired, which is what a dead agent looks like.
+    const gone = await token(`g-${randomUUID()}`, new Date(Date.now() - 3_600_000).toISOString());
+    const id = randomUUID();
+    await lapsed(id, gone);
+
+    const taken = await claim(pool, {
+      workItemId: id,
+      projectId: PROJECT,
+      holder: 'agent:the-next-one',
+      ttlSeconds: 600,
+    });
+
+    expect(taken!.tookOverFrom).toBeUndefined();
+  });
+
+  it('does not accuse an agent of stealing from itself', async () => {
+    // Without this exclusion it fires on EVERY self-reclaim: authenticate stamps
+    // last_seen_at at the start of the request, so the condition is true by
+    // construction the moment an agent takes back its own lapsed lease.
+    const me = await token(`m-${randomUUID()}`, new Date().toISOString());
+    const id = randomUUID();
+    await lapsed(id, me);
+
+    const taken = await claim(pool, {
+      workItemId: id,
+      projectId: PROJECT,
+      holder: me,
+      ttlSeconds: 600,
+    });
+
+    expect(taken!.tookOverFrom).toBeUndefined();
+  });
+
+  it('says nothing on a first claim, which displaces nobody', async () => {
+    const taken = await claim(pool, {
+      workItemId: randomUUID(),
+      projectId: PROJECT,
+      holder: 'agent:the-next-one',
+      ttlSeconds: 600,
+    });
+    expect(taken!.tookOverFrom).toBeUndefined();
+  });
+
+  it('records the reason on the expiry itself, not only for a claimant', async () => {
+    // Nobody may ever claim the item, and the fact must still survive -- it is
+    // what a human reads to find out an agent's liveness is broken. The ordinary
+    // reason describes a dead agent, which is the opposite of what happened.
+    const victim = await token(`s-${randomUUID()}`, new Date().toISOString());
+    const id = randomUUID();
+    await claim(pool, { workItemId: id, projectId: PROJECT, holder: victim, ttlSeconds: 600 });
+    await pool.query(
+      `update lease set expires_at = now() - interval '1 minute' where work_item_id = $1`,
+      [id],
+    );
+
+    await sweepExpired(pool);
+
+    const { rows } = await pool.query<{ end_reason: string }>(
+      'select end_reason from lease where work_item_id = $1',
+      [id],
+    );
+    expect(rows[0]!.end_reason).toBe(EXPIRED_WHILE_ALIVE);
+  });
+
+  it('keeps the ordinary reason for an agent that stopped', async () => {
+    const gone = await token(`q-${randomUUID()}`, new Date(Date.now() - 3_600_000).toISOString());
+    const id = randomUUID();
+    await claim(pool, { workItemId: id, projectId: PROJECT, holder: gone, ttlSeconds: 600 });
+    await pool.query(
+      `update lease set expires_at = now() - interval '1 minute' where work_item_id = $1`,
+      [id],
+    );
+
+    await sweepExpired(pool);
+
+    const { rows } = await pool.query<{ end_reason: string }>(
+      'select end_reason from lease where work_item_id = $1',
+      [id],
+    );
+    expect(rows[0]!.end_reason).toBe('lease expired: no heartbeat');
   });
 });

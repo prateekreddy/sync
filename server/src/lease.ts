@@ -38,6 +38,24 @@ export interface Lease {
    * human is reading.
    */
   retried?: boolean;
+  /**
+   * This claim took the item from a holder that was demonstrably still alive.
+   *
+   * A fact about *this call*, like `retried`, and never read back: the row it was
+   * derived from is overwritten by the very statement that reports it.
+   *
+   * SYNC-73 asked for three things and delivered two. The third — "a lease that
+   * expires while its holder is demonstrably alive is not silently recycled" —
+   * was closed by prevention: the liveness monitor stops the expiry happening.
+   * That holds only where the monitor can run. It needs jq, node or python3, and
+   * it does not exist at all for a client that is not the plugin, so on those the
+   * 2026-08-04 collision is reachable exactly as it was.
+   *
+   * The evidence was already being collected and thrown away. `authenticate`
+   * stamps `agent_token.last_seen_at` on every call, so the gateway knows the
+   * agent was alive; nothing correlated that with an expiry.
+   */
+  tookOverFrom?: { holder: string; lastSeenAt: string };
 }
 
 interface Row {
@@ -51,6 +69,10 @@ interface Row {
   expires_at: Date;
   heartbeat_at: Date;
   session_id: string | null;
+  /** The lease this claim displaced, captured before the upsert overwrote it. */
+  prior_holder?: string | null;
+  prior_expires_at?: Date | null;
+  prior_seen_at?: Date | null;
 }
 
 const toLease = (r: Row): Lease => ({
@@ -89,6 +111,40 @@ export interface ClaimOpts {
 }
 
 /**
+ * Was the lease this claim displaced taken from an agent that was still working?
+ *
+ * The test is deliberately not "seen recently", which would need a window nobody
+ * can pick well. It is: **the previous holder called the gateway after its own
+ * lease had already expired**. An agent authenticating at 10:05 on a lease that
+ * lapsed at 10:00 is not a dead agent whose work is free to recycle — it is an
+ * agent that is alive, believes it still holds the item, and is about to collide
+ * with whoever takes it. That is the 2026-08-04 failure exactly, and it needs no
+ * threshold: `last_seen_at > expires_at` is the whole rule.
+ *
+ * Two exclusions, both necessary:
+ *
+ * - Taking back your OWN lapsed lease is not a collision, and without this it
+ *   would fire every time: `authenticate` stamps last_seen_at at the start of
+ *   the request, so for a self-reclaim the condition is true by construction.
+ * - No prior holder at all means a first claim, not a takeover.
+ *
+ * The known blind spot is worth stating rather than hiding: last_seen_at is per
+ * TOKEN, and two sessions sharing one token share a holder string, so this
+ * cannot see one of them taking the other's work. Leases carry a session since
+ * SYNC-87; a per-session last-seen would close it, and does not exist yet.
+ */
+function tookOverFromLive(
+  row: Row,
+  claimant: string,
+): { holder: string; lastSeenAt: string } | undefined {
+  const { prior_holder, prior_expires_at, prior_seen_at } = row;
+  if (!prior_holder || prior_holder === claimant) return undefined;
+  if (!prior_expires_at || !prior_seen_at) return undefined;
+  if (prior_seen_at.getTime() <= prior_expires_at.getTime()) return undefined;
+  return { holder: prior_holder, lastSeenAt: prior_seen_at.toISOString() };
+}
+
+/**
  * Take an exclusive, time-bounded lease on one work item.
  *
  * The whole of mutual exclusion is this single statement. It is atomic without a
@@ -104,7 +160,25 @@ export interface ClaimOpts {
  */
 export async function claim(pool: Pool, opts: ClaimOpts): Promise<Lease | null> {
   const { rows } = await pool.query<Row>(
-    `insert into lease as l
+    // The displaced lease, read before it is overwritten.
+    //
+    // A CTE sees the snapshot as it was at the start of the statement, so this
+    // reads the lease the upsert below is about to destroy — without a
+    // transaction, a second round trip, or a window in which another claimant
+    // could slip between the two. There is no other moment when both the old
+    // holder and the new one exist.
+    `with prior as (
+       select l.holder      as prior_holder,
+              l.expires_at  as prior_expires_at,
+              -- holder is 'agent:' || agent_token.name; see auth.ts.
+              ( select t.last_seen_at
+                  from agent_token t
+                 where 'agent:' || t.name = l.holder ) as prior_seen_at
+         from lease l
+        where l.work_item_id = $1
+     ),
+     taken as (
+     insert into lease as l
        (work_item_id, project_id, holder, holder_chain, epoch, state, expires_at, session_id)
      values ($1, $2, $3, $4, 1, 'held', now() + make_interval(secs => $5), $6)
      on conflict (work_item_id) do update
@@ -136,7 +210,10 @@ export async function claim(pool: Pool, opts: ClaimOpts): Promise<Lease | null> 
             expiry_count = case when l.state = 'expired'
                                 then l.expiry_count else 0 end
       where l.state <> 'held' or l.expires_at <= now()
-     returning ${RETURNING}`,
+     returning ${RETURNING}
+     )
+     select taken.*, prior.prior_holder, prior.prior_expires_at, prior.prior_seen_at
+       from taken left join prior on true`,
     [
       opts.workItemId,
       opts.projectId,
@@ -146,7 +223,12 @@ export async function claim(pool: Pool, opts: ClaimOpts): Promise<Lease | null> 
       opts.sessionId ?? null,
     ],
   );
-  if (rows[0]) return toLease(rows[0]);
+  if (rows[0]) {
+    const lease = toLease(rows[0]);
+    const from = tookOverFromLive(rows[0], opts.holder);
+    if (from) lease.tookOverFrom = from;
+    return lease;
+  }
 
   // The statement above refused, which normally means somebody else holds it.
   // One case hiding in there is this caller's own lease: the 2026-07-28 MCP
@@ -612,16 +694,39 @@ export async function record(pool: Pool, workItemId: string): Promise<LeaseRecor
   };
 }
 
+/**
+ * The reason recorded when a lease lapsed under an agent that was still calling.
+ *
+ * Distinct from the ordinary one on purpose. "No heartbeat" describes a dead
+ * agent and is what a human reads as "fine, it went away". This says the
+ * opposite happened, and it is the difference between an item that is free and
+ * one that two agents are about to work at once. It reaches Plane through the
+ * mirrored return, which is where somebody actually looks.
+ */
+export const EXPIRED_WHILE_ALIVE =
+  'lease expired while its holder was still calling the gateway — its liveness monitor is probably not running';
+
 export async function sweepExpired(pool: Pool): Promise<Lease[]> {
   const { rows } = await pool.query<Row>(
     `update lease
         set state        = 'expired',
             ended_at     = now(),
-            end_reason   = 'lease expired: no heartbeat',
+            -- Same rule as a takeover: alive AFTER the lease was gone. See
+            -- tookOverFromLive. Recorded here as well so the fact survives even
+            -- when nobody claims the item afterwards -- otherwise the only
+            -- record of it is a warning to a claimant who may never arrive.
+            end_reason   = case
+              when ( select t.last_seen_at
+                       from agent_token t
+                      where 'agent:' || t.name = lease.holder ) > lease.expires_at
+              then $1
+              else 'lease expired: no heartbeat'
+            end,
             expiry_count = expiry_count + 1,
             mirrored     = false
       where state = 'held' and expires_at <= now()
      returning ${RETURNING}`,
+    [EXPIRED_WHILE_ALIVE],
   );
   return rows.map(toLease);
 }

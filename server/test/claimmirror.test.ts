@@ -290,3 +290,54 @@ describe('when it worked', () => {
     await app.close();
   });
 });
+
+/**
+ * The two claim paths must hand back the same things.
+ *
+ * `claim` can be given a work item or asked to pick one, and the tool
+ * description actively steers agents to the second -- "omit workItemId ...
+ * calling next and then claim is a race". That path returned no watchUrl at all,
+ * so the harvest hook found nothing to store, the monitor had nothing to poll,
+ * and the lease lapsed while the agent worked. The advice that avoids a race
+ * walked into a lapse instead. See SYNC-105.
+ *
+ * Asserted as an agreement between the paths rather than as "each works",
+ * because the defect was not that either path was broken -- it was that they
+ * drifted. Only one of them got the credential when it was introduced.
+ */
+describe('however the item was chosen', () => {
+  it('hands back a watch credential either way', async () => {
+    const id = randomUUID();
+    const named = await harness([id]);
+    const byName = (await named.claim({ projectId: PROJECT, workItemId: id })).json();
+    await named.app.close();
+    await pool.query('truncate lease');
+
+    const other = randomUUID();
+    const picked = await harness([other]);
+    const byPick = (await picked.claim({ projectId: PROJECT })).json();
+    await picked.app.close();
+
+    expect(byName.watchUrl).toMatch(/\/v1\/watch\//);
+    expect(byPick.watchUrl).toMatch(/\/v1\/watch\//);
+  });
+
+  it('does not quietly drop the liveness warning on the picked path', async () => {
+    // 26f7fda added the warning to the named path only, so an agent taking the
+    // recommended route was never told its monitor was missing either.
+    const id = randomUUID();
+    const named = await harness([id]);
+    const byName = Object.keys((await named.claim({ projectId: PROJECT, workItemId: id })).json());
+    await named.app.close();
+    await pool.query('truncate lease');
+
+    const other = randomUUID();
+    const picked = await harness([other]);
+    const byPick = Object.keys((await picked.claim({ projectId: PROJECT })).json());
+    await picked.app.close();
+
+    // `item` is the picked path's own addition -- it says WHICH item was chosen,
+    // which the caller of the named path already knows.
+    expect(byName.filter((k) => !byPick.includes(k))).toEqual([]);
+  });
+});

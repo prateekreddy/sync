@@ -221,6 +221,39 @@ async function livenessNote(
   };
 }
 
+/**
+ * Said on a claim that displaced a holder which was demonstrably still working.
+ *
+ * The other half of SYNC-86. `lease.claim` detects it — the previous holder
+ * called the gateway after its own lease had expired — and this is where the
+ * agent that just took the work is told, because it is the only party in a
+ * position to stop before the two of them duplicate each other.
+ *
+ * Deliberately not a refusal. The gateway cannot know which of them should have
+ * the item, and refusing would deadlock the board whenever an agent's monitor is
+ * broken: the item would be unclaimable until a lease nobody is extending
+ * finally aged out of the window. Saying it plainly is what "not silently
+ * recycled" asks for, and the displaced agent learns independently — its next
+ * poll answers 410.
+ */
+function takeoverNote(l: lease.Lease): {
+  contested?: { previousHolder: string; lastSeenAt: string; warning: string };
+} {
+  if (!l.tookOverFrom) return {};
+  return {
+    contested: {
+      previousHolder: l.tookOverFrom.holder,
+      lastSeenAt: l.tookOverFrom.lastSeenAt,
+      warning:
+        `This item's lease had lapsed, but ${l.tookOverFrom.holder} was still calling the gateway ` +
+        `at ${l.tookOverFrom.lastSeenAt} — after that lease had already expired. That is an agent ` +
+        'whose liveness monitor is not running, not one that stopped working, so it may still be ' +
+        'working this item and about to duplicate whatever you do. Check with a human before ' +
+        'starting, and say so if you proceed.',
+    },
+  };
+}
+
 export function sessionOf(
   req: Pick<FastifyRequest, 'headers'>,
   body?: { sessionId?: string | undefined },
@@ -1187,6 +1220,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         lease: l,
         watchUrl: `${publicBase(deps.publicUrl, req.headers, req.protocol)}/v1/watch/${watch}`,
         ...(await livenessNote(pool, actor.holder)),
+        ...takeoverNote(l),
         briefing: await briefingOrNull(plane.as(actor.planeToken), {
           projectId: b.projectId,
           workItemId: l.workItemId,
@@ -1242,9 +1276,24 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         });
         throw err;
       }
+      // Everything the named path hands back, because this path is the one the
+      // tool description actively recommends -- "omit workItemId ... calling
+      // next and then claim is a race" -- and it was returning no credential at
+      // all. The harvest hook then found nothing to store, the monitor had
+      // nothing to poll, and the lease lapsed while the agent worked: the
+      // collision this design exists to prevent, down the path we tell agents to
+      // take. The two paths were written at different times and the credential
+      // was added to one. See SYNC-105.
+      const watch = await mintWatch(pool, {
+        sessionId: sessionOf(req, b),
+        workItemId: l.workItemId,
+      });
       return {
         lease: l,
         item: c,
+        watchUrl: `${publicBase(deps.publicUrl, req.headers, req.protocol)}/v1/watch/${watch}`,
+        ...(await livenessNote(pool, actor.holder)),
+        ...takeoverNote(l),
         briefing: await briefingOrNull(plane.as(actor.planeToken), {
           projectId: b.projectId,
           workItemId: l.workItemId,
