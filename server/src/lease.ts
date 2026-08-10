@@ -117,6 +117,12 @@ export async function claim(pool: Pool, opts: ClaimOpts): Promise<Lease | null> 
             -- monitor's ability to speak for this item. The previous session's
             -- next poll finds nothing, which is how it learns the work is gone.
             watch_sha256 = null,
+            -- And its predecessor. Leaving that behind would let the session
+            -- that just lost the item keep polling with a credential one
+            -- rotation old -- which is the one case that must still read as
+            -- "this is not yours".
+            watch_prev_sha256 = null,
+            watch_prev_at = null,
             -- Monotonic across steals, and never reset. This is what makes a
             -- late-waking previous holder detectable instead of destructive.
             epoch        = l.epoch + 1,

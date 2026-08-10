@@ -49,6 +49,23 @@ export const MAX_HOLD_MS = 4 * 60 * 60 * 1000;
 /** How far each poll pushes the lease out. Short, because polls are frequent. */
 export const EXTEND_S = 600;
 
+/**
+ * How long a credential a poll just retired is still accepted.
+ *
+ * Every poll rotates, so a caller that polled and then failed to store the
+ * replacement — a crash between the GET and the write, or two hooks polling at
+ * the same instant — is left one rotation behind. Without this, being one
+ * rotation behind was indistinguishable from having had the work taken away,
+ * because both matched no row and both were answered 410. The push fence treats
+ * 410 as a verdict, so the check manufactured the evidence it acted on: pushes
+ * refused, correct work declared not yours.
+ *
+ * Longer than the monitor's poll interval so a stale caller always gets a chance
+ * to catch up, and short because this is a bearer credential — accepting a
+ * retired one widens how long a leaked URL keeps working.
+ */
+export const WATCH_GRACE_S = 300;
+
 const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex');
 
 export interface WatchState {
@@ -87,8 +104,13 @@ export async function mintWatch(
   const raw = randomBytes(32).toString('base64url');
   await pool.query(
     `update lease
-        set watch_sha256     = $2,
-            watch_expires_at = now() + make_interval(secs => $3)
+        set watch_sha256      = $2,
+            -- A freshly minted credential supersedes everything, including
+            -- whatever the last rotation was still honouring. Leaving a previous
+            -- value here would keep an older URL alive past a new claim.
+            watch_prev_sha256 = null,
+            watch_prev_at     = null,
+            watch_expires_at  = now() + make_interval(secs => $3)
       where work_item_id = $1
          or ($4::text is not null
              and session_id = $4
@@ -112,14 +134,23 @@ interface Row {
 /**
  * One poll: prove the session is alive, and say what changed.
  *
- * Returns null when the capability is unknown, spent, or has been superseded —
- * the caller answers 410. That case is load-bearing rather than an error path:
- * when another session claims the same item, its `claim` overwrites this row's
- * credential, so the old monitor's next poll finds nothing. A 410 therefore means
- * "this work is definitively not yours any more", which is exactly what the push
- * fence must refuse on. It is *not* the same as being unable to reach the
- * gateway, and callers must not conflate the two: one is a verdict, the other is
- * ignorance, and only the verdict may block a push.
+ * Returns null when the capability is unknown or spent — the caller answers 410.
+ * That case is load-bearing rather than an error path: when another session
+ * claims the same item, its `claim` clears this row's credential, so the old
+ * monitor's next poll finds nothing. A 410 therefore means "this work is
+ * definitively not yours any more", which is exactly what the push fence must
+ * refuse on. It is *not* the same as being unable to reach the gateway, and
+ * callers must not conflate the two: one is a verdict, the other is ignorance,
+ * and only the verdict may block a push.
+ *
+ * A *superseded* credential is deliberately not in that set any more, and this
+ * is the correction that matters. Every poll rotates, so a caller that polled and
+ * lost the replacement holds the previous value — and answering that with the
+ * same 410 made "you are one rotation behind" indistinguishable from "somebody
+ * took your work". The fence acted on it: pushes refused, correct work declared
+ * not yours, on evidence the check produced itself. The previous value is now
+ * accepted for WATCH_GRACE_S, and only `claim` and `closeWatch` clear it — which
+ * is what keeps a genuine theft answering 410.
  */
 export async function pollWatch(
   pool: Pool,
@@ -130,8 +161,14 @@ export async function pollWatch(
   const { rows } = await pool.query<Row>(
     `select work_item_id, session_id, state, epoch, claimed_at, expires_at, end_reason
        from lease
-      where watch_sha256 = $1 and watch_expires_at > now()`,
-    [hash],
+      where watch_expires_at > now()
+        and ( watch_sha256 = $1
+              -- One rotation behind is not theft. See WATCH_GRACE_S: a caller
+              -- that polled and lost the replacement used to be answered exactly
+              -- as if somebody else had taken its work.
+              or ( watch_prev_sha256 = $1
+                   and watch_prev_at > now() - make_interval(secs => $2) ) )`,
+    [hash, WATCH_GRACE_S],
   );
   if (rows.length === 0) return null;
 
@@ -217,11 +254,21 @@ export async function pollWatch(
     }
   }
 
+  // Rotate, keeping what was just retired. The match is on either column for the
+  // same reason the select above is: a caller arriving with the previous value is
+  // legitimate, and rotating only on an exact current match would leave it stuck
+  // one behind forever.
   const next = randomBytes(32).toString('base64url');
-  await pool.query('update lease set watch_sha256 = $2 where watch_sha256 = $1', [
-    hash,
-    sha256(next),
-  ]);
+  await pool.query(
+    `update lease
+        set watch_sha256      = $2,
+            watch_prev_sha256 = watch_sha256,
+            watch_prev_at     = now()
+      where watch_sha256 = $1
+         or ( watch_prev_sha256 = $1
+              and watch_prev_at > now() - make_interval(secs => $3) )`,
+    [hash, sha256(next), WATCH_GRACE_S],
+  );
 
   return {
     watchUrl: `${publicUrl.replace(/\/$/, '')}/v1/watch/${next}`,
@@ -248,6 +295,10 @@ export async function closeWatch(pool: Pool, raw: string): Promise<string[]> {
             expires_at     = now(),
             mirrored       = false,
             watch_sha256   = null,
+            -- Both, always. A cleared credential that leaves its predecessor
+            -- behind is a credential that still works.
+            watch_prev_sha256 = null,
+            watch_prev_at     = null,
             -- Queued rather than merely flagged. This used to set the mirrored
             -- flag and stop, and nothing anywhere acted on it -- so every session
             -- that ended holding work left it assigned and in progress on the
@@ -261,9 +312,12 @@ export async function closeWatch(pool: Pool, raw: string): Promise<string[]> {
             ),
             mirror_attempts = 0,
             mirror_after    = now()
-      where watch_sha256 = $1 and state = 'held'
+      where state = 'held'
+        and ( watch_sha256 = $1
+              or ( watch_prev_sha256 = $1
+                   and watch_prev_at > now() - make_interval(secs => $2) ) )
     returning work_item_id`,
-    [sha256(raw)],
+    [sha256(raw), WATCH_GRACE_S],
   );
   return rows.map((r) => r.work_item_id);
 }

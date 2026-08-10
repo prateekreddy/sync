@@ -153,15 +153,73 @@ describe('the poll is the heartbeat', () => {
     expect(state!.holding).not.toContain(theirs.workItemId);
   });
 
-  it('rotates the credential on every poll, retiring the one just used', async () => {
-    // A captured URL ages out on the next poll rather than lasting the session.
+  it('rotates the credential on every poll', async () => {
+    // A captured URL ages out rather than lasting the session.
     const { raw } = await held();
     const state = await pollWatch(pool, raw, BASE);
     const next = capOf(state!.watchUrl);
 
     expect(next).not.toBe(raw);
-    expect(await pollWatch(pool, raw, BASE)).toBeNull();
     expect(await pollWatch(pool, next, BASE)).not.toBeNull();
+  });
+
+  /**
+   * The credential a poll just retired keeps working for a short grace period,
+   * and this test used to assert the opposite.
+   *
+   * It was asserting a real behaviour that turned out to be a serious defect.
+   * Three callers poll this endpoint and any of them can lose the replacement —
+   * a crash between the GET and the write, or two hooks polling at once. The
+   * answer to a retired credential was the same 410 given when another session
+   * genuinely takes the item, and the push fence treats 410 as a verdict. So
+   * being one rotation behind was reported as theft: pushes refused, correct
+   * work declared not the agent's, the lease then left to lapse. Measured live
+   * 2026-08-10, a minute after a good claim, on evidence the check manufactured.
+   *
+   * What must still answer 410 is a credential somebody else's claim cleared,
+   * which is why `claim` clears both columns and is covered below.
+   */
+  it('still accepts the credential the last poll retired', async () => {
+    const { raw } = await held();
+    const first = capOf((await pollWatch(pool, raw, BASE))!.watchUrl);
+
+    // The caller that lost `first` and is still holding `raw`.
+    const recovered = await pollWatch(pool, raw, BASE);
+    expect(recovered).not.toBeNull();
+    expect(recovered!.stale).toBeUndefined();
+    expect(capOf(recovered!.watchUrl)).not.toBe(first);
+  });
+
+  it('stops accepting it once it is two rotations behind', async () => {
+    // One behind is a lost write. Further back than that is not a case any
+    // honest caller reaches, and this is a bearer credential.
+    const { raw } = await held();
+    const a = capOf((await pollWatch(pool, raw, BASE))!.watchUrl);
+    await pollWatch(pool, a, BASE);
+    expect(await pollWatch(pool, raw, BASE)).toBeNull();
+  });
+
+  it('stops accepting it the moment another session claims the item', async () => {
+    // The case 410 exists for, and the one the grace period must not swallow.
+    const { raw, workItemId } = await held();
+    await pollWatch(pool, raw, BASE); // retire it, so only the grace could save it
+
+    // A live lease cannot be taken, so the theft this guards against is one that
+    // happens after it lapses — the closed-laptop case the watch endpoint exists
+    // for. Without this the claim below is simply refused and the test proves
+    // nothing.
+    await pool.query('update lease set expires_at = now() - interval \'1 minute\' where work_item_id = $1', [
+      workItemId,
+    ]);
+
+    await claim(pool, {
+      workItemId,
+      projectId: PROJECT,
+      holder: 'agent:someone-else/w',
+      ttlSeconds: 600,
+      sessionId: 's-other',
+    });
+    expect(await pollWatch(pool, raw, BASE)).toBeNull();
   });
 
   it('hands back a URL the monitor can use as-is', async () => {
