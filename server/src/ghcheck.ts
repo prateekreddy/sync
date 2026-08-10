@@ -221,9 +221,43 @@ export async function checkEvidence(
  */
 export const ABSENT_LABEL = 'evidence-missing';
 
-/** Did anything cited turn out not to exist? That is the refusable failure. */
+/** Did anything cited turn out not to exist? */
 export function absent(checks: Check[]): Check[] {
   return checks.filter((c) => c.status === 'absent');
+}
+
+/**
+ * Is this completion backed by nothing? That is the refusable failure.
+ *
+ * Not "did something fail to resolve" — that was the rule, and it is wrong
+ * (SYNC-114). The other box put three md5 checksums of the watch file into an
+ * outcome as rotation evidence, which is careful, legitimate evidence, and the
+ * scanner harvested them as commit shas because a truncated md5 and a short sha
+ * are the same characters. With checking on, those three come back `absent` and
+ * a completion backed by three real commits is labelled unproven — the flag
+ * landing hardest on the completions that showed the most work.
+ *
+ * Sharpening the pattern is not available. md5 prefixes, blob hashes and short
+ * shas are genuinely indistinguishable, and SYNC-103 already decided to keep
+ * bare hex words on the grounds that "a false positive costs nothing". That was
+ * true only while checking was off, which is the state every observation had
+ * been made in.
+ *
+ * So the consequence changes instead of the detection. One citation that exists
+ * makes the claim evidenced; a stray checksum beside it proves nothing either
+ * way. Nothing found at all is the thing worth telling a human about, and this
+ * rule needs no better detection and cannot be defeated by a checksum.
+ *
+ * `pending` counts as found: an open pull request is a real artefact, and the
+ * question here is existence, not merge status.
+ *
+ * `unchecked` neither rescues nor condemns. It is an absence of information, and
+ * an unchecked citation has never been allowed to accuse anyone — see the 404
+ * handling above, which refuses to call a private repository's commit missing.
+ */
+export function unproven(checks: Check[]): boolean {
+  if (!absent(checks).length) return false;
+  return !checks.some((c) => c.status === 'landed' || c.status === 'pending');
 }
 
 export function configFromEnv(env: NodeJS.ProcessEnv): GitHubConfig | null {

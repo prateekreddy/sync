@@ -44,7 +44,13 @@ import {
   UNVERIFIED_LABEL,
   type EvidencePolicy,
 } from './evidence.js';
-import { ABSENT_LABEL, absent, checkEvidence, type GitHubConfig } from './ghcheck.js';
+import {
+  ABSENT_LABEL,
+  absent,
+  checkEvidence,
+  unproven,
+  type GitHubConfig,
+} from './ghcheck.js';
 import { gather } from './gather.js';
 import { decompose } from './decompose.js';
 import { GatewayError, HTTP_STATUS, RECOVERY } from './errors.js';
@@ -1410,6 +1416,11 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     // thrown — a lease must not fail to end because GitHub was slow.
     const checks = deps.evidencePolicy === 'off' ? [] : await checkEvidence(deps.github, evidence);
     const fabricated = absent(checks);
+    // The label and the refusal turn on "nothing was found", not "something was
+    // not found" — see unproven() for why the detection cannot be sharpened and
+    // the consequence has to change instead. `fabricated` is still what gets
+    // NAMED, because an agent fixing a citation needs to know which one.
+    const backedByNothing = unproven(checks);
 
     // Refuse *before* ending the lease, or the agent is left holding nothing
     // while the item stays open — the one outcome worse than an unverified
@@ -1417,10 +1428,10 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     if (warning && deps.evidencePolicy === 'refuse') {
       throw new GatewayError('INVALID', warning, { workItemId: b.workItemId });
     }
-    if (fabricated.length && deps.evidencePolicy === 'refuse') {
+    if (backedByNothing && deps.evidencePolicy === 'refuse') {
       throw new GatewayError(
         'INVALID',
-        `This completion cites something that does not exist: ${fabricated
+        `Nothing this completion cites could be found: ${fabricated
           .map((c) => c.detail)
           .join('; ')}. Fix the reference, or say plainly what was done instead.`,
         { workItemId: b.workItemId, evidence: checks },
@@ -1472,16 +1483,25 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       // evidence of absence rather than absence of evidence — GitHub was asked.
       labels: [
         ...(warning ? [UNVERIFIED_LABEL] : []),
-        ...(fabricated.length ? [ABSENT_LABEL] : []),
+        ...(backedByNothing ? [ABSENT_LABEL] : []),
       ],
     });
 
     // One field, because an agent reading two warnings has to work out which
     // matters. They are mutually exclusive anyway — a completion that cited
     // nothing has nothing to be wrong about.
-    const notice =
-      fabricated.length > 0
-        ? `Recorded, and labelled "${ABSENT_LABEL}": ${fabricated.map((c) => c.detail).join('; ')}.`
+    //
+    // Split from the label deliberately. A citation that resolved to nothing is
+    // worth saying either way — it is usually a typo the agent can fix, or a
+    // checksum the scanner mistook for a sha — but only "nothing was found at
+    // all" is worth flagging to a human on the board. Saying nothing about the
+    // stray ones would trade one silent failure for another.
+    const notice = backedByNothing
+      ? `Recorded, and labelled "${ABSENT_LABEL}": ${fabricated.map((c) => c.detail).join('; ')}.`
+      : fabricated.length > 0
+        ? `Recorded. ${fabricated.length} citation${fabricated.length > 1 ? 's' : ''} could not ` +
+          `be found (${fabricated.map((c) => c.value).join(', ')}), but others did, so this is ` +
+          'not flagged. Check them if they were meant to be real.'
         : warning;
 
     return {

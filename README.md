@@ -436,12 +436,22 @@ Every citation in the outcome comes back with a verdict:
 |---|---|
 | `landed` | Merged, or an ancestor of the default branch |
 | `pending` | Real, not merged yet. An open pull request at completion time is normal |
-| `absent` | GitHub says there is no such thing. The item is labelled `evidence-missing` |
+| `absent` | GitHub says there is no such thing |
 | `unchecked` | Not askable — no token, no repo, not a GitHub link, or GitHub was unreachable |
 
 Two labels, deliberately distinct. `unverified` means the completion cited
-**nothing**; `evidence-missing` means it cited something specific that does not
-exist. The first is an agent being terse, the second is an agent being wrong.
+**nothing**; `evidence-missing` means **nothing it cited could be found**. The
+first is an agent being terse, the second is an agent being wrong.
+
+`evidence-missing` is deliberately not "something did not resolve". A truncated
+md5 and a short sha are the same characters, so an outcome that quotes a checksum
+as evidence hands the scanner a hex word that will never resolve — and the old
+rule flagged a completion backed by three real commits for doing careful work.
+The detection cannot be sharpened, so the consequence is what changed: one
+citation that exists makes the claim evidenced, and a stray checksum beside it
+proves nothing either way. Unresolved citations are still reported on the
+completion, because they are usually a typo worth fixing; they are simply not a
+flag on the board.
 
 **It never blocks on GitHub.** Anything that fails — no token, a timeout, a 5xx,
 a rate limit — becomes `unchecked`, which is a stated absence of information
@@ -452,8 +462,9 @@ was slow.
 stranger exactly as a nonexistent one does, so an unauthenticated 404 is reported
 `unchecked`, never `absent`.
 
-`REQUIRE_EVIDENCE=refuse` turns `absent` into a rejected `complete` — checked
-*before* the lease ends, so a refused agent still holds its work.
+`REQUIRE_EVIDENCE=refuse` rejects a `complete` whose citations **all** failed to
+resolve — the same rule as the label — checked *before* the lease ends, so a
+refused agent still holds its work.
 
 What this deliberately does **not** do is watch for the pull request to merge
 later. That would need a receiver or a poller, and the failure worth catching is

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { absent, checkEvidence, checkOne, configFromEnv } from '../src/ghcheck.js';
+import { absent, checkEvidence, checkOne, configFromEnv, unproven } from '../src/ghcheck.js';
 import type { GitHubConfig } from '../src/ghcheck.js';
 
 /**
@@ -184,6 +184,67 @@ describe('the whole set', () => {
     const checks = await checkEvidence(cfg({ defaultRepo: 'a/b' }), many);
     expect(checks).toHaveLength(8);
     expect(calls).toBe(8);
+  });
+});
+
+/**
+ * What "unproven" means, which is the whole of SYNC-114.
+ *
+ * The rule used to be "something did not resolve", and the other box disproved
+ * it by doing something entirely reasonable: it put three md5 checksums of the
+ * watch file into an outcome as rotation evidence. A truncated md5 and a short
+ * sha are the same characters, so the scanner harvested them as commits, and
+ * with checking on they come back `absent` — labelling a completion backed by
+ * three real commits as unproven. The flag lands hardest on the completions that
+ * showed the most work, which is exactly backwards.
+ *
+ * The detection cannot be sharpened; md5 prefixes, blob hashes and short shas
+ * are genuinely indistinguishable. So the consequence changed instead.
+ */
+describe('a completion backed by nothing', () => {
+  const check = (value: string, status: 'landed' | 'pending' | 'absent' | 'unchecked') => ({
+    kind: 'commit' as const,
+    value,
+    status,
+    detail: `${value} is ${status}`,
+  });
+
+  it('is not flagged when something else did resolve', () => {
+    // The case that exists in practice and was tested by nothing: real commits
+    // beside stray hex words. This is the one the item was filed for.
+    expect(
+      unproven([
+        check('8b9220e', 'landed'),
+        check('0c64e2c9', 'absent'),
+        check('c9835b1e', 'absent'),
+        check('d2735e9a', 'absent'),
+      ]),
+    ).toBe(false);
+  });
+
+  it('is flagged when nothing resolved at all', () => {
+    expect(unproven([check('0c64e2c9', 'absent'), check('c9835b1e', 'absent')])).toBe(true);
+  });
+
+  it('counts an open pull request as found', () => {
+    // `pending` is a real artefact that exists. The question this answers is
+    // existence, not merge status — flagging a completion that cited an open PR
+    // would call an agent wrong for work it genuinely did.
+    expect(unproven([check('pr', 'pending'), check('0c64e2c9', 'absent')])).toBe(false);
+  });
+
+  it('is not flagged when nothing could be checked', () => {
+    // No absent means nothing is known to be wrong. An unchecked citation has
+    // never been allowed to accuse anyone.
+    expect(unproven([check('a', 'unchecked'), check('b', 'unchecked')])).toBe(false);
+    expect(unproven([])).toBe(false);
+  });
+
+  it('is flagged when the only findable thing was missing, whatever else was unknown', () => {
+    // Unchecked neither rescues nor condemns: something is known not to exist,
+    // and nothing is known to exist. That is "backed by nothing that could be
+    // confirmed", which is what the label is for.
+    expect(unproven([check('a', 'unchecked'), check('0c64e2c9', 'absent')])).toBe(true);
   });
 });
 
