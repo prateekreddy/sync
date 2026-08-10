@@ -55,7 +55,67 @@ INTERVAL="${SYNC_POLL_SECONDS:-120}"
 BACKOFF=0
 MAX_BACKOFF=900
 
+# Has this plugin been updated out from under this process?
+#
+# Claude Code starts a monitor once per session and freezes CLAUDE_PLUGIN_ROOT at
+# that moment, so it keeps running from the version directory that was current
+# when the session began. Hooks do NOT work this way -- they are invoked fresh
+# per event and resolve the install each time -- so an update produces a session
+# with current hooks and a stale monitor, for as long as that session lives.
+#
+# Measured 2026-08-10, minutes after an update to 0.4.4:
+#
+#   agent 2712840 09:55 bash .../sync/0.2.0/bin/sync-monitor
+#   agent 3301396 10:21 bash .../sync/0.4.4/bin/sync-monitor
+#
+# Two of them, from versions four releases apart, and nothing reaps the old one.
+# 0.2.0 predates the shared-path fix entirely: it polls `default.watch`, a file
+# nothing writes, forever, while looking perfectly healthy in `ps`. Anyone
+# debugging liveness sees a monitor running and concludes the chain is up, which
+# is the exact failure 904f33b was about.
+#
+# The real hazard is not the version number, it is the credential file: it is a
+# mutable protocol shared between the monitor and the hooks, and eeee49c changed
+# that protocol. A stale monitor writing under old rules corrupts a credential
+# the current hooks depend on, and the failure lands as "your work is no longer
+# yours" -- the one direction this must never fail in.
+#
+# So stop rather than carry on. That is only a safe trade because the gateway now
+# reports a monitor it has not heard from (SYNC-100): a session left with no
+# monitor is told so on its next claim, in words, rather than discovering it an
+# hour later. Silence would not have been safe before that landed.
+INSTALLED_JSON="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json"
+MY_ROOT=$(cd "$SYNC_BIN/.." 2>/dev/null && pwd -P)
+
+# The version now installed in place of this one, or nothing. Silent and
+# conservative by construction: any doubt at all -- no record, unreadable file,
+# no entry sharing our parent directory -- answers "carry on". A monitor that
+# stops when it did not have to is worse than one that runs a release behind.
+superseded() {
+  [ -n "$MY_ROOT" ] && [ -r "$INSTALLED_JSON" ] || return 1
+  paths=$(grep -o '"installPath"[[:space:]]*:[[:space:]]*"[^"]*"' "$INSTALLED_JSON" 2>/dev/null \
+            | sed 's/.*"\(.*\)"$/\1/')
+  [ -n "$paths" ] || return 1
+  # Still installed under our own path: nothing to do.
+  printf '%s\n' "$paths" | grep -qxF "$MY_ROOT" && return 1
+  # Some other version of THIS plugin -- same parent directory, different leaf.
+  newer=$(printf '%s\n' "$paths" | while IFS= read -r p; do
+            [ "$(dirname "$p")" = "$(dirname "$MY_ROOT")" ] && printf '%s' "$p" && break
+          done)
+  [ -n "$newer" ] || return 1
+  printf '%s' "$(basename "$newer")"
+}
+
 while true; do
+  if now=$(superseded); then
+    # Said in full, because the person reading it has to act: nothing will start
+    # a replacement inside this session.
+    echo "sync: this session is running the $(basename "$MY_ROOT") plugin monitor, but $now is now installed."
+    echo "sync: stopping it rather than letting an old monitor write the credential file the new hooks read."
+    echo "sync: your claims will NOT be kept alive in this session — start a new session to pick up $now."
+    exit 0
+  fi
+
   # Re-read every pass. See the note above: this is the self-healing property,
   # not laziness. A cached URL is one that cannot be rotated or reissued.
   if [ -r "$WATCH_FILE" ]; then

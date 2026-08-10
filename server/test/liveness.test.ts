@@ -663,3 +663,78 @@ describe('identifying the caller to the gateway', () => {
     }
   }, 30_000);
 });
+
+/**
+ * A monitor that has been updated out from under itself.
+ *
+ * Claude Code starts a monitor once per session and freezes its plugin path, so
+ * it keeps running the version installed when the session began. Hooks do not
+ * work that way — they resolve the install on every invocation — so an update
+ * leaves current hooks talking to a stale monitor for the life of that session.
+ *
+ * Measured 2026-08-10, minutes after updating to 0.4.4: monitors from 0.2.0 and
+ * 0.4.4 running at once, and nothing reaps the old one. 0.2.0 predates the
+ * shared-path fix and polls a file nothing writes, forever, while looking
+ * perfectly healthy in `ps` — the exact failure 904f33b was about.
+ */
+describe('a monitor that has been superseded', () => {
+  /** A plugin cache with our scripts at `version`, and `installed` recorded. */
+  const cache = (version: string, installed: string) => {
+    const home = mkdtempSync(join(tmpdir(), 'sync-cache-'));
+    const root = join(home, 'cache', 'sync', 'sync', version);
+    execFileSync('mkdir', ['-p', join(root, 'bin'), join(home, '.claude', 'plugins')]);
+    for (const f of readdirSync(join(plugin, 'bin'))) {
+      execFileSync('cp', [join(plugin, 'bin', f), join(root, 'bin', f)]);
+    }
+    writeFileSync(
+      join(home, '.claude', 'plugins', 'installed_plugins.json'),
+      JSON.stringify({
+        plugins: {
+          'sync@sync': [{ installPath: join(home, 'cache', 'sync', 'sync', installed), version: installed }],
+        },
+      }),
+    );
+    return { home, monitor: join(root, 'bin', 'sync-monitor') };
+  };
+
+  const run = (c: { home: string; monitor: string }, seconds: number) =>
+    spawnSync('timeout', [String(seconds), c.monitor], {
+      encoding: 'utf8',
+      env: {
+        PATH: process.env['PATH'] ?? '',
+        HOME: c.home,
+        CLAUDE_CONFIG_DIR: join(c.home, '.claude'),
+        SYNC_STATE_DIR: join(c.home, 'state'),
+        CLAUDE_CODE_SESSION_ID: 'a-session',
+        SYNC_POLL_SECONDS: '1',
+      },
+    });
+
+  it('stops, rather than writing a credential the new hooks will read', () => {
+    const r = run(cache('0.4.6', '0.9.9'), 10);
+    expect(r.stdout).toMatch(/0\.9\.9 is now installed/);
+    expect(r.stdout).toMatch(/will NOT be kept alive/i);
+    // Stopped on purpose, not killed by the timeout.
+    expect(r.status).toBe(0);
+  }, 30_000);
+
+  it('keeps running when it is the installed version', () => {
+    // The failure mode to avoid is worse than the one being fixed: a monitor
+    // that stops when it did not have to leaves the session with no liveness.
+    const r = run(cache('0.4.6', '0.4.6'), 3);
+    expect(r.stdout).not.toMatch(/now installed/);
+    // Killed by the timeout, which is the proof it was still looping.
+    expect(r.status).not.toBe(0);
+  }, 30_000);
+
+  it('carries on when there is no install record to read', () => {
+    // Any doubt answers "carry on". This file is Claude Code's, not ours, and a
+    // monitor that stops because it could not find it would be a plugin update
+    // away from disabling liveness for everyone.
+    const c = cache('0.4.6', '0.4.6');
+    execFileSync('rm', ['-f', join(c.home, '.claude', 'plugins', 'installed_plugins.json')]);
+    const r = run(c, 3);
+    expect(r.stdout).not.toMatch(/now installed/);
+    expect(r.status).not.toBe(0);
+  }, 30_000);
+});

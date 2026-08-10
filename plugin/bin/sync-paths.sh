@@ -11,6 +11,30 @@
 #
 # The same decision made in two places is a missing primitive, so it is made
 # here, once. Neither caller may compute this path itself.
+#
+# ── READ THIS BEFORE CHANGING THE CREDENTIAL FILE ────────────────────────────
+#
+# The watch file is a mutable protocol shared between processes that are NOT
+# necessarily the same version, and that is not a theoretical worry:
+#
+#   Hooks resolve the installed plugin on every invocation, so they are always
+#   current. A monitor is started once per session with its path frozen, so it
+#   keeps running the version that was installed when the session began. An
+#   update therefore leaves current hooks talking to a stale monitor for as long
+#   as that session lives, and observed on 2026-08-10, monitors from versions
+#   four releases apart running at the same time.
+#
+# sync-monitor now stops when it notices it has been superseded, which bounds
+# this — but only for versions that have that check. Anything older keeps going,
+# and you cannot patch a process that is already running.
+#
+# So: a change to the FORMAT or the ROTATION SEMANTICS of this file must stay
+# readable and writable by the previous release, for one cycle. If it cannot,
+# change the FILENAME instead — an old monitor polling a file nobody writes keeps
+# nothing alive, which is bad; an old monitor corrupting the credential the
+# current hooks depend on reports "your work is no longer yours" and stops an
+# agent pushing correct work, which is worse. That was the eeee49c failure, and
+# it is the direction this design must never fail in.
 
 # Where the helper scripts beside this one live.
 #
