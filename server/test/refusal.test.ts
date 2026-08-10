@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { sizeSuffix } from '../src/routes.js';
 import { callTool } from '../src/tools.js';
-import { CompleteBody } from '../src/toolspec.js';
+import {
+  CaptureBody,
+  CompleteBody,
+  ConstrainBody,
+  DecomposeBody,
+  GatherBody,
+} from '../src/toolspec.js';
 import { RECOVERY } from '../src/errors.js';
 
 /**
@@ -155,5 +161,96 @@ describe('the recovery line tells the caller what to do', () => {
     // all INVALID, none with `fields`. A recovery line naming "the listed
     // fields" would send those callers looking for something not there.
     expect(RECOVERY.INVALID).not.toMatch(/listed field/i);
+  });
+});
+
+/**
+ * Text that ends in the wreckage of the caller's own tool call (SYNC-69).
+ *
+ * An agent that closes `<body>` early leaves the rest of its XML inside the
+ * parameter. Three items were stored carrying it — SYNC-57, SYNC-64, SYNC-68 —
+ * each ending in a literal `</body> <priority>high</priority> </invoke>`, and a
+ * fourth, SYNC-67, was still carrying it when this was written.
+ *
+ * The debris in the record is the smaller cost. Everything after the premature
+ * close is dropped, which in all three cases included the priority: items meant
+ * to be `high` arrived as `none`. So the call that arrived is not the call the
+ * agent wrote, and repairing the body would leave the priority wrong while
+ * looking like it worked. Refusing is the only answer that does not silently
+ * store a different intention than the one sent.
+ */
+describe('a body that ends in tool-call debris', () => {
+  const capture = (body: string) =>
+    CaptureBody.safeParse({
+      projectId: '00000000-0000-4000-8000-000000000000',
+      title: 'something worth doing',
+      body,
+    });
+
+  const tags = ['body', 'priority', 'labels', 'invoke', 'parameter', 'function_calls'];
+
+  it.each(tags)('is refused when it ends in </%s>', (tag) => {
+    const r = capture(`Real prose that got cut short.</${tag}>`);
+    expect(r.success).toBe(false);
+  });
+
+  it('is refused for the exact shape three items were stored with', () => {
+    const r = capture('The description.</body> <priority>high</priority> </invoke>');
+    expect(r.success).toBe(false);
+    // The message has to say what to do, because the agent cannot see what was
+    // dropped — that is the whole reason this is not a silent repair.
+    expect(r.error?.issues[0]?.message).toMatch(/dropped/);
+    expect(r.error?.issues[0]?.message).toMatch(/Nothing was saved/);
+  });
+
+  it('allows a closing tag that is not at the end', () => {
+    // Anchored at the end deliberately. Somebody writing about HTML, or quoting
+    // this very defect in a bug report, is not making the mistake — and a guard
+    // that refuses them does more harm than the bug.
+    expect(capture('The parser chokes on </body> when it appears mid-document.').success).toBe(
+      true,
+    );
+  });
+
+  it('allows ordinary prose, including angle brackets', () => {
+    expect(capture('Fails when count < 3 and the flag is <unset>.').success).toBe(true);
+  });
+
+  /**
+   * Every free-text field on the same path, which the item asked to be checked.
+   * A guard on `capture` alone would leave three doors open onto the same board.
+   */
+  it('covers decompose, gather, constrain and complete too', () => {
+    const debris = 'Cut short.</body> <priority>high</priority> </invoke>';
+    const project = '00000000-0000-4000-8000-000000000000';
+
+    expect(
+      DecomposeBody.safeParse({
+        projectId: project,
+        parentId: project,
+        children: [{ title: 'a child that says what it delivers', body: debris }],
+      }).success,
+    ).toBe(false);
+
+    expect(
+      GatherBody.safeParse({
+        projectId: project,
+        workItemIds: [project],
+        title: 'a container that names an outcome',
+        body: debris,
+      }).success,
+    ).toBe(false);
+
+    expect(
+      ConstrainBody.safeParse({
+        projectId: project,
+        workItemId: project,
+        requirement: debris,
+      }).success,
+    ).toBe(false);
+
+    expect(
+      CompleteBody.safeParse({ workItemId: project, epoch: 1, outcome: debris }).success,
+    ).toBe(false);
   });
 });

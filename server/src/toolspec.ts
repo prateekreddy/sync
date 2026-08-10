@@ -55,18 +55,53 @@ const titleField = z
       'someone who has never read this codebase know what changes for them?',
   );
 
+/**
+ * Free text that ends in the wreckage of the caller's own tool call.
+ *
+ * An agent that closes `<body>` early leaves the rest of the XML inside it, and
+ * the fragment is stored verbatim. Three items carried it — SYNC-57, SYNC-64 and
+ * SYNC-68 — each ending in a literal `</body> <priority>high</priority>
+ * </invoke>`, and all three were cleaned by hand. A fourth, SYNC-67, was still
+ * carrying it when this was fixed.
+ *
+ * The debris in the record is the visible cost and the smaller one. Everything
+ * after the premature close is silently dropped, which in all three cases
+ * included the priority: items meant to be `high` arrived as `none`. The capture
+ * echo catches that half, but only if the caller reads it, and it says nothing
+ * about the body.
+ *
+ * REFUSED rather than stripped, which is the decision worth recording. Repairing
+ * the body would leave the priority wrong and look like it worked — the call the
+ * agent intended is not the call that arrived, and only the caller can tell what
+ * the missing arguments were. This is the one situation where failing loudly
+ * costs a round trip and saves a wrong record.
+ *
+ * Safe to key on: a body whose last non-whitespace characters close one of these
+ * elements is never legitimate prose. Anchored at the END for that reason —
+ * `</body>` in the middle of a sentence about HTML is somebody writing about
+ * HTML, and refusing that would be a guard doing more harm than the bug.
+ */
+const TOOL_CALL_DEBRIS =
+  /<\/(body|priority|labels|invoke|parameter|function_calls|antml:invoke|antml:parameter)>\s*$/i;
+
+const noDebris = <T extends z.ZodString>(schema: T) =>
+  schema.refine((v) => !TOOL_CALL_DEBRIS.test(v), {
+    message:
+      'This ends with a closing tag from your own tool call, which means the text was cut ' +
+      'short and any arguments after it were dropped — priority and labels are the usual ' +
+      'casualties. Nothing was saved. Send the call again with the whole body inside the ' +
+      'parameter and the other arguments outside it.',
+  });
+
 export const DEFAULT_TTL = 600;
 export const MAX_TTL = 3600;
 
 export const CaptureBody = z.object({
   projectId: uuid,
   title: titleField,
-  body: z
-    .string()
-    .min(1)
-    .describe(
-      'Enough for another agent to act without you: what, where, and how anyone would know it is done.',
-    ),
+  body: noDebris(z.string().min(1)).describe(
+    'Enough for another agent to act without you: what, where, and how anyone would know it is done.',
+  ),
   priority: z.enum(['urgent', 'high', 'medium', 'low', 'none']).optional(),
   labels: z
     .array(z.string())
@@ -174,7 +209,9 @@ export const GatherBody = z.object({
         'not the category it belongs to — "Agents can find work without being told where it is" ' +
         'reads as something that finishes; "Search improvements" never does.',
     ),
-  body: z.string().optional().describe('What this group is, for whoever opens it later.'),
+  body: noDebris(z.string())
+    .optional()
+    .describe('What this group is, for whoever opens it later.'),
   reparent: z
     .boolean()
     .optional()
@@ -199,10 +236,9 @@ export const DecomposeBody = z.object({
     .array(
       z.object({
         title: titleField,
-        body: z
-          .string()
-          .min(1)
-          .describe('Enough for another agent to act without you. A child with no body is unclaimable.'),
+        body: noDebris(z.string().min(1)).describe(
+          'Enough for another agent to act without you. A child with no body is unclaimable.',
+        ),
         priority: z.enum(['urgent', 'high', 'medium', 'low', 'none']).optional(),
         labels: z.array(z.string()).optional(),
         idempotencyKey: z.string().max(200).optional(),
@@ -296,11 +332,9 @@ export const ReleaseBody = Held.extend({
 });
 
 export const CompleteBody = Held.extend({
-  outcome: z
-    .string()
-    .min(1)
-    .max(2000)
-    .describe(
+  // Guarded like the others: a truncated outcome drops `refs` and `close` with
+  // it, so the completion that arrives is not the one that was written.
+  outcome: noDebris(z.string().min(1).max(2000)).describe(
       'What you did, and the evidence. A commit sha, PR or issue URL, file path or work item ' +
         'id belongs here — a completion citing none of those is recorded but labelled ' +
         '"unverified", because nobody downstream can tell it apart from one backed by nothing.',
@@ -357,11 +391,11 @@ export const UnlinkBody = z.object({
 export const ConstrainBody = z.object({
   projectId: uuid,
   workItemIds: z.array(uuid).min(1).max(20),
-  requirement: z.string().min(10).max(1000),
+  requirement: noDebris(z.string().min(10).max(1000)),
   proof: z
     .object({
       title: z.string().min(3).max(255),
-      body: z.string().min(1),
+      body: noDebris(z.string().min(1)),
     })
     .optional(),
 });
