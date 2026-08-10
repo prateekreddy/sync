@@ -49,6 +49,25 @@ describe('the skill covers the surface it claims to', () => {
    * against. The plugin directory was already advertising a skill it did not
    * contain, which is the same failure one step earlier.
    */
+  /**
+   * The count, not just the names.
+   *
+   * The playbook opened by telling the agent how many coordination tools there
+   * are, and said eighteen while there were seventeen — left behind when
+   * `heartbeat` came off the surface. The check above passed the whole time,
+   * because it asks whether every tool is named and never whether the number is
+   * right. A stale count is small on its own; it matters because it is the first
+   * concrete claim in the document, and an agent that can falsify the first line
+   * has reason to doubt the rest.
+   */
+  it('states the right number of coordination tools', () => {
+    const stated = /\*\*Coordination tools\*\* — (\d+) of them/.exec(
+      read('skills/work-tracking/SKILL.md'),
+    )?.[1];
+    expect(stated).toBeDefined();
+    expect(Number(stated)).toBe(NATIVE_TOOLS.length);
+  });
+
   it('ships the same playbook in the plugin', () => {
     for (const f of skillFiles()) {
       expect(read(`plugin/skills/work-tracking/${f}`)).toBe(read(`skills/work-tracking/${f}`));
@@ -160,6 +179,34 @@ describe('what the agent is told to keep doing', () => {
     // endpoint stays for clients without the plugin; it is simply not offered.
     expect(NATIVE_TOOLS.map((t) => t.name)).not.toContain('heartbeat');
   });
+
+  /**
+   * Withholding a tool is only half the job — nothing may still tell the agent to
+   * call it.
+   *
+   * `claim`'s description went on saying "the lease expires; keep it alive with
+   * heartbeat" for as long as the tool had been gone, and every check above
+   * passed: `promisesToHeartbeat` covers INSTRUCTIONS, SKILL.md and AGENTS.md but
+   * not tool descriptions, and its pattern would not have matched this phrasing
+   * anywhere. That is the worst channel to be wrong in, by this file's own
+   * argument (see the block below): a tool that was never listed cannot be
+   * called, so its description is in context by construction. Every agent that
+   * claimed anything read an instruction to call a tool it could not find, whose
+   * most natural reading is that its lease is unprotected — the exact doubt the
+   * monitor exists to remove.
+   *
+   * WITHHELD is the vocabulary this checks against: reachable over HTTP, kept
+   * deliberately out of the model's reach. Adding one here is what makes the next
+   * removal fail loudly instead of leaving residue in a description nobody rereads.
+   */
+  const WITHHELD = ['heartbeat'];
+
+  it.each(WITHHELD)('never tells the agent to call `%s`', (name) => {
+    const offenders = NATIVE_TOOLS.filter((t) =>
+      new RegExp(`\\b${name}\\b`, 'i').test(`${t.description} ${t.title ?? ''}`),
+    ).map((t) => t.name);
+    expect(offenders).toEqual([]);
+  });
 });
 
 /**
@@ -183,7 +230,10 @@ describe('no rule depends on a channel a client may skip', () => {
     ['write it down first', ['capture'], /MOMENT you notice/],
     ['claim before you work', ['claim'], /ONLY way to start work/],
     ['the lease expires', ['claim', 'release'], /lease expires|back to the pool/i],
-    ['finish explicitly', ['complete', 'heartbeat'], /end the lease|lease.*(expire|lapse)/i],
+    // Was ['complete', 'heartbeat'] — the second named a tool that no longer
+    // exists, so `describes` returned '' for it and the rule rested silently on
+    // `complete` alone. A dead name in a table of live ones reads as coverage.
+    ['finish explicitly', ['complete', 'release'], /end the lease|lease.*(expire|lapse)/i],
     ['resume before re-claiming', ['held'], /after a restart/i],
   ];
 

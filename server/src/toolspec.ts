@@ -598,8 +598,9 @@ export const NATIVE_TOOLS: NativeTool[] = [
       'Atomically take exclusive ownership of a work item, and return the lease. This is the ' +
       'ONLY way to start work: assigning yourself in Plane does not reserve anything and two ' +
       'agents doing it will both believe they own the item. Omit workItemId to let the gateway ' +
-      'pick the best ready item in one step — calling next and then claim is a race. The lease ' +
-      'expires; keep it alive with heartbeat, and end it with complete or release. The reply also ' +
+      'pick the best ready item in one step — calling next and then claim is a race. The item ' +
+      'stays yours for as long as you are working on it, however long that takes; end it with ' +
+      'complete or release, and if it is ever taken from you, you will be told so. The reply also ' +
       'carries a briefing: the item\'s full text, its parent, and every item linked to it with ' +
       'open ones first and their text included. READ THE OPEN ONES BEFORE STARTING — a linked ' +
       'item that is still open is often a requirement on the work you just took, and the natural ' +
