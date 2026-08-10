@@ -265,8 +265,10 @@ describe('how much is left under each branch', () => {
  * are looking for, and `board` counts modules, which is a different cut and says
  * nothing about what any item is part of.
  */
-const askRoots = (items: WorkItem[], over: { depth?: number; ready?: boolean } = {}) =>
-  tree(fakePlane(items), pool, { projectId: PROJECT, ...over });
+const askRoots = (
+  items: WorkItem[],
+  over: { depth?: number; ready?: boolean; includeDone?: boolean } = {},
+) => tree(fakePlane(items), pool, { projectId: PROJECT, ...over });
 
 describe('tree of a whole project', () => {
   it('answers with the top-level items when no item is named', async () => {
@@ -359,5 +361,73 @@ describe('tree of a whole project', () => {
     const got = await askRoots([wi('epic'), wi('task', { parent: 'epic' })], { ready: true });
     expect(got.roots?.map((r) => r.title)).toEqual(['epic']);
     expect(got.roots?.[0]?.children?.map((c) => c.title)).toEqual(['task']);
+  });
+});
+
+/**
+ * Finished work stops sitting at the top of the default view.
+ *
+ * This reverses an earlier decision on purpose. The argument then was that
+ * filtering finished work would be a hidden policy, and that a caller wanting
+ * less could pass `ready`. Measured on the real board six weeks later, the top
+ * level returned 66 roots, 52 of them Done — the unreadable project listing this
+ * view exists to replace, arriving from the other direction. "No policy" was
+ * itself a policy: everything ever finished, forever, at the top.
+ *
+ * `ready` was never the answer either. It drops any container whose children are
+ * all finished, so the completed structure disappears from a view whose whole
+ * job is to show shape.
+ */
+describe('what the top level leaves out', () => {
+  const done = (key: string, over: Partial<WorkItem> = {}) => wi(key, { ...over, state: 'done' });
+
+  it('leaves out a root whose whole subtree is finished', async () => {
+    const got = await askRoots([done('shipped'), wi('live')]);
+    expect(got.roots?.map((r) => r.title)).toEqual(['live']);
+  });
+
+  it('says how many it left out, so the default is not a hidden policy', async () => {
+    // The objection that kept this view unfiltered was that a filter would be
+    // invisible. It is answered by the count, not by refusing to filter.
+    const got = await askRoots([done('a'), done('b'), wi('live')]);
+    expect(got.finishedRootsHidden).toBe(2);
+  });
+
+  it('says nothing when nothing was left out', async () => {
+    // A field that appears only when it has something to report is one nobody
+    // learns to ignore.
+    const got = await askRoots([wi('live')]);
+    expect(got.finishedRootsHidden).toBeUndefined();
+  });
+
+  it('keeps a finished container that still has unfinished work inside it', async () => {
+    // The rule is the whole subtree, not the root's own state. Hiding this would
+    // hide open work, which no readability argument can justify.
+    const got = await askRoots([done('epic'), wi('leftover', { parent: 'epic' })]);
+    expect(got.roots?.map((r) => r.title)).toEqual(['epic']);
+    expect(got.finishedRootsHidden).toBeUndefined();
+  });
+
+  it('brings the finished ones back when asked', async () => {
+    const got = await askRoots([done('shipped'), wi('live')], { includeDone: true });
+    expect(got.roots?.map((r) => r.title)).toEqual(['shipped', 'live']);
+    expect(got.finishedRootsHidden).toBeUndefined();
+  });
+
+  it('still shows a finished container to anyone who asks for it by name', async () => {
+    // The other half of done-when: not in the way, but never unreachable.
+    const got = await ask([done('shipped'), done('detail', { parent: 'shipped' })], 'shipped');
+    expect(got.node.title).toBe('shipped');
+    expect(got.node.children?.map((c) => c.title)).toEqual(['detail']);
+  });
+
+  it('does not change what the tree says exists', async () => {
+    // Same guarantee the `ready` filter carries: what is shown may narrow, what
+    // is counted may not. A hidden root would otherwise quietly shrink the
+    // project's totals and make the board and the tree disagree.
+    const items = [done('shipped'), done('detail', { parent: 'shipped' }), wi('live')];
+    const shown = await askRoots(items);
+    const all = await askRoots(items, { includeDone: true });
+    expect(shown.openDescendants).toBe(all.openDescendants);
   });
 });

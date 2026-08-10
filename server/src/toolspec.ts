@@ -144,6 +144,16 @@ export const TreeQuery = z.object({
       'Show only what you could claim right now, plus the containers holding it. ' +
         'Answers "what is left under this that I can pick up".',
     ),
+  includeDone: z.coerce
+    .boolean()
+    .optional()
+    .describe(
+      'Put finished work back into the top level. Off by default: a root whose ' +
+        'whole subtree is done is left out, and the count comes back as ' +
+        '`finishedRootsHidden` so nothing is hidden silently. A container with ' +
+        'any unfinished work under it always appears regardless. Only affects ' +
+        'the top level — asking for an item by id shows it whatever its state.',
+    ),
   fields,
 });
 
@@ -470,7 +480,10 @@ export const NATIVE_TOOLS: NativeTool[] = [
       'the tree still makes sense. Omit workItemId to get the top level instead: every item with ' +
       'no parent, in `roots`, each with its own children. Start there when you are new to a ' +
       'project or picking up after a break — it is the shape of the work, which a flat listing ' +
-      'cannot show you.',
+      'cannot show you. The top level leaves out roots whose whole subtree is finished, and says ' +
+      'how many in `finishedRootsHidden`; anything with unfinished work under it still appears, ' +
+      'and includeDone: true brings the rest back. Asking for an item by id is unaffected, so a ' +
+      'container that finished last month is still there when you go looking for it.',
     schema: TreeQuery,
     method: 'GET',
     request: (a) => ({ path: q('/v1/tree', a) }),

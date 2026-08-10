@@ -68,6 +68,17 @@ export interface Tree {
    * every unfinished item in the project when none was addressed.
    */
   openDescendants: number;
+  /**
+   * Roots left out because everything under them is finished.
+   *
+   * Present only in the forest, and only when something was withheld. This is
+   * what keeps the default from being a hidden policy: a caller is told the
+   * number and can ask for them with `includeDone`. They also remain reachable
+   * by name — `tree` on the container itself is unaffected — and by `find` and
+   * `search`. The point was never to make finished work unreachable, only to
+   * stop it being in the way.
+   */
+  finishedRootsHidden?: number;
 }
 
 const DONE = new Set<State['group']>(['completed', 'cancelled']);
@@ -85,6 +96,23 @@ export async function tree(
     fields?: string[] | undefined;
     /** Show only what could be claimed — and the containers holding it. */
     ready?: boolean | undefined;
+    /**
+     * Put finished roots back into the forest.
+     *
+     * Off by default, which reverses an earlier decision worth stating. The
+     * argument then was that filtering finished work would be a hidden policy
+     * and a caller wanting less could pass `ready`. Measured on the real board
+     * six weeks later: the top level returned 66 roots, 52 of them Done — the
+     * unreadable project listing this view exists to replace, arriving from the
+     * other direction. And `ready` answers a different question, dropping any
+     * container whose children are all finished, so the completed structure
+     * vanishes from a view whose whole job is to show shape.
+     *
+     * "No policy" was itself a policy: everything ever finished, forever, at the
+     * top of the default view. What makes the new default honest rather than
+     * hidden is that the count of what was withheld comes back with it.
+     */
+    includeDone?: boolean | undefined;
     capabilities?: string[] | undefined;
   },
 ): Promise<Tree> {
@@ -184,10 +212,25 @@ export async function tree(
     // rather than being dropped. Plane allows the parent to be deleted from
     // under it, and an item that appears in no tree at all is work nobody can
     // find — the failure this view exists to end, arriving by another door.
+    // Withheld from the forest, and counted rather than silently dropped.
+    //
+    // The test is the whole subtree, not the root's own state: `done === total`
+    // over everything beneath it. A finished container with one unfinished child
+    // still appears, because the open work under it is exactly what a person
+    // opening this view is looking for. Nothing open is ever hidden by this.
+    let finishedRootsHidden = 0;
+
     const roots = items
       .filter((i) => !i.parent || !byId.has(i.parent))
       .sort((a, b) => a.sequence_id - b.sequence_id)
       .filter((i) => !opts.ready || reasons(i).length === 0 || hasOpenDescendant(i))
+      .filter((i) => {
+        if (opts.includeDone) return true;
+        const p = progressOf(i, new Set([i.id]));
+        if (p.done < p.total) return true;
+        finishedRootsHidden++;
+        return false;
+      })
       .map((i) => {
         // Counted here, unlike the addressed case, because the implicit parent of
         // a forest is the project: a top-level item IS a descendant of what was
@@ -199,7 +242,12 @@ export async function tree(
         // requested depth.
         return build(i, depth - 1, new Set([i.id]));
       });
-    return { path: [], roots, openDescendants: open };
+    return {
+      path: [],
+      roots,
+      openDescendants: open,
+      ...(finishedRootsHidden ? { finishedRootsHidden } : {}),
+    };
   }
 
   const node = build(root, depth, new Set([root.id]));
