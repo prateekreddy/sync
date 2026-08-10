@@ -131,30 +131,22 @@ const ASK_TIMEOUT_MS = 10 * 60_000;
  * `return` — the question is not sent, no error is raised, and the call waits
  * for an answer to something nobody was asked. Tying it to the tool call puts it
  * on that call's own stream, where the client is already listening.
+ *
+ * And it asks for no fields, which is the whole shape of the thing. An
+ * elicitation already answers itself: `accept` is yes and everything else is no.
+ * This used to also require a boolean called `approve`, which asked the same
+ * question a second time — the duplicated-decision smell, and it had a state
+ * nothing could mean, `accept` with `approve: false`. Measured 2026-08-10, the
+ * first time a person ever saw one of these: Claude Code rendered the form,
+ * the required boolean could not be set, and the question was unanswerable.
+ * A confirmation is not a form. The verdict is the action.
  */
 function asker(server: Server, relatedRequestId: RequestId): AskHuman {
   return async (message) => {
     let answer;
     try {
       answer = await server.elicitInput(
-        {
-          message,
-          requestedSchema: {
-            type: 'object',
-            properties: {
-              approve: {
-                type: 'boolean',
-                title: 'Approve',
-                // Neutral, because two different calls ask through here — taking
-                // an item off its assignee, and regrouping a pile of them. What is
-                // at stake is in the message; repeating a guess about it here
-                // could contradict the question actually being asked.
-                description: 'Yes goes ahead with what the message describes. No changes nothing.',
-              },
-            },
-            required: ['approve'],
-          },
-        },
+        { message, requestedSchema: { type: 'object', properties: {} } },
         { relatedRequestId, timeout: ASK_TIMEOUT_MS },
       );
     } catch {
@@ -163,9 +155,7 @@ function asker(server: Server, relatedRequestId: RequestId): AskHuman {
       // a person saying no.
       return 'unavailable';
     }
-    return answer.action === 'accept' && answer.content?.['approve'] === true
-      ? 'approved'
-      : 'refused';
+    return answer.action === 'accept' ? 'approved' : 'refused';
   };
 }
 

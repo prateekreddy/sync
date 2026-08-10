@@ -135,8 +135,14 @@ async function connect(
   url: URL,
   token: string,
   answer: boolean | null,
-): Promise<{ client: Client; asked: string[]; transport: StreamableHTTPClientTransport }> {
+): Promise<{
+  client: Client;
+  asked: string[];
+  schemas: unknown[];
+  transport: StreamableHTTPClientTransport;
+}> {
   const asked: string[] = [];
+  const schemas: unknown[] = [];
   const client = new Client(
     { name: 'test-client', version: '1.0.0' },
     { capabilities: answer === null ? {} : { elicitation: { form: {} } } },
@@ -144,14 +150,17 @@ async function connect(
   if (answer !== null) {
     client.setRequestHandler(ElicitRequestSchema, async (req) => {
       asked.push(req.params.message);
-      return answer ? { action: 'accept', content: { approve: true } } : { action: 'decline' };
+      schemas.push(req.params.requestedSchema);
+      // The action alone, with no content — which is all a confirmation has to
+      // send, and what a client that renders no fields can produce.
+      return { action: answer ? 'accept' : 'decline' };
     });
   }
   const transport = new StreamableHTTPClientTransport(url, {
     requestInit: { headers: { authorization: `Bearer ${token}` } },
   });
   await client.connect(transport);
-  return { client, asked, transport };
+  return { client, asked, schemas, transport };
 }
 
 /** A tools/list POST made by hand, for the session cases no client will produce. */
@@ -190,6 +199,25 @@ describe('asking a human over the MCP transport', () => {
     expect(asked[0]).toContain('Something loose');
     expect(textOf(result)).toContain('"complete": true');
     expect(updates).toContainEqual({ id: LOOSE, body: { parent: CONTAINER } });
+
+    await client.close();
+    await app.close();
+  }, 30_000);
+
+  it('asks for no fields, because the answer is the action', async () => {
+    // Measured 2026-08-10, the first time anyone was ever shown one of these:
+    // the question also required a boolean called `approve`, Claude Code rendered
+    // a form whose field could not be set, and a person who wanted to say yes had
+    // no way to. A required field is a second question, and one the client may
+    // not be able to put. `accept` is the yes.
+    const { app, url, token } = await gateway();
+    const { client, schemas } = await connect(url, token, true);
+
+    await client.callTool({ name: 'gather', arguments: ARGS });
+
+    expect(schemas).toHaveLength(1);
+    expect(schemas[0]).toMatchObject({ properties: {} });
+    expect(schemas[0]).not.toHaveProperty('required');
 
     await client.close();
     await app.close();
