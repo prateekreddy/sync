@@ -202,7 +202,13 @@ case "$CMD" in
 
     case "$code" in
       410)
-        deny "This work is no longer yours -- another session claimed it, or the lease was revoked. Do not push. Discard this work and re-claim if you still want the item."
+        # Refusing is right even though the cause is ambiguous: the lease no
+        # longer covers this work, and a push is the one step that cannot be
+        # taken back. But the REASON must not overstate what the gateway knows.
+        # 410 also answers a credential that merely aged out (SYNC-104), so
+        # asserting that somebody claimed the item told agents coming back from a
+        # weekend to discard correct work.
+        deny "This work is no longer covered by a lease -- another session may have claimed it, the lease may have been revoked, or this session's credential expired while you were away. Do not push yet. Call 'held' to see where you stand, and re-claim the item if it is still free; the work on disk is untouched."
         ;;
       200)
         if [ "$(get "$body" stale)" = "true" ]; then

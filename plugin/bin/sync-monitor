@@ -80,7 +80,14 @@ while true; do
       # would train people to ignore the channel that carries the one message
       # that matters. Removing the file is what makes it once: the next pass
       # reads no URL and stays quiet.
-      echo "sync: your claim is no longer yours -- another session took it, or the lease was revoked. Discard that work."
+      # Says what is known, and no more. This used to assert theft outright and
+      # order the work discarded, but the gateway answers 410 for an aged-out
+      # credential too -- so an agent coming back after a long absence was told
+      # somebody had taken its work when nobody had. SYNC-104 is the fix that
+      # separates the two at the endpoint; until then the message must not claim
+      # to know which happened, and must not tell anyone to throw work away on a
+      # guess.
+      echo "sync: this session's claim is no longer active -- another session may have taken it, the lease may have been revoked, or this session's credential expired while you were away. Call 'held' before continuing, and re-claim the item if it is still free."
       rm -f "$WATCH_FILE"
       # NOT a reason to back off, and this used to set the maximum.
       #

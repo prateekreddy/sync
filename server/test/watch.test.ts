@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
 import { createPool } from '../src/db.js';
 import { claim } from '../src/lease.js';
-import { EXTEND_S, MAX_HOLD_MS, closeWatch, mintWatch, pollWatch } from '../src/watch.js';
+import { EXTEND_S, MAX_HOLD_MS, WATCH_TTL_MS, closeWatch, mintWatch, pollWatch } from '../src/watch.js';
 
 /**
  * The credential the background monitor polls with, and the liveness it produces.
@@ -277,6 +277,110 @@ describe('the closed laptop', () => {
     });
 
     expect(await pollWatch(pool, raw, BASE)).toBeNull();
+  });
+
+  /**
+   * A night, not ten minutes.
+   *
+   * The tests above age a lease by minutes, which is the coffee-break gap. The
+   * real shape of this is a laptop closed at six and opened at nine the next
+   * morning, and two things that are invisible at ten minutes dominate at
+   * fifteen hours: the hold is now far past MAX_HOLD_MS, and the credential is
+   * approaching a life of its own.
+   */
+  it('does not restore the work and then immediately declare it forfeit', async () => {
+    const { workItemId, raw } = await held();
+    await pool.query(
+      `update lease
+          set claimed_at = now() - interval '15 hours',
+              expires_at = now() - interval '14 hours'
+        where work_item_id = $1`,
+      [workItemId],
+    );
+
+    // First poll after opening the lid: nobody took it overnight, so it comes
+    // back. This part already worked.
+    const first = await pollWatch(pool, raw, BASE);
+    expect(first!.say).toMatch(/nobody took it/i);
+    expect(first!.stale).toBeUndefined();
+
+    // The very next poll, two minutes later. The lease is live again, so the
+    // lapsed branch no longer applies and the ceiling is measured from a
+    // claimed_at that is still fifteen hours old -- so the work is declared
+    // forfeit within one interval of being handed back.
+    //
+    // stale is not a cosmetic flag: the push fence refuses on it. The agent
+    // would open its laptop, be told its work was restored, and be blocked from
+    // pushing it two minutes later.
+    const second = await pollWatch(pool, capOf(first!.watchUrl), BASE);
+    expect(second!.stale).toBeUndefined();
+    expect(second!.holding).toBe(workItemId);
+  });
+
+  it('does not let a night away read as an agent stuck in a loop', async () => {
+    // MAX_HOLD_MS exists because "still polling" stops being evidence of "still
+    // working". A gap is the opposite: it is positive evidence that nobody was
+    // working, so the ceiling has to start again from the resume rather than
+    // from a claim made before the machine slept.
+    const { workItemId, raw } = await held();
+    await pool.query(
+      `update lease
+          set claimed_at = now() - interval '15 hours',
+              expires_at = now() - interval '14 hours'
+        where work_item_id = $1`,
+      [workItemId],
+    );
+
+    await pollWatch(pool, raw, BASE);
+
+    const { rows } = await pool.query<{ age: number }>(
+      `select extract(epoch from (now() - claimed_at)) as age from lease where work_item_id = $1`,
+      [workItemId],
+    );
+    expect(Number(rows[0]!.age)).toBeLessThan(60);
+  });
+
+  it('does not age a credential out from under a session that is using it', async () => {
+    // WATCH_TTL_MS was measured from the mint and nothing refreshed it, so it
+    // capped the whole session rather than the idle time it was described as
+    // capping: poll every two minutes for a day and the credential still died
+    // 24 hours after the claim. The endpoint has exactly one answer for a
+    // credential it does not recognise -- 410 -- which the monitor reports as
+    // somebody having taken the work, and the push fence refuses on.
+    const { workItemId, raw } = await held();
+    await pool.query(
+      `update lease set watch_expires_at = now() + interval '1 minute' where work_item_id = $1`,
+      [workItemId],
+    );
+
+    const state = await pollWatch(pool, raw, BASE);
+
+    const { rows } = await pool.query<{ left: number }>(
+      `select extract(epoch from (watch_expires_at - now())) as left from lease where work_item_id = $1`,
+      [workItemId],
+    );
+    // Pushed back out to a full idle window by the act of being used.
+    expect(Number(rows[0]!.left)).toBeGreaterThan(WATCH_TTL_MS / 1000 - 60);
+    expect(state).not.toBeNull();
+  });
+
+  it('keeps the credential alive across an ordinary night', async () => {
+    // The plain case, and the one that decides whether any of the above is
+    // reachable: fifteen hours between the last poll last night and the first
+    // poll this morning, against a 24 hour credential life.
+    const { workItemId, raw } = await held();
+    await pool.query(
+      `update lease
+          set claimed_at       = now() - interval '15 hours',
+              expires_at       = now() - interval '14 hours',
+              watch_expires_at = now() + interval '9 hours'
+        where work_item_id = $1`,
+      [workItemId],
+    );
+
+    const state = await pollWatch(pool, raw, BASE);
+    expect(state).not.toBeNull();
+    expect(state!.holding).toBe(workItemId);
   });
 
   it('does not resurrect a lease the agent deliberately finished', async () => {

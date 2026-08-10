@@ -32,7 +32,14 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { Pool } from './db.js';
 
-/** How long a capability survives regardless of rotation. */
+/**
+ * How long a capability survives without being used.
+ *
+ * Measured from the last poll, not from the mint — every rotation pushes it out
+ * again. It was fixed at mint until 2026-08-10, which made it a ceiling on the
+ * whole session rather than an idle timeout, and expiry is indistinguishable at
+ * this endpoint from having the work taken away.
+ */
 export const WATCH_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -230,6 +237,18 @@ export async function pollWatch(
     const { rowCount } = await pool.query(
       `update lease
           set state        = 'held',
+              -- The hold starts again here, and this is not bookkeeping.
+              --
+              -- MAX_HOLD_MS is measured from claimed_at, and it exists because
+              -- "still polling" stops being evidence of "still working". A gap
+              -- is the opposite: positive evidence that nobody was working. Left
+              -- at the original claim, a laptop closed at six and opened at nine
+              -- the next morning came back fifteen hours over the ceiling, so
+              -- the poll that restored the work was followed two minutes later
+              -- by one declaring it forfeit — with stale set, which is what the
+              -- push fence refuses on. Restored, then blocked from pushing it,
+              -- in a loop every ten minutes.
+              claimed_at   = now(),
               expires_at   = now() + make_interval(secs => $2),
               heartbeat_at = now(),
               ended_at     = null,
@@ -263,11 +282,26 @@ export async function pollWatch(
     `update lease
         set watch_sha256      = $2,
             watch_prev_sha256 = watch_sha256,
-            watch_prev_at     = now()
+            watch_prev_at     = now(),
+            -- Measured from last use, not from the mint.
+            --
+            -- This was set once at mint and never touched again, so the ceiling
+            -- was 24 hours from the CLAIM however heavily the credential was
+            -- used. An agent that claimed at nine and worked into the next
+            -- afternoon lost its credential while polling every two minutes,
+            -- and the only answer this endpoint has for a credential it does not
+            -- recognise is 410 -- which the monitor reports as somebody having
+            -- taken the work.
+            --
+            -- Sliding, the window means what it was always described as meaning:
+            -- how long an IDLE credential stays usable. An ordinary night is
+            -- comfortably inside it. A laptop shut on Friday and opened on
+            -- Monday is not, and there the 410 is still a lie -- see SYNC-104.
+            watch_expires_at  = now() + make_interval(secs => $4)
       where watch_sha256 = $1
          or ( watch_prev_sha256 = $1
               and watch_prev_at > now() - make_interval(secs => $3) )`,
-    [hash, sha256(next), WATCH_GRACE_S],
+    [hash, sha256(next), WATCH_GRACE_S, WATCH_TTL_MS / 1000],
   );
 
   return {
