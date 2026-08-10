@@ -174,18 +174,12 @@ export async function linkReferences(
     }
   }
 
-  // Everything named in the outcome that the caller did not also declare. Said
-  // once each, after the rejects, so a caller can see what it would have got
-  // under the old behaviour and ask for it deliberately.
-  const notLinked: LinkedReference[] = mentioned
-    .filter((m) => !seen.has(m.sequence))
-    .map((m) => ({
-      readableId: m.readableId,
-      linked: false,
-      reason: 'named in the outcome, which does not create a relation — pass it in refs if it is one',
-    }));
+  // Everything named in the outcome that the caller did not also declare.
+  const pending = mentioned.filter((m) => !seen.has(m.sequence));
 
-  if (refs.length === 0) return [...rejected, ...notLinked];
+  // Nothing to resolve and nothing to say: the common completion, and it must
+  // not put a Plane listing in front of every one of them.
+  if (refs.length === 0 && pending.length === 0) return rejected;
 
   // One listing resolves every reference, however many there are, and avoids
   // asking Plane to look up a readable id whose project we would then have to
@@ -198,7 +192,6 @@ export async function linkReferences(
     log.warn({ err, projectId: args.projectId }, 'could not resolve references');
     return [
       ...rejected,
-      ...notLinked,
       ...refs.map((r) => ({
         readableId: r.readableId,
         linked: false,
@@ -206,6 +199,19 @@ export async function linkReferences(
       })),
     ];
   }
+
+  // Said once each, after the rejects, so a caller can see what it would have
+  // got under the old behaviour and ask for it deliberately -- except for the
+  // item being completed, which every thorough outcome names and which can only
+  // ever be a self-edge. Telling somebody to link an item to itself is noise,
+  // and it is the one readableId that is always safe to drop.
+  const notLinked: LinkedReference[] = pending
+    .filter((m) => bySequence.get(m.sequence) !== args.fromId)
+    .map((m) => ({
+      readableId: m.readableId,
+      linked: false,
+      reason: 'named in the outcome, which does not create a relation — pass it in refs if it is one',
+    }));
 
   const out: LinkedReference[] = [...rejected, ...notLinked];
   for (const ref of refs) {

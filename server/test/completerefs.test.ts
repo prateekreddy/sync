@@ -224,3 +224,52 @@ describe('completing with refs through the tool surface', () => {
     await h.app.close();
   });
 });
+
+/**
+ * What a completion says about the item it is completing.
+ *
+ * Reported from the other box in the two-box run: completing SYNCE2E-2 came back
+ * advising that SYNCE2E-2 be passed in refs. Every thorough outcome names its own
+ * item, and a self-edge is the one relation that can never be wanted — so this is
+ * pure noise on exactly the completions that took the most care.
+ */
+describe('an outcome that names its own item', () => {
+  it('does not advise linking the item to itself', async () => {
+    const mine = randomUUID();
+    const h = await harness([item(mine, 7)]);
+    const lease = (await h.claim(mine)).json();
+
+    const res = await h.complete({
+      workItemId: mine,
+      epoch: lease.lease.epoch,
+      outcome: 'SYNC-7 is done. Fixed exactly as SYNC-7 described.',
+    });
+
+    // Absent rather than empty: the reply carries `references` only when it has
+    // something to say, so a completion that named only itself reads clean.
+    expect(res.json().references).toBeUndefined();
+    await h.app.close();
+  });
+
+  it('still reports a different item named in the prose', async () => {
+    const mine = randomUUID();
+    const other = randomUUID();
+    const h = await harness([item(mine, 7), item(other, 8)]);
+    const lease = (await h.claim(mine)).json();
+
+    const res = await h.complete({
+      workItemId: mine,
+      epoch: lease.lease.epoch,
+      outcome: 'SYNC-7 is done. It supersedes SYNC-8.',
+    });
+
+    expect(res.json().references).toEqual([
+      {
+        readableId: 'SYNC-8',
+        linked: false,
+        reason: 'named in the outcome, which does not create a relation — pass it in refs if it is one',
+      },
+    ]);
+    await h.app.close();
+  });
+});
