@@ -172,6 +172,38 @@ function asker(server: Server, relatedRequestId: RequestId): AskHuman {
 interface Context {
   actor: Actor;
   authorization: string;
+  /** Which window this is. See sessionKey(). */
+  session: string | null;
+}
+
+/** One header, read whichever way the framework hands it over. */
+function headerOf(request: FastifyRequest, name: string): string | null {
+  const raw = request.headers[name];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return value?.trim() ? value.trim().slice(0, 200) : null;
+}
+
+/**
+ * Which window a call came from.
+ *
+ * The plugin declares `X-Sync-Session: ${CLAUDE_CODE_SESSION_ID:-}`, and that
+ * variable is set in the environment of processes Claude Code *spawns* — hooks
+ * see it — but not in its own, which is what an MCP server config is expanded
+ * against. So no `${...}` form of it can ever resolve there, and the header
+ * arrives empty from the one client this was written for.
+ *
+ * The transport's own session id answers the same question without asking the
+ * client to configure anything: it is minted per initialize, sent on every
+ * subsequent request, and is therefore one-per-connection, which is what "which
+ * window" means here. It is less stable than the editor's own session id — a
+ * reconnect mints a new one — but it exists, and the alternative it replaces is
+ * null on every lease. The explicit header still wins where a client sets one,
+ * because a client that knows its own session knows better than we do.
+ */
+function sessionKey(request: FastifyRequest): string | null {
+  const explicit = headerOf(request, 'x-sync-session');
+  if (explicit && !explicit.includes('${')) return explicit;
+  return headerOf(request, 'mcp-session-id');
 }
 
 function build(deps: ToolDeps, ctx: Context): Server {
@@ -201,7 +233,11 @@ function build(deps: ToolDeps, ctx: Context): Server {
     //
     // Built per call rather than per connection because the question has to
     // travel on this call's stream — see asker().
-    const withHuman: ToolDeps = { ...deps, askHuman: asker(server, extra.requestId) };
+    const withHuman: ToolDeps = {
+      ...deps,
+      askHuman: asker(server, extra.requestId),
+      session: ctx.session,
+    };
 
     try {
       // Cast because the SDK's result union also covers long-running "task"
@@ -307,6 +343,7 @@ export async function handleMcpHttp(
     // outliving a token rotation must not keep writing with the old one.
     session.ctx.actor = actor;
     session.ctx.authorization = authorization;
+    session.ctx.session = sessionKey(request);
     session.lastSeen = Date.now();
 
     reply.hijack();
@@ -315,7 +352,7 @@ export async function handleMcpHttp(
   }
 
   const opening = opensSession(request.body);
-  const ctx: Context = { actor, authorization };
+  const ctx: Context = { actor, authorization, session: sessionKey(request) };
   const server = build(deps, ctx);
 
   /**

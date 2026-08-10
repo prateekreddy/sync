@@ -64,6 +64,17 @@ export interface ToolDeps {
    * to a person stays theirs.
    */
   askHuman?: AskHuman | undefined;
+  /**
+   * Which window this call came from, carried through to the endpoint.
+   *
+   * Needed because the dispatch below rebuilds the request rather than
+   * forwarding it, and it forwarded only the authorization — so a session header
+   * a client did send was dropped on the way in, and every lease claimed over
+   * MCP was written with a null session. Silent, because the gateway simply
+   * degrades to holder-level behaviour, which is what it did before sessions
+   * existed.
+   */
+  session?: string | null | undefined;
 }
 
 /**
@@ -440,7 +451,11 @@ export async function callTool(
       deps.app.inject({
         method: native.method,
         url: path,
-        headers: { authorization, ...(body ? { 'content-type': 'application/json' } : {}) },
+        headers: {
+          authorization,
+          ...(deps.session ? { 'x-sync-session': deps.session } : {}),
+          ...(body ? { 'content-type': 'application/json' } : {}),
+        },
         ...(body ? { payload: { ...(body as object), ...grant } } : {}),
       });
 

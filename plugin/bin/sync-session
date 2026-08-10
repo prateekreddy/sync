@@ -70,23 +70,47 @@ case "$CMD" in
     # credential can be handed over without adding an obligation. The model never
     # sees this happen and cannot forget to do it.
     [ -n "$WATCH_FILE" ] || exit 0
+
+    # A tool result reaches a hook in more than one shape, and which one is not
+    # something this script gets to decide. The MCP form is a CallToolResult
+    # whose payload is a JSON *string* inside a content block; the REST and stdio
+    # paths hand back the object itself; structured output puts it in a field of
+    # its own. Reading only the first of those is what shipped, and it found
+    # nothing for as long as the hook existed.
+    #
+    # So try them in order rather than betting on one. Each is cheap, and the
+    # alternative is a guess whose failure is total and silent.
     url=$(jqr '.tool_response.watchUrl')
-    if [ -z "$url" ] || [ "$url" = "null" ]; then
-      # An MCP tool result is not the tool's JSON. It is a CallToolResult, and
-      # the payload is a JSON *string* inside a text content block -- so the URL
-      # sits behind a second parse rather than at .tool_response.watchUrl. Read
-      # the plain shape first because the REST and stdio paths do return one;
-      # this is the MCP shape, which is what an agent with the plugin installed
-      # actually produces, and reading only the first found nothing for as long
-      # as the hook has existed.
-      inner=$(jqr '.tool_response.content.0.text')
-      [ -n "$inner" ] && url=$(get "$inner" watchUrl)
-    fi
+    for path in \
+      '.tool_response.structuredContent.watchUrl' \
+      '.tool_response.content.0.text' \
+      '.tool_response.0.text' \
+      '.tool_response'
+    do
+      case "$url" in ''|null) ;; *) break ;; esac
+      candidate=$(jqr "$path")
+      case "$candidate" in
+        ''|null) continue ;;
+        # A URL already, from the structured field.
+        http*) url="$candidate" ;;
+        # Otherwise it is JSON carrying one, and needs a second parse.
+        *) url=$(get "$candidate" watchUrl) ;;
+      esac
+    done
+
     if [ -n "$url" ] && [ "$url" != "null" ]; then
       # 0600: possession of this URL is authorisation. Its powers are small --
       # extend this session's leases and report them -- but small is not none.
       umask 077
       printf '%s' "$url" > "$WATCH_FILE"
+    else
+      # This hook only runs after a claim, and a claim always returns a watch
+      # URL. Finding none means the result arrived in a shape none of the above
+      # matched -- so say so. Staying quiet here is what let the whole chain sit
+      # broken: the lease then lapses on the ordinary timer, an hour later,
+      # looking like nothing to do with this.
+      echo "sync: could not read the watch URL from this claim, so your lease will NOT be kept alive."
+      echo "sync: it will lapse on its own timer and another agent may take the item. Please report this."
     fi
     ;;
 

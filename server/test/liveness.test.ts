@@ -37,15 +37,14 @@ import { fileURLToPath } from 'node:url';
 const plugin = fileURLToPath(new URL('../../plugin/', import.meta.url));
 const bin = (name: string) => join(plugin, 'bin', name);
 
+const WATCH_URL = 'https://gateway.invalid/v1/watch/T';
+
 /** A claim response as an MCP client actually receives it. */
 const CLAIM_RESULT = {
   content: [
     {
       type: 'text',
-      text: JSON.stringify({
-        lease: { workItemId: 'abc', epoch: 1 },
-        watchUrl: 'https://gateway.invalid/v1/watch/TOKEN',
-      }),
+      text: JSON.stringify({ lease: { workItemId: 'abc', epoch: 1 }, watchUrl: WATCH_URL }),
     },
   ],
 };
@@ -80,7 +79,7 @@ describe('reading a field out of JSON', () => {
       input: JSON.stringify({ tool_response: CLAIM_RESULT }),
       encoding: 'utf8',
     });
-    expect(JSON.parse(out).watchUrl).toBe('https://gateway.invalid/v1/watch/TOKEN');
+    expect(JSON.parse(out).watchUrl).toBe(WATCH_URL);
   });
 
   it('says nothing for a path that is not there', () => {
@@ -93,32 +92,49 @@ describe('reading a field out of JSON', () => {
 });
 
 describe('harvesting the credential from a claim', () => {
-  it('finds the watch URL in a real MCP tool result', () => {
-    // The shape that was never read. `.tool_response.watchUrl` does not exist on
-    // a CallToolResult, so this returned nothing for as long as the hook shipped.
+  /**
+   * Which shape a tool result arrives in is not this script's decision, and
+   * betting on one is what shipped: it read `.tool_response.watchUrl`, the MCP
+   * form does not have it, and the failure was total and silent. Each of these
+   * is a shape some real caller produces, so each is tried.
+   */
+  const shapes: Array<[string, unknown]> = [
+    ['a plain object, as REST and stdio return', { watchUrl: WATCH_URL }],
+    [
+      'structured output',
+      { structuredContent: { watchUrl: WATCH_URL }, content: [] },
+    ],
+    ['a text content block', CLAIM_RESULT],
+    [
+      'a bare content array',
+      [{ type: 'text', text: JSON.stringify({ watchUrl: WATCH_URL }) }],
+    ],
+  ];
+
+  it.each(shapes)('finds the watch URL in %s', (_name, tool_response) => {
     const { state } = run(
       'sync-session',
       ['harvest'],
-      { session_id: SESSION, tool_response: CLAIM_RESULT },
+      { session_id: SESSION, tool_response },
       { CLAUDE_CODE_SESSION_ID: SESSION },
     );
     expect(readFileSync(join(state, `${SESSION}.watch`), 'utf8')).toBe(
-      'https://gateway.invalid/v1/watch/TOKEN',
+      WATCH_URL,
     );
   });
 
-  it('still finds it when the response is a plain object', () => {
-    // The REST and stdio paths hand back the object itself rather than a content
-    // block, and both are real callers.
-    const { state } = run(
+  it('says so loudly when the claim carries a URL it cannot find', () => {
+    // The anti-silence guard, and the one that would have caught all of this on
+    // the first claim rather than weeks later. Harvest runs only after a claim,
+    // and a claim always returns a watch URL — so finding none is never normal.
+    const { stdout, state } = run(
       'sync-session',
       ['harvest'],
-      { session_id: SESSION, tool_response: { watchUrl: 'https://gateway.invalid/v1/watch/T2' } },
+      { session_id: SESSION, tool_response: { somethingElse: true } },
       { CLAUDE_CODE_SESSION_ID: SESSION },
     );
-    expect(readFileSync(join(state, `${SESSION}.watch`), 'utf8')).toBe(
-      'https://gateway.invalid/v1/watch/T2',
-    );
+    expect(stdout).toMatch(/NOT be kept alive/i);
+    expect(readdirSync(state)).toEqual([]);
   });
 
   it('writes nothing at all when the session cannot be identified', () => {

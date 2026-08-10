@@ -287,6 +287,40 @@ describe('the session the conversation runs in', () => {
     await app.close();
   }, 30_000);
 
+  it('records which window a claim came from', async () => {
+    /**
+     * Every lease claimed over MCP was written with a null session, and the
+     * cause was not the one the item recorded. The plugin's
+     * `X-Sync-Session: ${CLAUDE_CODE_SESSION_ID:-}` does expand to empty — that
+     * variable is set for processes Claude Code spawns, not in its own
+     * environment, which is what an MCP config expands against — but the header
+     * would not have arrived even if it were set, because callTool rebuilds the
+     * request and forwarded only the authorization.
+     *
+     * So the transport's own session id is used instead: minted per initialize,
+     * sent on every request, one per connection, and needing nothing configured
+     * anywhere. This checks it reaches the lease row, which is the only place
+     * the answer matters.
+     */
+    const { app, url, token } = await gateway();
+    const { client, transport } = await connect(url, token, null);
+
+    const claimed = await client.callTool({
+      name: 'claim',
+      arguments: { projectId: PROJECT, workItemId: LOOSE },
+    });
+    expect(claimed.isError).toBeFalsy();
+
+    const { rows } = await pool.query<{ session_id: string | null }>(
+      'select session_id from lease where work_item_id = $1',
+      [LOOSE],
+    );
+    expect(rows[0]?.session_id).toBe(transport.sessionId);
+
+    await client.close();
+    await app.close();
+  }, 30_000);
+
   it('still serves a client whose session this process never had', async () => {
     // What a deploy looks like from the client side. The spec says answer 404 and
     // let the client initialize again, and the client SDK does not implement that
