@@ -1,5 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  existsSync,
+  writeFileSync,
+} from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -864,4 +871,90 @@ describe('a monitor whose plugin has been deleted', () => {
     expect(said).not.toMatch(/is now installed/i);
     mon.kill();
   }, 30_000);
+});
+
+/**
+ * The monitor's side of retirement (SYNC-115).
+ *
+ * The gateway answers a poll with `retired` once nothing live is left under the
+ * credential. The monitor has to act on that quietly: drop the file, say
+ * nothing, and keep running. Each of those three is a separate way to get it
+ * wrong — leaving the file keeps the credential renewed forever, saying
+ * something turns the ordinary end of a day into a notification, and exiting
+ * would leave the session unwatched for whatever it claims next.
+ */
+describe('a monitor told its work is all finished', () => {
+  const retiringGateway = async () => {
+    const port = 18900 + Math.floor(process.hrtime()[1] % 300);
+    const script = join(mkdtempSync(join(tmpdir(), 'sync-gw4-')), 'gw.py');
+    writeFileSync(
+      script,
+      [
+        'import http.server, json, sys',
+        'class H(http.server.BaseHTTPRequestHandler):',
+        '    def do_GET(self):',
+        '        body = json.dumps({"retired": True}).encode()',
+        '        self.send_response(200)',
+        '        self.send_header("content-type", "application/json")',
+        '        self.send_header("content-length", str(len(body)))',
+        '        self.end_headers(); self.wfile.write(body)',
+        '    def log_message(self, *a): pass',
+        'PORT = int(sys.argv[1])',
+        'http.server.HTTPServer(("127.0.0.1", PORT), H).serve_forever()',
+      ].join('\n'),
+    );
+    const proc = spawn('python3', [script, String(port)], { stdio: 'ignore', detached: true });
+    for (let i = 0; i < 100; i++) {
+      try {
+        execFileSync('curl', ['-sS', '-o', '/dev/null', `http://127.0.0.1:${port}/ping`], {
+          timeout: 500,
+        });
+        break;
+      } catch {
+        execFileSync('sleep', ['0.05']);
+      }
+    }
+    return { port, stop: () => proc.kill() };
+  };
+
+  it('drops the credential, stays quiet, and keeps running', async () => {
+    const gw = await retiringGateway();
+    const dir = mkdtempSync(join(tmpdir(), 'sync-ret-'));
+    const session = 'finished-session';
+    const file = join(dir, `${session}.watch`);
+    writeFileSync(file, `http://127.0.0.1:${gw.port}/v1/watch/tok`);
+
+    const out = join(dir, 'out.txt');
+    const fd = openSync(out, 'w');
+    const mon = spawn(join(plugin, 'bin', 'sync-monitor'), [], {
+      stdio: ['ignore', fd, fd],
+      env: {
+        PATH: process.env['PATH'] ?? '',
+        HOME: dir,
+        SYNC_STATE_DIR: dir,
+        CLAUDE_CODE_SESSION_ID: session,
+        SYNC_POLL_SECONDS: '1',
+      },
+    });
+
+    try {
+      const deadline = Date.now() + 15_000;
+      while (existsSync(file) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(existsSync(file)).toBe(false);
+
+      // Still alive: a session that finishes one thing and claims another must
+      // still be watched, and nothing restarts a monitor inside a session.
+      await new Promise((r) => setTimeout(r, 1500));
+      expect(mon.exitCode).toBeNull();
+
+      // And silent. Finishing your work is not news, and a line here would print
+      // after every completion that happened to be a session's last.
+      expect(readFileSync(out, 'utf8')).toBe('');
+    } finally {
+      mon.kill();
+      gw.stop();
+    }
+  }, 25_000);
 });

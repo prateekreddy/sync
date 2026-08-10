@@ -801,3 +801,140 @@ describe('polling and the agreed TTL', () => {
     expect((await expiryOf(workItemId)).getTime()).toBeGreaterThan(before.getTime());
   });
 });
+
+/**
+ * What happens to the credential once the work under it is finished (SYNC-115).
+ *
+ * `complete` sets state, ended_at and expires_at, and deliberately does not
+ * touch watch_sha256 — so the row goes on matching the poll forever. The loop
+ * skips a completed lease silently and the function rotated anyway, which left a
+ * bearer credential with nothing behind it being renewed every two minutes by a
+ * monitor with nothing to do. Observed in the two-box run: the file still in the
+ * state directory, mode 600, last written seven minutes after the completion.
+ *
+ * The renewal is the part that matters. WATCH_TTL_MS is described as how long an
+ * IDLE credential stays usable, and since the window slides on every use
+ * (SYNC-104) this was the one path that opted out of the bound entirely.
+ */
+describe('a credential whose work is all finished', () => {
+  const retire = async (raw: string) => pollWatch(pool, raw, BASE);
+
+  it('retires instead of rotating, and hands back nothing to poll', async () => {
+    const h = await held();
+    await pool.query("update lease set state = 'completed', ended_at = now() where work_item_id = $1", [
+      h.workItemId,
+    ]);
+
+    const state = await retire(h.raw);
+    expect(state?.retired).toBe(true);
+    expect(state?.watchUrl).toBeUndefined();
+    // Not stale: the work was finished, not taken. Telling an agent to discard a
+    // successful completion would be the one lie that costs real work.
+    expect(state?.stale).toBeUndefined();
+  });
+
+  it('stops the idle window sliding, so the credential ages out as designed', async () => {
+    const h = await held();
+    const before = await pool.query<{ watch_expires_at: Date }>(
+      'select watch_expires_at from lease where work_item_id = $1',
+      [h.workItemId],
+    );
+    // Wind it back so a slide would be unmistakable.
+    await pool.query(
+      `update lease set state = 'completed', ended_at = now(),
+                        watch_expires_at = now() + interval '1 hour'
+        where work_item_id = $1`,
+      [h.workItemId],
+    );
+
+    await retire(h.raw);
+
+    const after = await pool.query<{ watch_expires_at: Date }>(
+      'select watch_expires_at from lease where work_item_id = $1',
+      [h.workItemId],
+    );
+    // Untouched: an hour from now, not a fresh 24 hours.
+    expect(after.rows[0]!.watch_expires_at.getTime()).toBeLessThan(
+      Date.now() + WATCH_TTL_MS / 2,
+    );
+    expect(before.rows[0]!.watch_expires_at.getTime()).toBeGreaterThan(
+      Date.now() + WATCH_TTL_MS / 2,
+    );
+  });
+
+  /**
+   * The case a naive fix breaks, and the reason "unlink on complete" is wrong.
+   *
+   * One session can hold several items. Disarming the monitor when the first of
+   * them completes would let the others lapse under an agent still working them
+   * — an agent losing a lease it never let go of, which is the exact failure the
+   * whole design removes.
+   */
+  it('keeps watching when the session still holds something else', async () => {
+    const session = `s-${randomUUID().slice(0, 8)}`;
+    const first = await held({ sessionId: session });
+    const second = await held({ sessionId: session });
+    // The second mint covers both, which is what keeps a session to one
+    // credential. Poll with it.
+    const raw = second.raw;
+
+    await pool.query("update lease set state = 'completed', ended_at = now() where work_item_id = $1", [
+      first.workItemId,
+    ]);
+
+    const state = await pollWatch(pool, raw, BASE);
+    expect(state?.retired).toBeUndefined();
+    expect(state?.watchUrl).toBeDefined();
+    expect(state?.holding).toContain(second.workItemId);
+    expect(state?.holding).not.toContain(first.workItemId);
+  });
+
+  it('goes on heartbeating the survivor rather than letting it lapse', async () => {
+    // The consequence of the above, measured rather than inferred: the point of
+    // not retiring is that the remaining lease keeps being extended.
+    const session = `s-${randomUUID().slice(0, 8)}`;
+    const first = await held({ sessionId: session });
+    const second = await held({ sessionId: session });
+
+    await pool.query("update lease set state = 'completed', ended_at = now() where work_item_id = $1", [
+      first.workItemId,
+    ]);
+    await pool.query(
+      `update lease set expires_at = now() + interval '5 seconds' where work_item_id = $1`,
+      [second.workItemId],
+    );
+
+    await pollWatch(pool, second.raw, BASE);
+
+    const left = (await expiryOf(second.workItemId)).getTime() - Date.now();
+    expect(left).toBeGreaterThan((EXTEND_S - 30) * 1000);
+  });
+
+  it('retires once the last of several is done too', async () => {
+    const session = `s-${randomUUID().slice(0, 8)}`;
+    const first = await held({ sessionId: session });
+    const second = await held({ sessionId: session });
+
+    await pool.query(
+      "update lease set state = 'completed', ended_at = now() where work_item_id = any($1::uuid[])",
+      [[first.workItemId, second.workItemId]],
+    );
+
+    expect((await pollWatch(pool, second.raw, BASE))?.retired).toBe(true);
+  });
+
+  it('does not retire while a revocation is still blocking pushes', async () => {
+    // `stale` is the fence's signal and it must survive: retiring here would
+    // drop the credential the fence polls, and a stale holder would be allowed
+    // to push work somebody else now owns.
+    const h = await held();
+    await pool.query(
+      "update lease set state = 'revoked', ended_at = now(), end_reason = 'taken back' where work_item_id = $1",
+      [h.workItemId],
+    );
+
+    const state = await pollWatch(pool, h.raw, BASE);
+    expect(state?.retired).toBeUndefined();
+    expect(state?.stale).toBe(true);
+  });
+});

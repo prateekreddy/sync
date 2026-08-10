@@ -76,8 +76,21 @@ export const WATCH_GRACE_S = 300;
 const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex');
 
 export interface WatchState {
-  /** The URL to poll next. Rotated every time, so a captured URL ages out fast. */
-  watchUrl: string;
+  /**
+   * The URL to poll next. Rotated every time, so a captured URL ages out fast.
+   *
+   * Absent exactly when `retired` is set: there is nothing left to poll for, so
+   * there is nothing to hand back.
+   */
+  watchUrl?: string;
+  /**
+   * Nothing live is left under this credential — stop polling and drop the file.
+   *
+   * Not a verdict and not a failure, which is why it is its own field rather
+   * than a status code. `stale` means the work was taken; this means the work is
+   * finished, which is the ordinary end of a session's day.
+   */
+  retired?: boolean;
   /** What this session holds, for a resumed session that has forgotten. */
   holding?: string;
   /** True when this session's work is no longer its own. The push fence reads this. */
@@ -405,6 +418,39 @@ export async function pollWatch(
       stale = true;
       say.push(`${row.work_item_id} is no longer yours — stop and discard that work.`);
     }
+  }
+
+  // Nothing live is left under this credential (SYNC-115).
+  //
+  // Every row it matched is finished — completed or released by this session, or
+  // a revocation old enough to have stopped blocking. `complete` sets state,
+  // ended_at and expires_at and deliberately does not touch watch_sha256, so the
+  // row goes on matching here forever; the loop above skips it silently and then
+  // this function rotated anyway. A credential with no work behind it therefore
+  // stayed valid and was renewed every two minutes by a monitor with nothing to
+  // do. Observed in the two-box run: a file still present, mode 600, last
+  // written seven minutes after the lease it covered was completed.
+  //
+  // Returning before the rotation is the whole fix, and it fixes two things at
+  // once. The monitor is told to drop the file, so the polling stops and the
+  // state directory does not accumulate credentials nobody owns — a stale one
+  // being indistinguishable from a live one is exactly the confusion SYNC-90
+  // removed from the filenames. And watch_expires_at stops sliding, so the
+  // credential ages out under WATCH_TTL_MS like every other one. That window is
+  // described as "how long an idle credential stays usable", and this was the
+  // single path that quietly opted out of it.
+  //
+  // Not nulled here, deliberately. Ageing out is enough, a `claim` in this
+  // session supersedes it outright (see mintWatch), and clearing it would answer
+  // the next poll from an older monitor with 401 — "your credential expired
+  // while you were away", which is not what happened.
+  //
+  // The condition is "this session holds nothing", never "this item finished":
+  // one session can hold several items, and disarming the monitor when the first
+  // of them completes would let the rest lapse under an agent still working
+  // them. That is the case a naive fix breaks, and it is tested.
+  if (!holding.length && !stale) {
+    return { retired: true, ...(say.length ? { say: say.join(' ') } : {}) };
   }
 
   // Rotate, keeping what was just retired. The match is on either column for the

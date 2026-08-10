@@ -204,12 +204,28 @@ while true; do
     elif [ "$code" = "200" ]; then
       BACKOFF=0
 
-      # Anything the human or agent needs to know arrives as a line on stdout,
-      # which Claude Code delivers into the session as a notification. The
-      # gateway decides what is worth saying; this only relays it, so what an
-      # agent gets told can change without shipping a new plugin.
-      say=$(printf '%s' "$body" | "$SYNC_BIN/sync-json" say)
-      [ -n "$say" ] && echo "sync: $say"
+      # Nothing live is left under this credential: everything this session held
+      # is finished. Drop the file and go quiet.
+      #
+      # Said by nobody, deliberately. Finishing your work is the ordinary end of
+      # a day and not news, and a line here would print after every completion
+      # that happened to be the session's last — training people to scroll past
+      # the channel that carries the one message that matters.
+      #
+      # NOT an exit. A session that finishes one item and claims another must
+      # still be watched, and the next claim's harvest writes a fresh credential
+      # that the loop picks up with no restart. With no file this pass costs
+      # nothing, which is what makes staying alive free.
+      if [ "$(printf '%s' "$body" | "$SYNC_BIN/sync-json" retired)" = "true" ]; then
+        rm -f "$WATCH_FILE"
+      else
+        # Anything the human or agent needs to know arrives as a line on stdout,
+        # which Claude Code delivers into the session as a notification. The
+        # gateway decides what is worth saying; this only relays it, so what an
+        # agent gets told can change without shipping a new plugin.
+        say=$(printf '%s' "$body" | "$SYNC_BIN/sync-json" say)
+        [ -n "$say" ] && echo "sync: $say"
+      fi
     else
       # Could not reach the gateway. Deliberately silent: this is ignorance, not
       # news, and a monitor that narrates its own network trouble trains people
