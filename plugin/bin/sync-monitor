@@ -91,6 +91,23 @@ MY_ROOT=$(cd "$SYNC_BIN/.." 2>/dev/null && pwd -P)
 # conservative by construction: any doubt at all -- no record, unreadable file,
 # no entry sharing our parent directory -- answers "carry on". A monitor that
 # stops when it did not have to is worse than one that runs a release behind.
+# Has this plugin been deleted out from under this process?
+#
+# Separate from `superseded` because it is not a judgement call and needs no
+# external file. `superseded` is deliberately conservative and answers "carry on"
+# whenever it cannot read Claude Code's private state -- which is exactly the
+# case the other box hit on 2026-08-10: a monitor alive for 44 minutes from
+# .../cache/sync/sync/0.4.7/bin/sync-monitor while the whole plugins/cache tree
+# was gone and installed_plugins.json did not exist. It polled happily from a
+# path that no longer existed, and a reinstall started a second one beside it.
+#
+# A process whose own bin directory has been deleted has been uninstalled. The
+# script is already parsed and the sourced functions are in memory, so it goes on
+# running perfectly well -- which is the whole problem.
+uninstalled() {
+  [ -n "$MY_ROOT" ] && [ ! -d "$MY_ROOT/bin" ]
+}
+
 superseded() {
   [ -n "$MY_ROOT" ] && [ -r "$INSTALLED_JSON" ] || return 1
   paths=$(grep -o '"installPath"[[:space:]]*:[[:space:]]*"[^"]*"' "$INSTALLED_JSON" 2>/dev/null \
@@ -107,6 +124,11 @@ superseded() {
 }
 
 while true; do
+  if uninstalled; then
+    echo "sync: the plugin this monitor was started from has been removed from disk, so it is stopping."
+    echo "sync: your claims will NOT be kept alive in this session — start a new session if sync is still installed."
+    exit 0
+  fi
   if now=$(superseded); then
     # Said in full, because the person reading it has to act: nothing will start
     # a replacement inside this session.

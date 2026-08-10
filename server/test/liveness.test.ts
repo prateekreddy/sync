@@ -738,3 +738,64 @@ describe('a monitor that has been superseded', () => {
     expect(r.status).not.toBe(0);
   }, 30_000);
 });
+
+/**
+ * A monitor whose plugin has been deleted out from under it.
+ *
+ * Found on the other box, 2026-08-10: a monitor alive for 44 minutes from
+ * .../cache/sync/sync/0.4.7/bin/sync-monitor while the whole plugins/cache tree
+ * was gone and installed_plugins.json did not exist. The script is already
+ * parsed and the sourced functions are in memory, so it polls perfectly well
+ * from a path that no longer exists — and a reinstall starts a second one
+ * beside it.
+ *
+ * The supersession check cannot catch this: it is deliberately conservative and
+ * answers "carry on" whenever it cannot read Claude Code's private state, which
+ * is precisely the state an uninstall leaves behind. A process whose own bin
+ * directory is gone needs no external file to know it has been uninstalled.
+ */
+describe('a monitor whose plugin has been deleted', () => {
+  it('stops, and says something true about why', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'sync-gone-'));
+    const root = join(home, 'cache', 'sync', 'sync', '0.4.8');
+    execFileSync('mkdir', ['-p', join(root, 'bin'), join(home, '.claude', 'plugins')]);
+    for (const f of readdirSync(join(plugin, 'bin'))) {
+      execFileSync('cp', [join(plugin, 'bin', f), join(root, 'bin', f)]);
+    }
+    writeFileSync(
+      join(home, '.claude', 'plugins', 'installed_plugins.json'),
+      JSON.stringify({ plugins: { 'sync@sync': [{ installPath: root, version: '0.4.8' }] } }),
+    );
+
+    const mon = spawn(join(root, 'bin', 'sync-monitor'), [], {
+      env: {
+        PATH: process.env['PATH'] ?? '',
+        HOME: home,
+        CLAUDE_CONFIG_DIR: join(home, '.claude'),
+        SYNC_STATE_DIR: join(home, 'state'),
+        CLAUDE_CODE_SESSION_ID: 'a-session',
+        SYNC_POLL_SECONDS: '1',
+      },
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    let said = '';
+    mon.stdout.on('data', (b: Buffer) => (said += b.toString()));
+
+    const ended = new Promise<number | null>((r) => mon.on('exit', (code) => r(code)));
+    await new Promise((r) => setTimeout(r, 1500));
+    // The uninstall, while it is running.
+    execFileSync('rm', ['-rf', join(home, 'cache')]);
+
+    const code = await Promise.race([
+      ended,
+      new Promise<'never'>((r) => setTimeout(() => r('never'), 12_000)),
+    ]);
+
+    expect(code).not.toBe('never');
+    expect(said).toMatch(/removed from disk/i);
+    // And it must not claim to have been superseded by a version, which is what
+    // the first cut said: "but uninstalled is now installed".
+    expect(said).not.toMatch(/is now installed/i);
+    mon.kill();
+  }, 30_000);
+});
