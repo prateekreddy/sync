@@ -71,7 +71,7 @@ Every refusal carries a code and a recovery line. The ones that change what you 
 | Code | What it means | Do |
 |---|---|---|
 | `NO_WORK` | nothing ready matched | call `why` on an item you expected, then back off — not an error |
-| `NOT_CLAIMABLE` | someone holds it, or it is not ready | call `why` to find out which, then pick another item |
+| `NOT_CLAIMABLE` | someone holds it, or it is not ready | if somebody holds it the message names **who and until when** — wait and retry when that is soon, otherwise take something else. Otherwise it lists what is not ready; `why` gives the fuller picture |
 | `NOT_HOLDER` | you do not hold this lease | stop working the item; retrying cannot help |
 | `STALE_EPOCH` | **your lease lapsed and someone else reclaimed it** | **discard the work — do not submit it** — and claim fresh |
 | `LEASE_EXPIRED` | lapsed, nobody took it | claim it again before continuing |

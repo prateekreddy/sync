@@ -1189,8 +1189,47 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         sessionId: sessionOf(req, b),
       });
       if (!l) {
-        throw new GatewayError('NOT_CLAIMABLE', 'Another agent holds this item', {
+        // Who, and until when — carried by the refusal rather than left for a
+        // second call (SYNC-118).
+        //
+        // The gateway had both facts in hand at the moment it refused and said
+        // neither, while `why` on the same item one call later answered "held by
+        // agent:…/worker-10 until 12:33:40Z". Three costs, and the third is the
+        // one that decided it: every refused agent paid a round trip; "pick a
+        // different one" is wrong advice for a lease lapsing in ninety seconds
+        // and right for one with forty minutes left, and the agent could not
+        // tell those apart; and a refusal that names nobody is equally
+        // consistent with exclusion keyed on the shared human root, which made a
+        // real cross-agent test inconclusive until `why` supplied the holder.
+        //
+        // The asymmetry is what makes it a defect rather than a terseness: an
+        // agent that distrusts the error and calls `why` gets a good answer, and
+        // one that believes it and moves on gets a worse outcome. An error that
+        // rewards ignoring it is training every reader the wrong lesson.
+        //
+        // Read after the failure, not before it: claim stays one atomic
+        // statement, and this costs a query only on the path that already lost.
+        // If the lease ended in between, `holder` is absent and the message says
+        // less rather than something untrue.
+        const holder = (await lease.liveHolders(pool, [b.workItemId])).get(b.workItemId);
+        const detail = holder
+          ? { heldBy: holder.holder, heldUntil: holder.expiresAt.toISOString() }
+          : {};
+        let message = 'Another agent holds this item';
+        if (holder) {
+          const left = holder.expiresAt.getTime() - Date.now();
+          const mins = Math.max(0, Math.round(left / 60_000));
+          message =
+            `${holder.holder} holds this item until ${holder.expiresAt.toISOString()}` +
+            // The steer the static recovery line cannot give, because it does not
+            // know the expiry. Both halves are advice an agent can act on now.
+            (left <= 2 * 60_000
+              ? ' — under two minutes left, so waiting and retrying may beat switching.'
+              : ` (about ${mins} minutes) — pick a different item rather than waiting.`);
+        }
+        throw new GatewayError('NOT_CLAIMABLE', message, {
           workItemId: b.workItemId,
+          ...detail,
         });
       }
       // Awaited, not fired and forgotten. A lease Plane never heard about is one
