@@ -21,6 +21,7 @@
  * with nothing in the log to explain it.
  */
 import type { Pool } from './db.js';
+import { tryItemLock } from './itemlock.js';
 import { log } from './log.js';
 import { mirrorComplete, mirrorReclaim, mirrorReturn, type MirrorIntent, type PortableActor } from './mirror.js';
 import type { PlaneClient } from './plane.js';
@@ -78,50 +79,18 @@ export async function drainMirrors(
   const result: DrainResult = { attempted: 0, settled: 0, abandoned: 0 };
 
   for (const row of rows) {
-    const intent = row.pending_mirror;
-    result.attempted += 1;
-
-    // Counted before the attempt, not after. Counting afterwards means a write
-    // that throws somewhere unexpected never increments, and the row is retried
-    // forever — which is the failure mode a retry limit exists to prevent.
-    const attempts = row.mirror_attempts + 1;
-    await pool.query(
-      `update lease
-          set mirror_attempts = $2,
-              mirror_after    = now() + make_interval(secs => $3)
-        where work_item_id = $1`,
-      [row.work_item_id, attempts, backoffSeconds(attempts)],
-    );
-
-    try {
-      await replay(plane, pool, row.work_item_id, intent);
-    } catch (err) {
-      log.warn({ err, workItemId: row.work_item_id, kind: intent.kind }, 'mirror retry threw');
-    }
-
-    const cleared = await isSettled(pool, row.work_item_id);
-    if (cleared) {
-      result.settled += 1;
-      log.info(
-        { workItemId: row.work_item_id, kind: intent.kind, attempts },
-        'queued plane write finally landed',
-      );
-      continue;
-    }
-
-    if (attempts >= MAX_ATTEMPTS) {
-      await pool.query(
-        'update lease set pending_mirror = null, mirror_after = null where work_item_id = $1',
-        [row.work_item_id],
-      );
-      result.abandoned += 1;
-      // Loud, and at error: the board is now wrong in a way nothing will fix on
-      // its own, and this line is the only record that it happened.
-      log.error(
-        { workItemId: row.work_item_id, projectId: row.project_id, kind: intent.kind, attempts },
-        'giving up on a plane write; the board is out of date for this item and needs a human',
-      );
-    }
+    // Skipped, not waited for, when another process holds this item's write lock
+    // (SYNC-6). The select above has no FOR UPDATE SKIP LOCKED, so two replicas
+    // draw the same batch; both would then replay the same intent and both would
+    // push mirror_after forward, which is the reordering serial() exists to
+    // prevent, arriving from a second direction. Skipping costs nothing: the row
+    // stays queued with its backoff, so a write the other process genuinely
+    // drops is picked up on the next sweep rather than lost.
+    //
+    // Not counted as attempted either, because it was not attempted here. A
+    // skipped row inflating this replica's numbers would make two replicas look
+    // like twice the work rather than the same work once.
+    await tryItemLock(pool, row.work_item_id, () => attempt(plane, pool, row, result));
   }
 
   return result;
@@ -195,3 +164,58 @@ const rehydrate = (a: PortableActor): Actor =>
     planeUserId: a.planeUserId,
     capabilities: [],
   }) as unknown as Actor;
+
+/**
+ * One queued write, replayed. Extracted so the loop above can hand it to the
+ * item lock — a closure could not carry the `continue` this used to use.
+ */
+async function attempt(
+  plane: PlaneClient,
+  pool: Pool,
+  row: Row,
+  result: DrainResult,
+): Promise<void> {
+  const intent = row.pending_mirror;
+  result.attempted += 1;
+
+  // Counted before the attempt, not after. Counting afterwards means a write
+  // that throws somewhere unexpected never increments, and the row is retried
+  // forever — which is the failure mode a retry limit exists to prevent.
+  const attempts = row.mirror_attempts + 1;
+  await pool.query(
+    `update lease
+        set mirror_attempts = $2,
+            mirror_after    = now() + make_interval(secs => $3)
+      where work_item_id = $1`,
+    [row.work_item_id, attempts, backoffSeconds(attempts)],
+  );
+
+  try {
+    await replay(plane, pool, row.work_item_id, intent);
+  } catch (err) {
+    log.warn({ err, workItemId: row.work_item_id, kind: intent.kind }, 'mirror retry threw');
+  }
+
+  if (await isSettled(pool, row.work_item_id)) {
+    result.settled += 1;
+    log.info(
+      { workItemId: row.work_item_id, kind: intent.kind, attempts },
+      'queued plane write finally landed',
+    );
+    return;
+  }
+
+  if (attempts >= MAX_ATTEMPTS) {
+    await pool.query(
+      'update lease set pending_mirror = null, mirror_after = null where work_item_id = $1',
+      [row.work_item_id],
+    );
+    result.abandoned += 1;
+    // Loud, and at error: the board is now wrong in a way nothing will fix on
+    // its own, and this line is the only record that it happened.
+    log.error(
+      { workItemId: row.work_item_id, projectId: row.project_id, kind: intent.kind, attempts },
+      'giving up on a plane write; the board is out of date for this item and needs a human',
+    );
+  }
+}

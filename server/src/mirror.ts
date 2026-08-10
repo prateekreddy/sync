@@ -271,7 +271,7 @@ export async function mirrorClaim(
     // item having a parent is not a reason for the agent that claimed it to wait
     // longer. The rollup is best-effort by design and says so in rollup.ts.
     void rollUp(plane, args.projectId, args.workItemId).catch(() => {});
-  });
+  }, pool);
 }
 
 export async function mirrorComplete(
@@ -358,7 +358,7 @@ export async function mirrorComplete(
       // showing finished work as in progress until a human noticed.
       log.warn({ err, workItemId: args.workItemId, op: 'complete' }, 'plane mirror failed, queued');
     }
-  });
+  }, pool);
 }
 
 /**
@@ -413,7 +413,7 @@ export async function mirrorReturn(
       // failure here is exactly when nobody is watching.
       log.warn({ err, workItemId: args.workItemId, op: 'return' }, 'plane mirror failed, queued');
     }
-  });
+  }, pool);
 }
 
 /**
@@ -461,5 +461,5 @@ export async function mirrorReclaim(
       // Left owed, like the others: the drain will retry it with backoff.
       log.warn({ err, workItemId: args.workItemId, op: 'reclaim' }, 'plane mirror failed, queued');
     }
-  });
+  }, pool);
 }

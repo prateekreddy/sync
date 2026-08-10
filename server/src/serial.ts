@@ -1,3 +1,6 @@
+import type { Pool } from './db.js';
+import { withItemLock } from './itemlock.js';
+
 /**
  * One write chain per work item, shared by everything that writes to Plane.
  *
@@ -21,15 +24,33 @@
  * different causes, and they have to queue behind each other exactly as two
  * mirror writes do.
  *
- * Scope: one gateway process. Two replicas would need Plane-side conditional
- * writes, which Plane does not offer; the lease table remains the source of
- * truth either way, so the failure would stay confined to the display.
+ * Scope used to stop at one gateway process, and that was the whole of SYNC-6:
+ * two replicas could land a completion before the claim that preceded it, so a
+ * finished item displayed as "In Progress" forever. The lease stayed correct —
+ * this is display, not coordination — but it meant the gateway could not be run
+ * redundantly, which made it the single point of failure for the whole fleet.
+ *
+ * Pass a pool and the chain extends across processes as well, through a Postgres
+ * advisory lock on the work item (see itemlock.ts). Deliberately one seam rather
+ * than four: every writer already funnels through here, so cross-process
+ * ordering is a property of the chain rather than something each mirror function
+ * has to remember. Optional because rollup.ts and the tests call it without one,
+ * and an in-process chain is what this always was.
+ *
+ * The two layers are not redundant. The advisory lock alone would serialise
+ * processes while letting one process interleave its own writes on a connection
+ * each; the in-memory chain alone is what shipped. Together the order is total.
  */
 const chains = new Map<string, Promise<void>>();
 
-export function serial(workItemId: string, fn: () => Promise<void>): Promise<void> {
+export function serial(
+  workItemId: string,
+  fn: () => Promise<void>,
+  pool?: Pool,
+): Promise<void> {
+  const guarded = pool ? () => withItemLock(pool, workItemId, fn) : fn;
   const prev = chains.get(workItemId) ?? Promise.resolve();
-  const next = prev.then(fn, fn); // a failed predecessor must not block the rest
+  const next = prev.then(guarded, guarded); // a failed predecessor must not block the rest
   chains.set(workItemId, next);
   void next
     .finally(() => {

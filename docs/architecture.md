@@ -420,8 +420,10 @@ prior `SELECT`, so two concurrent mints cannot both pass and then race.
 per request, so it is limited per source address (`MINT_RATE_LIMIT`, default
 10/min): unthrottled, a stranger could burn the workspace's rate-limit budget and
 take the whole fleet down. The limiter is in-memory and therefore per-process —
-with more than one replica the effective limit multiplies, the same caveat mirror
-ordering carries.
+with more than one replica the effective limit multiplies. Mirror ordering used to
+carry the same caveat and no longer does: it is held by a Postgres advisory lock
+per work item, so this is now the only part of the gateway that assumes one
+process.
 
 `MINT_TOKENS=off` disables the endpoint and returns issuance to the CLI alone.
 

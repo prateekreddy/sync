@@ -414,8 +414,11 @@ point; they share an instance but are separate databases.
 **The network outlives the stack.** `docker compose down` leaves it. Remove it with
 `docker network rm sync_plane`.
 
-**Running two gateway replicas** reopens an out-of-order display bug in the Plane
-mirror — finished work can show as "In Progress". The lease stays correct either way.
+**Running two gateway replicas** is safe for the Plane mirror. Writes are ordered
+per work item across processes by a Postgres advisory lock, so a completion cannot
+land before the claim that preceded it. One caveat remains: the mint rate limiter
+is in-memory, so `MINT_RATE_LIMIT` is per replica and the effective limit
+multiplies.
 
 ## Checking completions against GitHub
 
@@ -566,5 +569,5 @@ host is a TCP loopback that is not listening.
 - No decay or curation of stale captures. Write-first plus agents produces volume;
   dedup-on-write is the only hedge in place so far.
 - The gateway serves work but does not dispatch it — agents poll, nothing launches them.
-- Mirror-write ordering is per-process, so running two gateway replicas would reopen
-  the out-of-order display bug. The lease stays correct either way.
+- The mint rate limiter is in-memory and therefore per replica, so `MINT_RATE_LIMIT`
+  multiplies with the replica count. Mirror ordering no longer has this problem.
