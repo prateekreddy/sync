@@ -3,7 +3,15 @@ import { randomUUID } from 'node:crypto';
 import Fastify from 'fastify';
 import { issueToken } from '../src/auth.js';
 import type { Actor } from '../src/auth.js';
-import { foreignAssignees, gatewayWrites, nameOf, principalPlaneUser } from '../src/assignment.js';
+import {
+  approveTakeover,
+  approvedTakeovers,
+  foreignAssignees,
+  gatewayWrites,
+  nameOf,
+  principalPlaneUser,
+  takeoverApproval,
+} from '../src/assignment.js';
 import { createPool } from '../src/db.js';
 import { callTool, type AskHuman } from '../src/tools.js';
 import { forgetAccess } from '../src/access.js';
@@ -592,5 +600,52 @@ describe('marking what an agent wrote', () => {
     expect(res.statusCode).toBe(200);
     expect(String(created[0]?.['external_source'])).toMatch(/^agent:t-asg-/);
     await app.close();
+  });
+});
+
+/**
+ * A yes stops meaning yes eventually.
+ *
+ * An approval recorded once made that item permanently takeable by anyone, with
+ * no way to withdraw it — a decision somebody made in one moment still applying
+ * long after they had stopped meaning it. Same shape as handing back work they
+ * had just taken (SYNC-85), and it lived in the same item.
+ */
+describe('how long a takeover approval lasts', () => {
+  const aged = async (workItemId: string, age: string) => {
+    await approveTakeover(pool, { workItemId, approvedBy: 'human:me@example.com' });
+    await pool.query(
+      `update takeover_approval set created_at = now() - $2::interval where work_item_id = $1`,
+      [workItemId, age],
+    );
+  };
+
+  it('still counts a yes given moments ago', async () => {
+    // Recorded before the claim is retried precisely so a compaction between the
+    // yes and the claim does not lose it. One-shot semantics would put that
+    // failure straight back, which is why this expires rather than being consumed.
+    const id = randomUUID();
+    await aged(id, '1 minute');
+    expect(await approvedTakeovers(pool, [id])).toContain(id);
+    expect(await takeoverApproval(pool, id)).not.toBeNull();
+  });
+
+  it('stops counting one from last week', async () => {
+    const id = randomUUID();
+    await aged(id, '7 days');
+    expect(await approvedTakeovers(pool, [id])).not.toContain(id);
+    expect(await takeoverApproval(pool, id)).toBeNull();
+  });
+
+  it('agrees between the browse path and the claim path', async () => {
+    // Two queries deciding the same thing are two queries that will disagree, and
+    // a browse that offers what claim then refuses is the defect this project has
+    // already paid for twice.
+    const id = randomUUID();
+    await aged(id, '25 hours');
+    const listed = (await approvedTakeovers(pool, [id])).has(id);
+    const single = (await takeoverApproval(pool, id)) !== null;
+    expect(listed).toBe(single);
+    expect(listed).toBe(false);
   });
 });

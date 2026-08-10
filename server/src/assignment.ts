@@ -264,6 +264,25 @@ export interface Takeover {
   reason?: string;
 }
 
+/**
+ * How long a person's yes keeps meaning yes.
+ *
+ * It used to mean it forever. An approval recorded once made that item
+ * permanently takeable by anyone, with no way to withdraw it — a decision
+ * somebody made in one moment still applying long after they had stopped meaning
+ * it, which is the same shape as handing back work they had just taken.
+ *
+ * Not consumed on first use, deliberately: the approval is recorded before the
+ * claim is retried precisely so a compaction between the yes and the claim does
+ * not lose it, and one-shot semantics would put that failure straight back. A
+ * day is far longer than that gap and far shorter than forever.
+ *
+ * Written once and used by both readers below, because two queries that decide
+ * the same thing are two queries that will disagree.
+ */
+const APPROVAL_TTL = "interval '24 hours'";
+const STILL_VALID = `created_at > now() - ${APPROVAL_TTL}`;
+
 /** Record a human's permission to take one item from its assignee. */
 export async function approveTakeover(pool: Pool, t: Takeover): Promise<void> {
   await pool.query(
@@ -292,7 +311,8 @@ export async function takeoverApproval(
 ): Promise<{ approvedBy: string; takenFrom: string | null } | null> {
   if (uuidsOnly([workItemId]).length === 0) return null;
   const { rows } = await pool.query<{ approved_by: string; taken_from: string | null }>(
-    'select approved_by, taken_from from takeover_approval where work_item_id = $1',
+    `select approved_by, taken_from from takeover_approval
+      where work_item_id = $1 and ${STILL_VALID}`,
     [workItemId],
   );
   const row = rows[0];
@@ -304,7 +324,8 @@ export async function approvedTakeovers(pool: Pool, workItemIds: string[]): Prom
   const ids = uuidsOnly(workItemIds);
   if (ids.length === 0) return new Set();
   const { rows } = await pool.query<{ work_item_id: string }>(
-    'select work_item_id from takeover_approval where work_item_id = any($1::uuid[])',
+    `select work_item_id from takeover_approval
+      where work_item_id = any($1::uuid[]) and ${STILL_VALID}`,
     [ids],
   );
   return new Set(rows.map((r) => r.work_item_id));
