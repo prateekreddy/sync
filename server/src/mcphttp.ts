@@ -174,6 +174,15 @@ interface Context {
   authorization: string;
   /** Which window this is. See sessionKey(). */
   session: string | null;
+  /**
+   * Whether this connection can carry a question back to a person.
+   *
+   * False on the sessionless path, which is where a client lands after the
+   * gateway restarts — there is a human there, but no channel to them until they
+   * reconnect. Kept separate from "there is nobody there" so the two can be told
+   * apart in what the agent is shown.
+   */
+  canAsk: boolean;
 }
 
 /** One header, read whichever way the framework hands it over. */
@@ -233,9 +242,14 @@ function build(deps: ToolDeps, ctx: Context): Server {
     //
     // Built per call rather than per connection because the question has to
     // travel on this call's stream — see asker().
+    // Not offered at all where it cannot work, rather than offered and left to
+    // fail: an elicitation on a connection with no stream back is a request that
+    // is never sent and never answered.
     const withHuman: ToolDeps = {
       ...deps,
-      askHuman: asker(server, extra.requestId),
+      ...(ctx.canAsk
+        ? { askHuman: asker(server, extra.requestId) }
+        : { askNeedsReconnect: true }),
       session: ctx.session,
     };
 
@@ -344,6 +358,7 @@ export async function handleMcpHttp(
     session.ctx.actor = actor;
     session.ctx.authorization = authorization;
     session.ctx.session = sessionKey(request);
+    session.ctx.canAsk = true;
     session.lastSeen = Date.now();
 
     reply.hijack();
@@ -352,7 +367,10 @@ export async function handleMcpHttp(
   }
 
   const opening = opensSession(request.body);
-  const ctx: Context = { actor, authorization, session: sessionKey(request) };
+  // A tool call arriving without a session it can be served from is one this
+  // process cannot ask anything on. An initialize carries no tool call, so the
+  // only calls reaching here are the stale ones.
+  const ctx: Context = { actor, authorization, session: sessionKey(request), canAsk: opening };
   const server = build(deps, ctx);
 
   /**

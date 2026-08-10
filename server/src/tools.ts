@@ -75,6 +75,15 @@ export interface ToolDeps {
    * existed.
    */
   session?: string | null | undefined;
+  /**
+   * Set when a question cannot be put *on this connection specifically*, and
+   * reconnecting would fix it.
+   *
+   * Distinct from `askHuman` being absent, which means there is genuinely nobody
+   * there. Collapsing the two tells a person sitting at a terminal that their
+   * approval was impossible when it was one command away.
+   */
+  askNeedsReconnect?: boolean | undefined;
 }
 
 /**
@@ -489,8 +498,28 @@ export async function callTool(
         res = await send(detail.grant ? { [detail.grant]: actor.principal } : undefined);
         parsed = res.body ? JSON.parse(res.body) : {};
       }
-      // 'unavailable' falls through to the original refusal, whose recovery line
-      // already explains the two ways a human can clear it.
+      // Nobody could be asked — but there are two reasons for that and they need
+      // different advice. A headless run has no human at all, and the original
+      // refusal's recovery line is right. A connection that predates this
+      // gateway process has a human sitting right there, one reconnect away, and
+      // telling them approval is impossible is false.
+      //
+      // This is the same failure the approval work exists to remove, one level
+      // up: a capability that quietly stopped working and said the same thing as
+      // never having had it.
+      if (outcome === 'unavailable' && deps.askNeedsReconnect) {
+        return errorResult(
+          'NEEDS_APPROVAL',
+          `${(detail as { message?: string }).message ?? 'This needs a person to agree to it.'} ` +
+            'Nobody could be asked, because this connection was opened before the gateway ' +
+            'restarted and has no way to reach the person at the other end.',
+          'Tell the human to reconnect the sync MCP server — in Claude Code, /mcp reconnect — ' +
+            'and then try this exact call again. Do not treat this as a refusal: nobody has ' +
+            'been asked yet.',
+        );
+      }
+      // Otherwise 'unavailable' falls through to the original refusal, whose
+      // recovery line already explains the two ways a human can clear it.
     }
 
     if (res.statusCode >= 400) {

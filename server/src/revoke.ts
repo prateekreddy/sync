@@ -33,9 +33,32 @@
 import type { Pool } from './db.js';
 import type { PlaneClient, WorkItem } from './plane.js';
 import { log } from './log.js';
+import { resolveLabels } from './labels.js';
 
 /** State groups that mean the work is over, whoever ended it. */
 const FINISHED = new Set(['completed', 'cancelled']);
+
+/**
+ * What a revoked item is labelled with, so it is not handed straight back.
+ *
+ * Ending the lease was only half of honouring the intervention. The row simply
+ * ended and nothing withheld the item afterwards, so the next `claim` could
+ * return it — plausibly to the same agent, within seconds. A person took the
+ * work back and the system's answer was to offer it again immediately.
+ *
+ * Reassigning to somebody else was already covered: the assignee gate withholds
+ * an item a person is on. The gap is the human who *clears* the assignee to take
+ * it back, which leaves an item in backlog with nobody on it and no reason for
+ * the gate to refuse anyone.
+ *
+ * A label rather than a new gate, because this has to be clearable by a human
+ * and the only place a human is standing is Plane. `needs-human` already makes
+ * an item unclaimable, already appears in the UI, and is already understood to
+ * mean "somebody has to look at this first" — which is exactly true of work
+ * somebody just took back. They remove it when they are done, in the tool they
+ * were already using, with no gateway concept to learn.
+ */
+const WITHHOLD_LABEL = 'needs-human';
 
 export interface Revocation {
   workItemId: string;
@@ -120,6 +143,10 @@ export async function reconcileLeases(
           { workItemId: lease.work_item_id, holder: lease.holder, epoch: lease.epoch, reason },
           'lease revoked from the board',
         );
+        // Somebody took this back. Withhold it until they say otherwise —
+        // unless they took it back by finishing it, which the readiness gate
+        // already covers.
+        if (!finishedStates.has(item.state)) await withhold(plane, projectId, item);
         revocations.push({
           workItemId: lease.work_item_id,
           projectId,
@@ -132,6 +159,30 @@ export async function reconcileLeases(
   }
 
   return revocations;
+}
+
+/**
+ * Withhold an item somebody took back, so nothing hands it out again.
+ *
+ * Best effort on purpose. The revocation has already happened and is what stops
+ * the agent; this only stops the *next* one, so a Plane write failing here must
+ * not undo the part that matters. It is logged rather than thrown.
+ *
+ * Not applied when the item was closed — a completed or cancelled item is
+ * already outside the readiness gate, and labelling it would leave a person
+ * clearing a flag off finished work for no reason.
+ */
+async function withhold(plane: PlaneClient, projectId: string, item: WorkItem): Promise<void> {
+  try {
+    const [id] = await resolveLabels(plane, projectId, [WITHHOLD_LABEL]);
+    if (!id || item.labels.includes(id)) return;
+    await plane.updateWorkItem(projectId, item.id, { labels: [...item.labels, id] });
+  } catch (err) {
+    log.warn(
+      { err, workItemId: item.id, projectId },
+      'could not withhold a revoked item; it may be claimed again before a human sees it',
+    );
+  }
 }
 
 /** Why this lease should end, or null when the board and the lease agree. */

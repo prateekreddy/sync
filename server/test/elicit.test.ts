@@ -336,6 +336,34 @@ describe('the session the conversation runs in', () => {
     await app.close();
   }, 30_000);
 
+  it('tells a stale connection to reconnect, not that approval was impossible', async () => {
+    // The same failure the approval work exists to remove, one level up. After a
+    // deploy there IS a person at the other end, one command away — reporting
+    // the headless refusal tells them their approval could not be obtained when
+    // nobody had been asked.
+    const { app, url, token } = await gateway();
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        'mcp-session-id': randomUUID(),
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'gather', arguments: ARGS },
+      }),
+    });
+
+    const text = await res.text();
+    expect(text).toMatch(/reconnect/i);
+    expect(text).toMatch(/nobody has been asked yet/i);
+    await app.close();
+  }, 30_000);
+
   it('will not serve one agent a session opened by another', async () => {
     // A session carries an identity, and every write it makes is attributed to
     // that identity. Serving a second bearer token from it would file one

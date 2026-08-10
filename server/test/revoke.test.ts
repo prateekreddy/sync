@@ -66,7 +66,14 @@ const item = (id: string, over: Partial<WorkItem> = {}): WorkItem => ({
 interface Faults {
   list?: Error;
   states?: Error;
+  /** Labelling fails. The revocation must still stand — see the test for it. */
+  label?: Error;
 }
+
+/** Every label write reconcile made, so withholding can be asserted on. */
+let labelled: Array<{ id: string; labels: string[] }> = [];
+
+const NEEDS_HUMAN = 'label-needs-human';
 
 function fakePlane(items: WorkItem[], faults: Faults = {}): PlaneClient {
   return Object.assign(new PlaneClient('http://plane.invalid', 'k', 'ws'), {
@@ -77,6 +84,19 @@ function fakePlane(items: WorkItem[], faults: Faults = {}): PlaneClient {
     states: async () => {
       if (faults.states) throw faults.states;
       return STATES;
+    },
+    // Present because reconcile withholds a revoked item by labelling it. Left
+    // unstubbed these fell through to the real client and spent the test budget
+    // retrying against plane.invalid.
+    labels: async () => {
+      if (faults.label) throw faults.label;
+      return [{ id: NEEDS_HUMAN, name: 'needs-human' }];
+    },
+    createLabel: async () => ({ id: NEEDS_HUMAN, name: 'needs-human' }),
+    updateWorkItem: async (_p: string, id: string, body: Record<string, unknown>) => {
+      if (faults.label) throw faults.label;
+      labelled.push({ id, labels: (body['labels'] as string[]) ?? [] });
+      return items.find((i) => i.id === id)!;
     },
   }) as unknown as PlaneClient;
 }
@@ -104,6 +124,7 @@ const stateOf = async (workItemId: string) => {
 };
 
 beforeEach(async () => {
+  labelled = [];
   await pool.query('truncate lease');
   await pool.query('delete from agent_token where name = $1', [TOKEN_NAME]);
   // The agent's Plane identity is what an assignee list is checked against.
@@ -166,6 +187,61 @@ describe('a human takes the work back', () => {
     );
     expect((await stateOf(unassigned)).end_reason).toMatch(/taken off you/i);
     expect((await stateOf(closed)).end_reason).toMatch(/closed in Plane/i);
+  });
+});
+
+/**
+ * Ending the lease was only half of honouring the intervention.
+ *
+ * The row ended and nothing withheld the item afterwards, so the next `claim`
+ * could hand it straight back — plausibly to the same agent, within seconds. A
+ * person took the work back and the system offered it again immediately.
+ *
+ * Reassigning to somebody else was already covered by the assignee gate. The gap
+ * is the person who *clears* the assignee to take it back: that leaves an item in
+ * backlog with nobody on it, which no gate had a reason to refuse.
+ */
+describe('after somebody takes the work back', () => {
+  it('withholds the item, so it is not offered to the next agent', async () => {
+    const id = await heldItem();
+    await reconcileLeases(fakePlane([item(id, { assignees: [] })]), pool);
+
+    // needs-human is already a blocking label, already in Plane's UI, and already
+    // means what is true here. The person clears it in the tool they are in.
+    expect(labelled).toEqual([{ id, labels: [NEEDS_HUMAN] }]);
+  });
+
+  it('keeps the labels the item already had', async () => {
+    const id = await heldItem();
+    await reconcileLeases(fakePlane([item(id, { assignees: [], labels: ['backend'] })]), pool);
+    expect(labelled[0]?.labels).toEqual(['backend', NEEDS_HUMAN]);
+  });
+
+  it('does not label an item that was taken back by finishing it', async () => {
+    // A completed item is already outside the readiness gate, so flagging it
+    // would leave somebody clearing a marker off finished work for no reason.
+    const id = await heldItem();
+    await reconcileLeases(fakePlane([item(id, { state: 'done' })]), pool);
+    expect(labelled).toEqual([]);
+  });
+
+  it('does not label twice when reconcile runs again', async () => {
+    const id = await heldItem();
+    await reconcileLeases(fakePlane([item(id, { assignees: [], labels: [NEEDS_HUMAN] })]), pool);
+    expect(labelled).toEqual([]);
+  });
+
+  it('still revokes when the item cannot be labelled', async () => {
+    // The revocation is what stops the agent, and it has already happened. A
+    // failure to withhold must never undo it — worst case the item is claimable
+    // again, which is exactly where this started.
+    const id = await heldItem();
+    const revocations = await reconcileLeases(
+      fakePlane([item(id, { assignees: [] })], { label: new Error('plane is down') }),
+      pool,
+    );
+    expect(revocations).toHaveLength(1);
+    expect((await stateOf(id)).state).toBe('revoked');
   });
 });
 
