@@ -59,3 +59,52 @@ describe('finding evidence', () => {
     expect(findEvidence('bumped to 1.4.0 and retried 3 times')).toEqual([]);
   });
 });
+
+/**
+ * A uuid is not two commits.
+ *
+ * `\b` alone was not enough, because a hyphen IS a word boundary: every uuid in
+ * an outcome handed back its first and last segments as shas. Measured closing
+ * SYNC-87, whose outcome quoted the session id the fix had just produced.
+ *
+ * Harmless only while nothing checks them. With evidence checking on, those
+ * phantom shas resolve to no commit, so a completion backed by three real ones
+ * is flagged for citing two that do not exist — and the flag meaning "backed by
+ * nothing" would fire hardest on the completions that showed their work.
+ */
+describe('what looks like a commit', () => {
+  const commits = (s: string) =>
+    findEvidence(s).filter((e) => e.kind === 'commit').map((e) => e.value);
+
+  it('reads no commits out of a uuid', () => {
+    expect(commits('"sessionId": "b12e9747-49c2-4b77-bc72-c1a6fe82d1eb"')).toEqual([]);
+  });
+
+  it('still reads the real shas in the same sentence', () => {
+    // The exact outcome that produced this: three real shas and one session id.
+    const out = commits(
+      'Fixed in 2b10900 and eeee49c, see 073581b. sessionId b12e9747-49c2-4b77-bc72-c1a6fe82d1eb',
+    );
+    expect(out).toEqual(['2b10900', 'eeee49c', '073581b']);
+  });
+
+  it('keeps a full-length sha', () => {
+    expect(commits('at eeee49c35416381a1c6a7525fe94ed8bce6d5dda')).toEqual([
+      'eeee49c35416381a1c6a7525fe94ed8bce6d5dda',
+    ]);
+  });
+
+  it('keeps a sha in a range, where the neighbours are dots', () => {
+    // `git push` output and compare links both look like this, and a dot is not
+    // a hyphen -- the trade this makes is only about hyphens.
+    expect(commits('ffe75ef..17fcc59 main -> main')).toEqual(['ffe75ef', '17fcc59']);
+  });
+
+  it('does not invent one from a hyphenated hex word', () => {
+    // The deliberate cost of the rule. A bare "deadbeef" still counts, because
+    // it is indistinguishable from a short sha and costs nothing; hyphenated, it
+    // is far more likely part of an identifier.
+    expect(commits('deadbeef')).toEqual(['deadbeef']);
+    expect(commits('deadbeef-cafe1234')).toEqual([]);
+  });
+});

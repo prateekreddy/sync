@@ -2,13 +2,26 @@ import { log } from './log.js';
 import type { PlaneClient } from './plane.js';
 
 /**
- * Work items an outcome names, turned into edges instead of prose.
+ * Work items a completion DECLARES, turned into edges instead of prose.
  *
- * Completions in this project already say "Superseded by SYNC-32", "Replaced by
- * … See SYNC-35", "captured as SYNC-34". Every one is a real relationship,
- * written as text, in a field nothing queries — and `findEvidence` was already
- * pulling those tokens out and discarding them one line later. The information
- * was never missing; it was unreachable.
+ * Completions in this project say "Superseded by SYNC-32", "Replaced by … See
+ * SYNC-35", "captured as SYNC-34". Every one is a real relationship written as
+ * text in a field nothing queries, and making them reachable is why this exists.
+ *
+ * ### Why prose is no longer a source of edges
+ *
+ * It was, and the correction is the same lesson as `#42` below, learned the
+ * expensive way. An outcome names work items as DATA at least as often as it
+ * names them as relations: the closure of SYNC-88 reported that the top level
+ * goes from 65 roots to 7 and named which 7, creating seven permanent edges to
+ * items it had nothing to do with. The better the completion, the worse the
+ * damage — and edges feed `claim`'s briefing, so each false one dilutes the
+ * mechanism that stops an agent missing a requirement.
+ *
+ * `refs` is the declared channel and now the only one. What prose mentions still
+ * get is a line in the reply saying they were not linked and how to link them,
+ * because agents were told the old behaviour and a rule that changes silently is
+ * the failure this file exists to stop.
  *
  * ### Why `#42` is deliberately not read here
  *
@@ -110,8 +123,32 @@ export async function linkReferences(
     return [];
   }
 
-  const refs = referencesIn(args.text, identifier);
-  const seen = new Set(refs.map((r) => r.sequence));
+  // Prose is prose. This used to be the primary source of edges, and the reasons
+  // it cannot be are the reasons `refs` was added:
+  //
+  // An outcome names work items as DATA as often as it names them as relations.
+  // Measured on the closure of SYNC-88, whose outcome reported that the top level
+  // goes from 65 roots to 7 and said which 7 — and which therefore created seven
+  // permanent `relates_to` edges to items it had nothing to do with. The more
+  // carefully a completion shows its work, the more the graph is corrupted by it.
+  //
+  // And the edges are not inert. They are what `claim` builds a briefing from,
+  // where linked items are handed over open-first with their full text precisely
+  // so an agent does not miss a requirement. Every false edge dilutes the one
+  // mechanism protecting against that. They are also asymmetric and permanent:
+  // nothing prunes them, and the item at the far end never agreed.
+  //
+  // `refs` already existed as the deliberate channel. Inferring from prose as
+  // WELL meant there was no way to mention an item without linking it, so the
+  // caller had no choice to make. Now they do.
+  const refs: Reference[] = [];
+  const seen = new Set<number>();
+
+  // Reported rather than dropped, because agents were told the old behaviour and
+  // an edge that silently stops being made is the failure this file exists to
+  // stop, arriving from the other side. Named in prose, not linked, and told how
+  // to link it if that is what was meant.
+  const mentioned = referencesIn(args.text, identifier);
 
   // An explicit ref that names nothing is *reported*, where the same string
   // buried in prose is simply not a reference. The caller stated an intention
@@ -137,7 +174,18 @@ export async function linkReferences(
     }
   }
 
-  if (refs.length === 0) return rejected;
+  // Everything named in the outcome that the caller did not also declare. Said
+  // once each, after the rejects, so a caller can see what it would have got
+  // under the old behaviour and ask for it deliberately.
+  const notLinked: LinkedReference[] = mentioned
+    .filter((m) => !seen.has(m.sequence))
+    .map((m) => ({
+      readableId: m.readableId,
+      linked: false,
+      reason: 'named in the outcome, which does not create a relation — pass it in refs if it is one',
+    }));
+
+  if (refs.length === 0) return [...rejected, ...notLinked];
 
   // One listing resolves every reference, however many there are, and avoids
   // asking Plane to look up a readable id whose project we would then have to
@@ -150,6 +198,7 @@ export async function linkReferences(
     log.warn({ err, projectId: args.projectId }, 'could not resolve references');
     return [
       ...rejected,
+      ...notLinked,
       ...refs.map((r) => ({
         readableId: r.readableId,
         linked: false,
@@ -158,7 +207,7 @@ export async function linkReferences(
     ];
   }
 
-  const out: LinkedReference[] = [...rejected];
+  const out: LinkedReference[] = [...rejected, ...notLinked];
   for (const ref of refs) {
     const target = bySequence.get(ref.sequence);
     // An outcome naming its own item is the common case, not a mistake. An edge

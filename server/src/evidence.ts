@@ -23,11 +23,25 @@ export interface Evidence {
 
 /**
  * A hex run of 7-40 characters, which is how git abbreviates and spells a sha.
- * Bounded on both sides so a word like "deadbeef" inside prose still counts (it
- * is indistinguishable from a short sha, and a false positive here costs nothing)
- * while a long hex blob or a uuid segment does not masquerade as one.
+ *
+ * The neighbour test does the real work, and `\b` alone did not: a hyphen IS a
+ * word boundary, so every uuid handed over two "commits". Measured closing
+ * SYNC-87, whose outcome quoted the session id it had just produced —
+ * `b12e9747-49c2-4b77-bc72-c1a6fe82d1eb` yielded `b12e9747` and `c1a6fe82d1eb`
+ * alongside the three real shas.
+ *
+ * Harmless only while nothing checks. Turn evidence checking on and those two
+ * resolve to no commit, so a completion backed by three real ones is flagged for
+ * citing two that do not exist — and the flag that means "this claim of doneness
+ * is backed by nothing" fires hardest on the completions that showed their work,
+ * because a thorough outcome is exactly the kind that quotes an id.
+ *
+ * So a candidate is rejected when either neighbour is hex or a hyphen. A word
+ * like "deadbeef" in prose still counts, since it is indistinguishable from a
+ * short sha and a false positive there costs nothing; `deadbeef-cafe` does not,
+ * which is the trade this makes and is the right way round.
  */
-const COMMIT = /\b[0-9a-f]{7,40}\b/g;
+const COMMIT = /(?<![0-9a-f-])[0-9a-f]{7,40}(?![0-9a-f-])/g;
 const URL = /\bhttps?:\/\/[^\s<>"')]+/g;
 /** A path with an extension, optionally with :line — how anyone cites code. */
 const FILE = /\b[\w.-]+(?:\/[\w.-]+)+\.\w{1,10}(?::\d+)?\b/g;

@@ -310,10 +310,12 @@ export const CompleteBody = Held.extend({
     .max(50)
     .optional()
     .describe(
-      'Other work items this touched, e.g. ["SYNC-32"] — they become real relations. Work items ' +
-        'named in `outcome` are picked up automatically; use this when the list would clutter ' +
-        'the prose a human reads, which is the usual case if you harvested them from commit ' +
-        'messages. A ref naming nothing in this project is reported back, not dropped.',
+      'Other work items this touched, e.g. ["SYNC-32"] — they become real relations, and this ' +
+        'is the ONLY way to make one. Naming an item in `outcome` does not link it: an outcome ' +
+        'mentions items as data at least as often as it means them as relations, and a wrong ' +
+        'edge is permanent and shows up in the other item\'s briefing. Mentions are reported ' +
+        'back as unlinked so you can promote them here if you meant them. A ref naming nothing ' +
+        'in this project is reported back too, not dropped.',
     ),
   close: z.boolean().default(true),
 });

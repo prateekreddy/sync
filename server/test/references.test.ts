@@ -88,13 +88,13 @@ function fakePlane(opts: { known?: number[]; relateFails?: boolean; listFails?: 
 }
 
 describe('turning references into edges', () => {
-  it('links every item the outcome names', async () => {
+  it('links every item the caller declared', async () => {
     const plane = fakePlane();
-    const from = randomUUID();
     const out = await linkReferences(plane, {
       projectId: PROJECT,
-      fromId: from,
-      text: 'Supersedes SYNC-32. Follow-up captured as SYNC-40.',
+      fromId: randomUUID(),
+      text: 'Supersedes one of these.',
+      refs: ['SYNC-32', 'SYNC-40'],
     });
 
     expect(out.every((r) => r.linked)).toBe(true);
@@ -104,12 +104,13 @@ describe('turning references into edges', () => {
   });
 
   it('does not link an item to itself', async () => {
-    // An outcome naming its own id is the normal case; a self-edge is not.
+    // A completion naming its own id is the normal case; a self-edge is not.
     const plane = fakePlane();
     const out = await linkReferences(plane, {
       projectId: PROJECT,
       fromId: idFor(32),
-      text: 'Done in SYNC-32, which is this item.',
+      text: '',
+      refs: ['SYNC-32'],
     });
 
     expect(out).toEqual([]);
@@ -123,7 +124,8 @@ describe('turning references into edges', () => {
     const out = await linkReferences(plane, {
       projectId: PROJECT,
       fromId: randomUUID(),
-      text: 'Superseded by SYNC-999',
+      text: '',
+      refs: ['SYNC-999'],
     });
 
     expect(out).toEqual([
@@ -132,7 +134,7 @@ describe('turning references into edges', () => {
     expect(plane.rec.related).toEqual([]);
   });
 
-  it('costs nothing when the outcome names no work items', async () => {
+  it('costs nothing when nothing was declared and nothing named', async () => {
     let listed = 0;
     const plane = Object.assign(fakePlane(), {
       listWorkItems: async () => {
@@ -156,7 +158,8 @@ describe('turning references into edges', () => {
     const out = await linkReferences(plane, {
       projectId: PROJECT,
       fromId: randomUUID(),
-      text: 'Related to SYNC-7',
+      text: '',
+      refs: ['SYNC-7'],
     });
     expect(out[0]).toMatchObject({ linked: false, workItemId: idFor(7) });
     expect(out[0]?.reason).toContain('already linked');
@@ -167,22 +170,74 @@ describe('turning references into edges', () => {
     const out = await linkReferences(plane, {
       projectId: PROJECT,
       fromId: randomUUID(),
-      text: 'Superseded by SYNC-32',
+      text: '',
+      refs: ['SYNC-32'],
     });
-    expect(out[0]).toMatchObject({ readableId: 'SYNC-32', linked: false });
-    expect(out[0]?.reason).toContain('could not reach Plane');
+    expect(out.find((r) => r.readableId === 'SYNC-32')?.reason).toContain('could not reach Plane');
   });
 });
 
 /**
- * Prose parsing is the fallback for an agent that just writes the sentence.
- * `refs` is the interface for one that already knows — which is the normal case
- * when the references were harvested from commit messages, where a completion
- * spanning five commits might touch four items and pasting all four into the
- * outcome would clutter the only part a human reads.
+ * An outcome names work items as DATA at least as often as it means them as
+ * relations, and prose used to create edges from both.
+ *
+ * Measured on the closure of SYNC-88: its outcome reported that the top level
+ * goes from 65 roots to 7 and said which 7 — creating seven permanent
+ * `relates_to` edges to items it had nothing to do with. The better the
+ * completion, the worse the corruption, which is exactly backwards.
+ *
+ * Edges are not inert either: `claim` builds its briefing from them, handing
+ * over linked items open-first with their full text so an agent does not miss a
+ * requirement. Every false edge dilutes that.
  */
+describe('what an outcome merely mentions', () => {
+  it('does not link an item just because the prose names it', async () => {
+    const plane = fakePlane();
+    const out = await linkReferences(plane, {
+      projectId: PROJECT,
+      fromId: randomUUID(),
+      text: 'The seven that remain are SYNC-32 and SYNC-40.',
+    });
+
+    expect(plane.rec.related).toEqual([]);
+    expect(out.every((r) => !r.linked)).toBe(true);
+  });
+
+  it('says so rather than dropping it silently', async () => {
+    // Agents were told the old behaviour. A rule that changes without saying so
+    // is the same failure as an edge that silently was not made.
+    const plane = fakePlane();
+    const out = await linkReferences(plane, {
+      projectId: PROJECT,
+      fromId: randomUUID(),
+      text: 'Compare with SYNC-32.',
+    });
+
+    expect(out).toHaveLength(1);
+    expect(out[0]?.readableId).toBe('SYNC-32');
+    expect(out[0]?.reason).toContain('refs');
+  });
+
+  it('does not report one the caller also declared', async () => {
+    // Naming it in both places is the clearest possible statement of intent, and
+    // must not come back as a complaint.
+    const plane = fakePlane();
+    const out = await linkReferences(plane, {
+      projectId: PROJECT,
+      fromId: randomUUID(),
+      text: 'Supersedes SYNC-32.',
+      refs: ['SYNC-32'],
+    });
+
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ readableId: 'SYNC-32', linked: true });
+    expect(plane.rec.related).toHaveLength(1);
+  });
+});
+
 describe('references passed as data', () => {
-  it('links what the caller named, alongside anything in the prose', async () => {
+  it('links exactly what the caller named, and nothing the prose did', async () => {
+    // The prose mentions SYNC-32; only the two declared refs become edges.
     const plane = fakePlane();
     const out = await linkReferences(plane, {
       projectId: PROJECT,
@@ -192,10 +247,10 @@ describe('references passed as data', () => {
     });
 
     expect(out.filter((r) => r.linked).map((r) => r.readableId).sort()).toEqual([
-      'SYNC-32',
       'SYNC-40',
       'SYNC-7',
     ]);
+    expect(plane.rec.related.map((r) => r.to[0]).sort()).toEqual([idFor(7), idFor(40)].sort());
   });
 
   it('does not link the same item twice when prose and refs agree', async () => {
