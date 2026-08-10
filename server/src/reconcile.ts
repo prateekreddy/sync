@@ -148,12 +148,34 @@ export function classify(
       continue;
     }
 
-    // The lease is over. Our name should not still be on it.
-    if (assignees?.length && l.plane_user_id && assignees.includes(l.plane_user_id)) {
+    // The lease is over and the item is STILL SHOWING AS IN PROGRESS.
+    //
+    // The state condition is the whole rule, and leaving it out was very nearly
+    // expensive. Measured on the first live pass, 2026-08-10: without it this
+    // reported 65 items, every one of them finished. A completed item keeps a
+    // name on it because that is the record of who did it, and `mirrorComplete`
+    // sets the done state in the same write — so "ended lease, name still there"
+    // describes the normal end of every piece of work ever done here.
+    //
+    // The repair made it worse than a noisy count. `mirrorReturn` sets the item
+    // back to an unstarted state and clears the assignee, so the pass would have
+    // reopened 65 finished items and commented "Returned to the pool" on each.
+    // That is the reconciliation destroying the board it exists to protect.
+    //
+    // With the condition, the class means what the item that asked for it said:
+    // the lease is over and Plane never heard, so the item sits In Progress
+    // forever with a name on it and no one working it. Returning that to the
+    // pool is exactly right.
+    if (
+      group === 'started' &&
+      assignees?.length &&
+      l.plane_user_id &&
+      assignees.includes(l.plane_user_id)
+    ) {
       out.push({
         kind: 'staleAssignee',
         workItemId: l.work_item_id,
-        detail: `lease ended (${l.state}) but Plane still shows it assigned to the agent that held it`,
+        detail: `lease ended (${l.state}) but Plane still shows it in progress and assigned`,
       });
     }
   }

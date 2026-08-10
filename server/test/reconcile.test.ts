@@ -110,6 +110,25 @@ describe('comparing the board with the lease table', () => {
     ]);
   });
 
+  it('says nothing about a finished item that still names who did it', async () => {
+    // The one that nearly did real damage. Measured on the first live pass this
+    // reported 65 items, all of them finished: `mirrorComplete` sets the done
+    // state and the name stays as the record of who did the work, so "ended
+    // lease, name still there" describes the normal end of every task.
+    //
+    // And the repair for this class returns the item to the pool -- unstarted,
+    // unassigned, with a comment -- so without the state condition the pass
+    // would have reopened 65 completed items.
+    const id = randomUUID();
+    await held(id);
+    await pool.query(
+      `update lease set state = 'completed', ended_at = now(), expires_at = now()
+        where work_item_id = $1`,
+      [id],
+    );
+    expect(await kinds([item({ id, assignees: [AGENT_USER], state: 'done' })])).toEqual([]);
+  });
+
   it('never calls a human taking the work back a fault to be fixed', async () => {
     // SYNC-71: assigning the item to yourself is how a person revokes it. This
     // must be reported and never repaired, or the gateway silently undoes a
