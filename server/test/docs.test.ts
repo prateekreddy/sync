@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { accessSync, constants, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { NATIVE_TOOLS } from '../src/toolspec.js';
+import { RECOVERY } from '../src/errors.js';
 import { INSTRUCTIONS } from '../src/mcphttp.js';
 
 /**
@@ -83,6 +84,52 @@ describe('the skill covers the surface it claims to', () => {
 });
 
 /**
+ * Every refusal the gateway can produce is decoded somewhere the agent will look.
+ *
+ * troubleshooting.md's table is what the playbook points at when a call fails, and
+ * it listed eleven of fourteen codes. The gap was not neutral. `REVOKED` — a
+ * person took the item back in Plane — was missing, and the nearest row by name
+ * and by feel is `LEASE_EXPIRED`, which says "claim it again before continuing".
+ * That is the exact action `REVOKED` exists to forbid, and errors.ts keeps the two
+ * codes apart in a comment for that reason. An incomplete lookup table does not
+ * fail by saying nothing; it fails by making a neighbouring row look like the
+ * answer.
+ *
+ * `NEEDS_APPROVAL` was missing too, while SKILL.md described the gate that raises
+ * it at length without ever naming it — so the section that teaches the behaviour
+ * and the table that decodes the refusal had no term in common.
+ *
+ * Keyed on RECOVERY rather than on a list written out here: it is a
+ * Record<ErrorCode, string>, so it has every code by construction and a new one
+ * cannot be added without this failing.
+ */
+describe('every error code an agent can meet is documented', () => {
+  it('gives each one a row in the troubleshooting table', () => {
+    const table = read('skills/work-tracking/troubleshooting.md');
+    const undocumented = Object.keys(RECOVERY).filter((code) => !table.includes(`\`${code}\``));
+    expect(undocumented).toEqual([]);
+  });
+
+  it('does not invent codes the gateway cannot return', () => {
+    // The other direction: a row for a code that no longer exists teaches an agent
+    // to watch for something it will never see, and reads as coverage.
+    const table = read('skills/work-tracking/troubleshooting.md');
+    const cited = [...table.matchAll(/`([A-Z][A-Z_]{3,})`/g)].map((m) => m[1]!);
+    expect([...new Set(cited)].filter((c) => !(c in RECOVERY))).toEqual([]);
+  });
+
+  it('tells REVOKED and LEASE_EXPIRED apart where they are read', () => {
+    // The specific confusion, pinned. These two look alike and their recoveries
+    // are opposites, so the table has to say so rather than leaving an agent to
+    // notice — which is precisely what it did not do.
+    const table = read('skills/work-tracking/troubleshooting.md');
+    const revoked = table.split('\n').find((l) => l.includes('`REVOKED`')) ?? '';
+    expect(revoked).toMatch(/do NOT claim it again/);
+    expect(revoked).toMatch(/LEASE_EXPIRED/);
+  });
+});
+
+/**
  * The limits Anthropic publishes for skill authoring, checked rather than
  * remembered. Each of these was already wrong once: the body ran past the budget,
  * and the plugin advertised a skill directory that was empty.
@@ -103,7 +150,13 @@ describe('the playbook obeys the authoring limits', () => {
 
     for (const f of skillFiles()) {
       if (f === 'SKILL.md') continue;
-      expect(links(read(`skills/work-tracking/${f}`))).toEqual(['SKILL.md']);
+      const out = links(read(`skills/work-tracking/${f}`));
+      // Every link must point back at SKILL.md — but a reference file may point
+      // back more than once. This asserted exactly one for a while, which quietly
+      // made "cross-reference the parent where it helps" a thing you could only
+      // do at most once per file, for no reason anybody would have defended.
+      expect(out.filter((l) => l !== 'SKILL.md')).toEqual([]);
+      expect(out.length).toBeGreaterThan(0);
     }
   });
 

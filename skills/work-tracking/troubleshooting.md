@@ -48,8 +48,8 @@ a capability mismatch. Guess only if that is somehow unavailable, in this order:
    labelled with one of them. A capability list you did not expect is the usual reason a project
    full of work looks empty to exactly one agent.
 
-A short `next` is a page, not a verdict — see **Looking around** above for the tool that answers
-each of those without guessing.
+A short `next` is a page, not a verdict — see **Looking around** in [SKILL.md](SKILL.md) for the
+tool that answers each of those without guessing.
 
 ## What the gateway refuses, and why
 
@@ -66,21 +66,31 @@ same effect — the route not taken is the invariant.
 
 ## When a call fails
 
-Every refusal carries a code and a recovery line. The ones that change what you do next:
+Every refusal carries a code and a recovery line. This is all of them — if you meet a code that is
+not here, the gateway is newer than this file and its own recovery line is the authority:
 
 | Code | What it means | Do |
 |---|---|---|
 | `NO_WORK` | nothing ready matched | call `why` on an item you expected, then back off — not an error |
 | `NOT_CLAIMABLE` | someone holds it, or it is not ready | if somebody holds it the message names **who and until when** — wait and retry when that is soon, otherwise take something else. Otherwise it lists what is not ready; `why` gives the fuller picture |
+| `NEEDS_APPROVAL` | it is assigned to a person, and nobody has said you may take it | ask the person you are working with, naming who holds it, and wait for an answer. You cannot clear this yourself — that is the point. If they agree, `claim` it again by id and the gateway puts the question to them. See **Work with someone's name on it** in [SKILL.md](SKILL.md) |
 | `NOT_HOLDER` | you do not hold this lease | stop working the item; retrying cannot help |
 | `STALE_EPOCH` | **your lease lapsed and someone else reclaimed it** | **discard the work — do not submit it** — and claim fresh |
 | `LEASE_EXPIRED` | lapsed, nobody took it | claim it again before continuing |
+| `REVOKED` | **a person took this item back in Plane while you held it** — they unassigned it or closed it | **stop, discard what you did, and do NOT claim it again.** Read this against `LEASE_EXPIRED` above, which looks similar and means the opposite: nothing lapsed here, somebody decided this is not your work, and re-claiming would undo their decision. Pick something else; if you think it was a mistake, say so rather than working around it |
 | `LEASE_ENDED` | already completed or released | terminal; do not re-submit, claim something else |
+| `NOT_FOUND` | no such item in this project | check the id — a uuid from another project lands here too. `search` resolves a title, `plane_issues` (`get_by_identifier`) resolves a `SYNC-42` |
 | `INVALID` | a field did not match the schema | read the lines under the message — each names the field, the limit, and what you sent. `outcome` is capped at 2000 characters, which is the one most people meet |
 | `IDEMPOTENCY_MISMATCH` | that key was used with a different body | your bug — use a new key, do not retry the old one |
 | `FORBIDDEN` | your token lacks the capability | do not retry; ask the operator |
 | `UNAUTHENTICATED` | token missing, revoked, or replaced | stop — no tool will work; ask for a new token |
 | `UPSTREAM` | Plane was unreachable or errored | retry with backoff; nothing you did is wrong |
+
+**Three of these mean your work is already lost, and they are easy to confuse.** `STALE_EPOCH` and
+`REVOKED` both mean stop and discard — the first because another agent now holds the item, the
+second because a person took it back. Only `LEASE_EXPIRED` is recoverable by claiming again. Reading
+`REVOKED` as `LEASE_EXPIRED` is the expensive mistake: it looks like a retry and is actually
+overruling somebody.
 
 `STALE_EPOCH` is the one worth reading twice: whatever you computed rests on state another agent has
 since changed. Writing it anyway is exactly the silent-wrong-result failure everything else here
