@@ -78,10 +78,26 @@ while true; do
       # A verdict, not a failure: the credential was cleared because another
       # session claimed the item. Said once -- repeating it every two minutes
       # would train people to ignore the channel that carries the one message
-      # that matters.
+      # that matters. Removing the file is what makes it once: the next pass
+      # reads no URL and stays quiet.
       echo "sync: your claim is no longer yours -- another session took it, or the lease was revoked. Discard that work."
       rm -f "$WATCH_FILE"
-      BACKOFF=$MAX_BACKOFF
+      # NOT a reason to back off, and this used to set the maximum.
+      #
+      # Backoff exists for one thing: a gateway that is down must not be polled
+      # every two seconds by every open session. That is the `else` branch, and
+      # it is right there. This branch has just deleted the credential, so every
+      # later pass reads no URL and issues no request at all -- there is nothing
+      # left to back off from.
+      #
+      # What it cost, measured 2026-08-10: only a 200 clears the backoff, and
+      # after this branch no request is made, so no 200 can arrive. The monitor
+      # latched at 1020s per pass for the rest of the session. The next claim
+      # then wrote a fresh credential nothing looked at for 5m11s -- against a
+      # default lease TTL of 600s. A single 410, which is an ORDINARY event,
+      # left the following lease unwatched for most of its life, which is the
+      # collision this whole process exists to prevent.
+      BACKOFF=0
     elif [ "$code" = "200" ]; then
       BACKOFF=0
 

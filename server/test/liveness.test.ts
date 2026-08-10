@@ -393,3 +393,116 @@ describe('what the push fence acts on', () => {
     expect(fence(command).stderr).toMatch(/could not reach the gateway/i);
   });
 });
+
+/**
+ * What the monitor does after a 410, which is an ordinary event and not a fault.
+ *
+ * A 410 means the credential is gone -- somebody else claimed the item, or the
+ * lease was revoked. The monitor says so once, deletes the file, and that is
+ * correct. What was not correct is that it also went to MAXIMUM backoff, and
+ * backoff clears only on a 200. Having just deleted the credential it makes no
+ * further requests, so no 200 can ever arrive: the monitor latched at 1020s per
+ * pass for the rest of the session.
+ *
+ * Measured live 2026-08-10 on a real session: `sleep 1020` with 1016s elapsed,
+ * and the claim made at 09:28:41 went unpolled until 09:33:52 -- 5m11s against a
+ * default lease TTL of 600s. So one ordinary 410 left the NEXT lease unwatched
+ * for most of its life, which is precisely the collision the monitor exists to
+ * prevent.
+ *
+ * Driven through the real script rather than reasoned about, because the bug was
+ * in the interaction between two branches that each read correctly on their own.
+ * SYNC_POLL_SECONDS collapses the interval; MAX_BACKOFF is not configurable,
+ * which is what makes this a decisive test -- if the latch returns, the monitor
+ * sleeps 901s and the assertion times out rather than quietly passing.
+ */
+describe('the monitor after a verdict it cannot appeal', () => {
+  const gateway = async () => {
+    const port = 18600 + Math.floor(process.hrtime()[1] % 300);
+    const script = join(mkdtempSync(join(tmpdir(), 'sync-gw2-')), 'gw.py');
+    writeFileSync(
+      script,
+      [
+        'import http.server, json, sys',
+        'state = {"n": 0}',
+        'class H(http.server.BaseHTTPRequestHandler):',
+        '    def do_GET(self):',
+        '        want = "/v1/watch/tok-%d" % state["n"]',
+        '        if self.path != want:',
+        '            self.send_response(410); self.end_headers(); return',
+        '        state["n"] += 1',
+        '        body = json.dumps({"watchUrl": "http://127.0.0.1:%d/v1/watch/tok-%d" % (PORT, state["n"])}).encode()',
+        '        self.send_response(200)',
+        '        self.send_header("content-type", "application/json")',
+        '        self.send_header("content-length", str(len(body)))',
+        '        self.end_headers(); self.wfile.write(body)',
+        '    def log_message(self, *a): pass',
+        'PORT = int(sys.argv[1])',
+        'http.server.HTTPServer(("127.0.0.1", PORT), H).serve_forever()',
+      ].join('\n'),
+    );
+    const proc = spawn('python3', [script, String(port)], { stdio: 'ignore', detached: true });
+    for (let i = 0; i < 100; i++) {
+      try {
+        execFileSync('curl', ['-sS', '-o', '/dev/null', `http://127.0.0.1:${port}/ping`], {
+          timeout: 500,
+        });
+        break;
+      } catch {
+        execFileSync('sleep', ['0.05']);
+      }
+    }
+    return { port, stop: () => proc.kill() };
+  };
+
+  /** Poll a predicate rather than sleeping a guessed amount. */
+  const until = async (what: string, ok: () => boolean, budgetMs = 15_000) => {
+    const deadline = Date.now() + budgetMs;
+    while (Date.now() < deadline) {
+      if (ok()) return;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error(`timed out after ${budgetMs}ms waiting for: ${what}`);
+  };
+
+  it('picks up the next claim in one interval rather than seventeen minutes', async () => {
+    const gw = await gateway();
+    const base = `http://127.0.0.1:${gw.port}/v1/watch`;
+    const dir = mkdtempSync(join(tmpdir(), 'sync-mon-'));
+    const session = 'a-session';
+    const file = join(dir, `${session}.watch`);
+
+    // A credential this gateway has retired. Indistinguishable, by design, from
+    // one cleared because another agent claimed the item -- both answer 410.
+    writeFileSync(file, `${base}/tok-99`);
+
+    const mon = spawn(join(plugin, 'bin', 'sync-monitor'), [], {
+      stdio: 'ignore',
+      env: {
+        PATH: process.env['PATH'] ?? '',
+        HOME: dir,
+        SYNC_STATE_DIR: dir,
+        CLAUDE_CODE_SESSION_ID: session,
+        SYNC_POLL_SECONDS: '1',
+      },
+    });
+
+    try {
+      // It saw the verdict: the credential is removed, which is also what stops
+      // the message repeating.
+      await until('the retired credential to be discarded', () => !existsSync(file));
+
+      // Now the agent claims something new, and harvest writes a live credential.
+      writeFileSync(file, `${base}/tok-0`);
+
+      // The whole point. Latched, the monitor is asleep for 901s and this times
+      // out; unlatched, it polls on the next ordinary pass and rotates.
+      await until('the new credential to be polled and rotated', () =>
+        existsSync(file) ? readFileSync(file, 'utf8').includes('tok-1') : false,
+      );
+    } finally {
+      mon.kill();
+      gw.stop();
+    }
+  }, 40_000);
+});
