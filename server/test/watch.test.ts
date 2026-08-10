@@ -25,6 +25,9 @@ const PROJECT = randomUUID();
 const BASE = 'https://gw.example';
 const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex');
 
+/** Just the fields these tests read off a queued mirror intent. */
+interface MirrorIntentRow { kind: string; holder?: string }
+
 /** The raw capability out of a URL, which is all the route passes on. */
 const capOf = (url: string): string => url.slice(url.lastIndexOf('/') + 1);
 
@@ -705,5 +708,96 @@ describe('a revocation, over time', () => {
     const { workItemId, raw } = await revoked(90);
     await pollWatch(pool, raw, BASE);
     expect((await stateOf(workItemId)).state).toBe('revoked');
+  });
+});
+
+/**
+ * The closed laptop, all the way through — including what happens NEXT.
+ *
+ * Every existing reinstatement test stops at "Restored." Measured end to end
+ * against production on 2026-08-10, that is one sweep short of the truth:
+ *
+ *   12:20:19  lease lapses; the sweeper's mirrorReturn clears the assignee and
+ *             sets an unstarted state in Plane
+ *   12:21:24  monitor polls; the gateway reinstates the lease
+ *   12:21:25  revoke.ts sees held + mirrored + no assignee in Plane, calls it a
+ *             human takeback, revokes it and labels the item needs-human
+ *
+ * 847 milliseconds. The case this whole file exists for told the agent its work
+ * had been stolen and made the item unclaimable by anyone.
+ */
+describe('what a reinstatement owes Plane', () => {
+  const owed = async (workItemId: string) => {
+    const { rows } = await pool.query<{ mirrored: boolean; pending: MirrorIntentRow | null }>(
+      'select mirrored, pending_mirror as pending from lease where work_item_id = $1',
+      [workItemId],
+    );
+    return rows[0]!;
+  };
+
+  it('records that Plane must be told, rather than disagreeing with it silently', async () => {
+    const { workItemId, raw } = await held();
+    await ageTo(workItemId, '10 minutes');
+
+    await pollWatch(pool, raw, BASE);
+
+    const row = await owed(workItemId);
+    expect(row.pending?.kind).toBe('reclaim');
+    expect(row.pending?.holder).toBe('agent:t');
+  });
+
+  it('marks the mirror unlanded, which is what stops the revoke sweep', async () => {
+    // revoke.ts only considers leases with mirrored = true. This single flag is
+    // what closes the race, rather than reordering two background passes
+    // against each other and hoping.
+    const { workItemId, raw } = await held();
+    await ageTo(workItemId, '10 minutes');
+
+    await pollWatch(pool, raw, BASE);
+
+    expect((await owed(workItemId)).mirrored).toBe(false);
+  });
+
+  it('owes nothing when the lease never lapsed', async () => {
+    // An ordinary heartbeat must not queue a Plane write every two minutes, nor
+    // undo a mirror that has already landed. `claim` leaves mirrored false and
+    // the real claim path sets it once Plane accepts, so the fixture says so
+    // here rather than testing against a state no live lease is ever in.
+    const { workItemId, raw } = await held();
+    await pool.query('update lease set mirrored = true where work_item_id = $1', [workItemId]);
+
+    await pollWatch(pool, raw, BASE);
+
+    const row = await owed(workItemId);
+    expect(row.pending).toBeNull();
+    expect(row.mirrored).toBe(true);
+  });
+});
+
+/**
+ * A heartbeat may push an expiry out. It may never pull one in.
+ *
+ * Found from the other box's raw figures in the two-box run: it claimed with
+ * ttlSeconds=1800 and was told 12:51:00, and two minutes later the lease expired
+ * at 12:33:40. The first poll REPLACED the agreed TTL with ten minutes.
+ */
+describe('polling and the agreed TTL', () => {
+  it('does not shorten a lease claimed for longer than one extension', async () => {
+    const { workItemId, raw } = await held({ ttlSeconds: 1800 });
+    const before = await expiryOf(workItemId);
+
+    await pollWatch(pool, raw, BASE);
+
+    expect((await expiryOf(workItemId)).getTime()).toBe(before.getTime());
+  });
+
+  it('still extends a lease shorter than one extension', async () => {
+    // The whole point of the heartbeat, and it must survive the fix above.
+    const { workItemId, raw } = await held({ ttlSeconds: 60 });
+    const before = await expiryOf(workItemId);
+
+    await pollWatch(pool, raw, BASE);
+
+    expect((await expiryOf(workItemId)).getTime()).toBeGreaterThan(before.getTime());
   });
 });

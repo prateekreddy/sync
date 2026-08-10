@@ -304,7 +304,15 @@ export async function pollWatch(
       await pool.query(
         `update lease
             set heartbeat_at = now(),
-                expires_at   = now() + make_interval(secs => $2)
+                -- Never backwards. This was a flat assignment, so the FIRST
+                -- poll replaced whatever TTL the agent asked for with ten
+                -- minutes: a claim for 1800s measured 12:51 at claim time and
+                -- 12:33 two minutes later, seventeen minutes gone. Invisible
+                -- while the monitor lives, because each poll adds another ten;
+                -- it bites exactly when the monitor stops, and then the agent
+                -- that deliberately asked for thirty minutes has ten and was
+                -- never told. A heartbeat may push a lease out, never pull it in.
+                expires_at   = greatest(expires_at, now() + make_interval(secs => $2))
           where work_item_id = $1 and state = 'held'`,
         [row.work_item_id, EXTEND_S],
       );
@@ -346,7 +354,39 @@ export async function pollWatch(
               expires_at   = now() + make_interval(secs => $2),
               heartbeat_at = now(),
               ended_at     = null,
-              end_reason   = null
+              end_reason   = null,
+              -- Plane is owed a write, and saying so is what makes this work.
+              --
+              -- Reinstating used to touch the lease table only, and the lapse
+              -- that preceded it had already told Plane the opposite: the
+              -- sweeper's mirrorReturn clears the assignee and sets an unstarted
+              -- state. So the gateway handed the work back while the board still
+              -- showed it free, and revoke.ts -- whose definition of a human
+              -- takeback is "held, mirrored, and no assignee in Plane" -- ended
+              -- the lease on its next pass and labelled the item needs-human.
+              --
+              -- Measured end to end 2026-08-10 on SYNCE2E-3: restored at
+              -- 12:21:24.416, revoked at 12:21:25.263. The closed laptop, which
+              -- is the case this whole file exists for, told the agent its work
+              -- had been stolen 847ms after giving it back, and left the item
+              -- unclaimable by anyone.
+              --
+              -- Recording the debt fixes both halves with one clause. The drain
+              -- performs the Plane write within a sweep, restoring assignee and
+              -- state; and revoke.ts requires mirrored = true, so it skips this
+              -- row until that write lands. The race is closed rather than
+              -- reordered.
+              mirrored        = false,
+              pending_mirror  = jsonb_build_object(
+                'kind',        'reclaim',
+                'projectId',   lease.project_id,
+                'holder',      lease.holder,
+                'planeUserId', ( select t.plane_user_id
+                                   from agent_token t
+                                  where 'agent:' || t.name = lease.holder )
+              ),
+              mirror_attempts = 0,
+              mirror_after    = now()
         where work_item_id = $1
           and watch_sha256 = $3
           -- Expired or lapsed only. A finished or revoked lease is excluded here
