@@ -579,3 +579,87 @@ describe('the monitor after a verdict it cannot appeal', () => {
     }
   }, 40_000);
 });
+
+/**
+ * The monitor says which of the three callers it is.
+ *
+ * The monitor, the push fence and the resume report all poll the same endpoint,
+ * and only the monitor's poll is evidence that liveness is working. Being
+ * indistinguishable on the wire meant the gateway read "something polled" as
+ * "the monitor is running", so a session whose monitor was dead stayed silent as
+ * long as an agent kept running `git push`. Pinned here rather than trusted,
+ * because it is one word in one curl invocation and nothing else would notice
+ * if it were dropped.
+ */
+describe('identifying the caller to the gateway', () => {
+  /** A gateway that reports back the User-Agent it was given. */
+  const echoUa = async () => {
+    const port = 19300 + Math.floor(process.hrtime()[1] % 300);
+    const script = join(mkdtempSync(join(tmpdir(), 'sync-ua-')), 'gw.py');
+    writeFileSync(
+      script,
+      [
+        'import http.server, json, sys',
+        'class H(http.server.BaseHTTPRequestHandler):',
+        '    def do_GET(self):',
+        '        b = json.dumps({"ua": self.headers.get("User-Agent", "")}).encode()',
+        '        self.send_response(200)',
+        '        self.send_header("content-type", "application/json")',
+        '        self.send_header("content-length", str(len(b)))',
+        '        self.end_headers(); self.wfile.write(b)',
+        '    def log_message(self, *a): pass',
+        'PORT = int(sys.argv[1])',
+        'http.server.HTTPServer(("127.0.0.1", PORT), H).serve_forever()',
+      ].join('\n'),
+    );
+    const proc = spawn('python3', [script, String(port)], { stdio: 'ignore', detached: true });
+    for (let i = 0; i < 100; i++) {
+      try {
+        execFileSync('curl', ['-sS', '-o', '/dev/null', `http://127.0.0.1:${port}/x`], {
+          timeout: 500,
+        });
+        break;
+      } catch {
+        execFileSync('sleep', ['0.05']);
+      }
+    }
+    return { port, stop: () => proc.kill() };
+  };
+
+  const pollAs = (port: number, who?: string) => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-ua-'));
+    const file = join(dir, 'a.watch');
+    writeFileSync(file, `http://127.0.0.1:${port}/v1/watch/c`);
+    const arg = who ? ` "${who}"` : '';
+    execFileSync(
+      '/bin/sh',
+      [
+        '-c',
+        `SYNC_BIN="${join(plugin, 'bin')}"; . "$SYNC_BIN/sync-paths.sh"; sync_poll "${file}" "${file}.body"${arg}`,
+      ],
+      { encoding: 'utf8', env: { PATH: process.env['PATH'] ?? '', HOME: dir } },
+    );
+    return JSON.parse(readFileSync(`${file}.body`, 'utf8')).ua as string;
+  };
+
+  it('sends sync-monitor when the monitor polls', async () => {
+    const gw = await echoUa();
+    try {
+      expect(pollAs(gw.port, 'sync-monitor')).toBe('sync-monitor');
+    } finally {
+      gw.stop();
+    }
+  }, 30_000);
+
+  it('never claims to be the monitor by default', async () => {
+    // The fence and the resume report call sync_poll without saying who they
+    // are. A default of "monitor" would make every `git push` look like proof
+    // of liveness, which is the bug this exists to prevent.
+    const gw = await echoUa();
+    try {
+      expect(pollAs(gw.port)).not.toMatch(/^sync-monitor/);
+    } finally {
+      gw.stop();
+    }
+  }, 30_000);
+});

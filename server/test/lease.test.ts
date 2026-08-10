@@ -370,7 +370,16 @@ describe('lease record', () => {
 describe('noticing that a liveness monitor is not running', () => {
   const holder = () => `agent:t-mon-${randomUUID().slice(0, 8)}/w`;
 
-  /** A finished lease of a given age and duration, optionally ever polled. */
+  /**
+   * A finished lease of a given age and duration, optionally ever polled.
+   *
+   * `polled` now records the MONITOR having been seen, on agent_token, rather
+   * than moving heartbeat_at on the lease. Both are written here because both
+   * happen for real -- but only the first is what monitorSeen reads, and that is
+   * the whole point of the change: heartbeat_at is reset by the next claim, and
+   * is moved by the push fence and the resume report just as readily as by the
+   * monitor.
+   */
   const past = async (h: string, opts: { minutes: number; polled: boolean }) => {
     const workItemId = randomUUID();
     await claim(pool, { workItemId, projectId: PROJECT, holder: h, ttlSeconds: 600 });
@@ -383,8 +392,18 @@ describe('noticing that a liveness monitor is not running', () => {
         where work_item_id = $1`,
       [workItemId, opts.minutes, opts.polled],
     );
+    if (opts.polled) await monitorPolled(h);
     return workItemId;
   };
+
+  /** The agent's monitor checked in just now. */
+  const monitorPolled = (h: string) =>
+    pool.query(
+      `insert into agent_token (name, token_sha256, monitor_seen_at)
+       values (replace($1, 'agent:', ''), $2, now())
+       on conflict (name) do update set monitor_seen_at = now()`,
+      [h, randomUUID()],
+    );
 
   it('says nothing about an agent it has never seen', async () => {
     // A new agent's first claim must not cry wolf: no history is not evidence.
@@ -423,6 +442,51 @@ describe('noticing that a liveness monitor is not running', () => {
     const h = holder();
     await past(h, { minutes: 1, polled: false });
     expect(await monitorSeen(pool, h)).toEqual({ known: false, polled: false });
+  });
+
+  it('does not lose the proof when the item is claimed again', async () => {
+    // The defect this was rewritten for. Evidence used to live in the lease row
+    // as heartbeat_at > claimed_at, and `claim` upserts that row and resets both
+    // -- so claiming an item erased the proof for the item most likely to carry
+    // it, the one held longest, and then the reply asked whether the proof
+    // existed. Measured 2026-08-10 on SYNC-87: history showed a poll 11s after
+    // the claim, the re-claim wiped it, and the warning fired.
+    const h = holder();
+    const id = await past(h, { minutes: 45, polled: true });
+    expect((await monitorSeen(pool, h)).polled).toBe(true);
+
+    await claim(pool, { workItemId: id, projectId: PROJECT, holder: h, ttlSeconds: 600 });
+
+    expect((await monitorSeen(pool, h)).polled).toBe(true);
+  });
+
+  it('still warns when the hooks are polling but the monitor is not', async () => {
+    // The other direction, and the one that made the warning useless where it
+    // mattered most. The push fence and the resume report poll the same endpoint
+    // and move heartbeat_at exactly as the monitor does, so a session whose
+    // monitor was dead looked healthy as long as an agent kept running git push.
+    // On 2026-08-10 that session existed, with the monitor latched in a 900s
+    // backoff while its hooks polled happily.
+    const h = holder();
+    const id = await past(h, { minutes: 45, polled: false });
+    // A hook poll, which is all heartbeat_at ever proved.
+    await pool.query('update lease set heartbeat_at = now() where work_item_id = $1', [id]);
+
+    expect(await monitorSeen(pool, h)).toEqual({ known: true, polled: false });
+  });
+
+  it('stops trusting a monitor that has gone quiet', async () => {
+    // Seen once, long ago, is not seen now: the monitor polls every two minutes,
+    // so half an hour of silence is not a slow network.
+    const h = holder();
+    await past(h, { minutes: 45, polled: true });
+    await pool.query(
+      `update agent_token set monitor_seen_at = now() - interval '2 hours'
+        where 'agent:' || name = $1`,
+      [h],
+    );
+
+    expect((await monitorSeen(pool, h)).polled).toBe(false);
   });
 });
 

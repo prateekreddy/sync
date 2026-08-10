@@ -75,13 +75,27 @@ sync_watch_file() {
 # this could fail in.
 #
 # So the rotation is persisted here, once, and all three callers poll through it.
+# $3 names the caller, and the gateway acts on it.
+#
+# Three things poll this endpoint -- the monitor, the push fence and the resume
+# report -- and only the monitor's poll says anything about whether liveness is
+# working. They were indistinguishable on the wire, so the gateway read "something
+# polled" as "the monitor is running" and stayed quiet about sessions whose
+# monitor was dead while their hooks fired. Measured 2026-08-10: that session
+# existed, with the monitor latched in a 900s backoff.
+#
+# Sent as a User-Agent rather than a query parameter because the credential is in
+# the path, and query strings are the part of a URL most likely to be logged or
+# copied. Default is deliberately not the monitor: a caller that forgets to say
+# what it is must not be counted as proof of liveness.
 sync_poll() {
   _file=$1
   _body=$2
+  _who=${3:-sync-hook}
   _url=$(cat "$_file" 2>/dev/null || true)
   [ -n "$_url" ] || { printf '000'; return 1; }
 
-  _code=$(curl -sS -m 20 -o "$_body" -w '%{http_code}' "$_url" 2>/dev/null) || _code=000
+  _code=$(curl -sS -m 20 -A "$_who" -o "$_body" -w '%{http_code}' "$_url" 2>/dev/null) || _code=000
 
   # Written before the caller is told anything, so a crash mid-poll costs a
   # message rather than the credential.

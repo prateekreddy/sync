@@ -71,7 +71,11 @@ while true; do
     # Rotation is persisted inside sync_poll now, shared with the fence and the
     # resume report. It used to be handled only here, which is precisely why the
     # other two broke the credential.
-    code=$(sync_poll "$WATCH_FILE" "$tmp")
+    # Named, because this is the one poll that proves liveness is working. The
+    # gateway records it against the agent and warns on a claim when it has not
+    # been heard from; the fence and the resume report poll the same endpoint and
+    # must not be mistaken for it.
+    code=$(sync_poll "$WATCH_FILE" "$tmp" "sync-monitor")
     body=$(cat "$tmp" 2>/dev/null); rm -f "$tmp"
 
     if [ "$code" = "410" ]; then

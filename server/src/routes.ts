@@ -371,7 +371,20 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
 
   app.get<{ Params: { capability: string } }>('/v1/watch/:capability', watchOpts, async (req, reply) => {
     const base = publicBase(deps.publicUrl, req.headers, req.protocol);
-    const state = await pollWatch(pool, req.params.capability, base);
+    // Which of the three callers this is. The monitor, the push fence and the
+    // resume report all poll here, and only the monitor says anything about
+    // liveness — so the gateway used to read "something polled" as "the monitor
+    // is running" and go quiet on sessions whose monitor was dead but whose
+    // hooks were firing.
+    //
+    // A User-Agent rather than a query parameter, because the credential is in
+    // the path and query strings are the part of a URL most likely to be logged,
+    // copied or trimmed by something in the middle. An older plugin sends
+    // nothing recognisable and is simply never counted as a monitor, which
+    // errs toward warning rather than toward false silence.
+    const ua = req.headers['user-agent'];
+    const fromMonitor = typeof ua === 'string' && ua.startsWith('sync-monitor');
+    const state = await pollWatch(pool, req.params.capability, base, fromMonitor);
     if (!state) {
       // Two very different things arrive here, and until 2026-08-10 they shared
       // a status code and therefore a meaning.

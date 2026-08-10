@@ -577,12 +577,17 @@ export async function lastWorkedOn(
 const POLL_PROOF_MS = 6 * 60_000;
 
 /**
- * Whether this agent's liveness monitor has ever been seen running.
+ * How long a monitor may be quiet before it is treated as gone.
  *
- * The monitor keeps a claim alive by polling its watch URL, and a poll is the
- * only thing that moves `heartbeat_at` past `claimed_at`. So the gateway can
- * tell, without any cooperation from the agent's machine, whether the thing that
- * is supposed to be protecting its work exists.
+ * It polls every two minutes, so anything beyond a few missed intervals is not
+ * a slow network. Generous rather than tight, because the cost of being wrong is
+ * asymmetric: a false alarm tells someone to reinstall a working plugin, which
+ * is how a real warning gets trained into background noise.
+ */
+const MONITOR_QUIET_MS = 30 * 60_000;
+
+/**
+ * Whether this agent's liveness monitor is running.
  *
  * This is here because the whole chain was broken for weeks and every part of it
  * reported success — the hook matcher never matched, so no credential was ever
@@ -591,17 +596,40 @@ const POLL_PROOF_MS = 6 * 60_000;
  * off is worse than no guard, and the gateway is the one participant that can
  * see the absence.
  *
- * Returns false only on evidence: at least one lease that lived long enough for
- * a poll to be expected, and no poll on any of them. A new agent with no history
- * says nothing rather than crying wolf on its first claim.
+ * It used to INFER this from `heartbeat_at > claimed_at` on the lease table, and
+ * that was wrong in both directions:
+ *
+ * - `claim` upserts the lease row and resets both columns, so the evidence was a
+ *   snapshot of the current claim rather than history — and claiming an item
+ *   erased the proof for the item most likely to carry it, the one held longest.
+ *   The claim destroyed the record, then asked whether the record existed.
+ * - The push fence and the resume report poll the same endpoint and move
+ *   `heartbeat_at` identically, so it detected "something polled". A session
+ *   whose monitor was dead while its hooks fired looked perfectly healthy — and
+ *   on 2026-08-10 exactly that session existed, with the monitor latched in a
+ *   900s backoff.
+ *
+ * Now it reads a fact the monitor records about itself (migration 013), on
+ * `agent_token`, where no claim can overwrite it.
+ *
+ * `known` still gates on the lease table, and deliberately: an agent that has
+ * never held anything long enough for a poll to be expected gets silence rather
+ * than a warning on its very first claim.
  */
 export async function monitorSeen(
   pool: Pool,
   holder: string,
 ): Promise<{ known: boolean; polled: boolean }> {
-  const { rows } = await pool.query<{ total: string; polled: string }>(
+  const { rows } = await pool.query<{ total: string; polled: boolean }>(
     `select count(*)::text as total,
-            count(*) filter (where heartbeat_at > claimed_at)::text as polled
+            -- A scalar subquery, so a holder with no token row still gets an
+            -- honest count rather than no row at all. It reads false, which errs
+            -- toward warning -- the safe direction for a guard.
+            coalesce(
+              ( select t.monitor_seen_at > now() - make_interval(secs => $3)
+                  from agent_token t
+                 where 'agent:' || t.name = $1 ),
+              false) as polled
        from lease
       where holder = $1
         and claimed_at > now() - interval '7 days'
@@ -609,11 +637,10 @@ export async function monitorSeen(
         -- second ago as ten minutes old, so every agent's first claim warned that
         -- its monitor was missing before the monitor had had a chance to poll.
         and coalesce(ended_at, now()) - claimed_at > make_interval(secs => $2)`,
-    [holder, POLL_PROOF_MS / 1000],
+    [holder, POLL_PROOF_MS / 1000, MONITOR_QUIET_MS / 1000],
   );
   const total = Number(rows[0]?.total ?? 0);
-  const polled = Number(rows[0]?.polled ?? 0);
-  return { known: total > 0, polled: polled > 0 };
+  return { known: total > 0, polled: rows[0]?.polled ?? false };
 }
 
 /**

@@ -136,6 +136,7 @@ interface Row {
   claimed_at: Date;
   expires_at: Date;
   end_reason: string | null;
+  holder: string;
 }
 
 /**
@@ -198,10 +199,20 @@ export async function pollWatch(
   pool: Pool,
   raw: string,
   publicUrl: string,
+  /**
+   * This poll came from the liveness monitor rather than from a hook.
+   *
+   * Three callers poll this endpoint — the monitor, the push fence and the
+   * resume report — and only the first says anything about liveness. They were
+   * indistinguishable, so "has anything polled" was being read as "the monitor
+   * is running", and a session whose monitor was dead while its hooks fired
+   * looked healthy. See migration 013.
+   */
+  fromMonitor = false,
 ): Promise<WatchState | null> {
   const hash = sha256(raw);
   const { rows } = await pool.query<Row>(
-    `select work_item_id, session_id, state, epoch, claimed_at, expires_at, end_reason
+    `select work_item_id, session_id, state, epoch, claimed_at, expires_at, end_reason, holder
        from lease
       where watch_expires_at > now()
         and ( watch_sha256 = $1
@@ -213,6 +224,21 @@ export async function pollWatch(
     [hash, WATCH_GRACE_S],
   );
   if (rows.length === 0) return null;
+
+  // Recorded before anything else is decided, and recorded even when every lease
+  // below turns out to be stale: the question this answers is "is the monitor
+  // running", and a monitor polling for work that was taken from it is still a
+  // monitor that is running. Tying it to a successful extension would go quiet
+  // exactly when an agent most needs to be believed.
+  //
+  // `holder` is 'agent:' || agent_token.name; see auth.ts.
+  if (fromMonitor) {
+    await pool.query(
+      `update agent_token set monitor_seen_at = now()
+        where 'agent:' || name = any($1::text[])`,
+      [[...new Set(rows.map((r) => r.holder))]],
+    );
+  }
 
   const say: string[] = [];
   const holding: string[] = [];

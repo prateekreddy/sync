@@ -570,3 +570,79 @@ describe('one session cannot speak for another', () => {
     expect(rows[0]!.session_id).toBe('s-abc');
   });
 });
+
+/**
+ * Telling the monitor apart from the hooks.
+ *
+ * Three things poll this endpoint: the liveness monitor, the push fence, and the
+ * resume report. Only the monitor's poll says anything about whether liveness is
+ * working, and they were indistinguishable on the wire -- so the gateway read
+ * "something polled" as "the monitor is running" and stayed quiet about sessions
+ * whose monitor was dead while their hooks fired. Measured 2026-08-10: exactly
+ * that session existed, with the monitor latched in a 900s backoff.
+ */
+describe('who is doing the polling', () => {
+  const seenAt = async (holder: string) => {
+    const { rows } = await pool.query<{ monitor_seen_at: Date | null }>(
+      `select monitor_seen_at from agent_token where 'agent:' || name = $1`,
+      [holder],
+    );
+    return rows[0]?.monitor_seen_at ?? null;
+  };
+
+  const withToken = async (name: string) => {
+    await pool.query(
+      `insert into agent_token (name, token_sha256) values ($1, $2)
+       on conflict (name) do update set monitor_seen_at = null`,
+      [name, randomUUID()],
+    );
+    return `agent:${name}`;
+  };
+
+  it('records the monitor checking in', async () => {
+    const holder = await withToken(`w-${randomUUID()}`);
+    const workItemId = randomUUID();
+    await claim(pool, { workItemId, projectId: PROJECT, holder, ttlSeconds: 600, sessionId: 's-m' });
+    const raw = await mintWatch(pool, { sessionId: 's-m', workItemId });
+
+    await pollWatch(pool, raw, BASE, true);
+
+    expect(await seenAt(holder)).not.toBeNull();
+  });
+
+  it('does not let a hook stand in for the monitor', async () => {
+    // The push fence polls exactly this endpoint, and a fence firing on every
+    // `git push` must never be mistaken for liveness.
+    const holder = await withToken(`w-${randomUUID()}`);
+    const workItemId = randomUUID();
+    await claim(pool, { workItemId, projectId: PROJECT, holder, ttlSeconds: 600, sessionId: 's-h' });
+    const raw = await mintWatch(pool, { sessionId: 's-h', workItemId });
+
+    const state = await pollWatch(pool, raw, BASE);
+
+    // It still did its real job -- the lease was extended.
+    expect(state!.holding).toBe(workItemId);
+    // It simply proved nothing about the monitor.
+    expect(await seenAt(holder)).toBeNull();
+  });
+
+  it('counts a monitor polling for work that was already taken', async () => {
+    // "Is the monitor running" and "does this agent still hold anything" are
+    // different questions. A monitor polling for a lease somebody else claimed
+    // is still a monitor that is running, and going quiet here would withdraw
+    // the agent's proof exactly when it most needs to be believed.
+    const holder = await withToken(`w-${randomUUID()}`);
+    const workItemId = randomUUID();
+    await claim(pool, { workItemId, projectId: PROJECT, holder, ttlSeconds: 600, sessionId: 's-x' });
+    const raw = await mintWatch(pool, { sessionId: 's-x', workItemId });
+    await pool.query(
+      `update lease set state = 'revoked', end_reason = 'taken back' where work_item_id = $1`,
+      [workItemId],
+    );
+
+    const state = await pollWatch(pool, raw, BASE, true);
+
+    expect(state!.stale).toBe(true);
+    expect(await seenAt(holder)).not.toBeNull();
+  });
+});
