@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 /**
@@ -18,6 +19,18 @@ import { describe, expect, it } from 'vitest';
  * So: the version file must be touched no earlier than the last change to
  * anything else in the plugin. Comparing commit dates rather than contents keeps
  * this honest without a manifest of hashes to maintain.
+ *
+ * WHICH PART TO BUMP, because "it changed" is not the question:
+ *
+ *   patch  a fix. Nothing new to use, nothing removed, no config anyone writes
+ *          changes shape. Almost everything here is this.
+ *   minor  a new capability, or a new thing to configure. Something an existing
+ *          user could now do that they could not before.
+ *   major  something that already works stops working, or works differently.
+ *
+ * Written down because it was got wrong: 0.2.0 -> 0.3.0 -> 0.4.0 for two bug
+ * fixes, which makes the number track that a change happened rather than what
+ * kind, and leaves nothing to say with the minor when a real feature lands.
  */
 
 const git = (...args: string[]): string =>
@@ -47,5 +60,35 @@ describe('the plugin version', () => {
         'Bump the version, or every existing install stays on the old copy and ' +
         '`/plugin update` reports "already at the latest version".',
     ).toBeGreaterThanOrEqual(Number(lastPluginChange));
+  });
+
+  /**
+   * Never goes backwards, which is the trap on the way to correcting an
+   * over-bump. Two minors were spent on bug fixes; the fix is to make the NEXT
+   * number a patch, not to reissue a lower one. `/plugin update` compares
+   * versions, so an install sitting on the number you just walked back from is
+   * offered nothing, forever, silently — the same failure as never bumping at
+   * all, arrived at by trying to be tidy.
+   */
+  it('never goes backwards from what is already published', () => {
+    const rank = (v: string): number => {
+      const [maj = 0, min = 0, patch = 0] = v.split('.').map(Number);
+      return maj * 1e6 + min * 1e3 + patch;
+    };
+    const versionIn = (text: string): string => JSON.parse(text).version;
+
+    let published: string;
+    try {
+      published = versionIn(git('show', `HEAD:${VERSION_FILE}`));
+    } catch {
+      return; // No history, or the file is new. Nothing to have gone back from.
+    }
+    const current = versionIn(readFileSync(`${import.meta.dirname}/../../${VERSION_FILE}`, 'utf8'));
+
+    expect(
+      rank(current),
+      `Plugin version went from ${published} to ${current}. Anyone already on ` +
+        `${published} would never be offered an update again.`,
+    ).toBeGreaterThanOrEqual(rank(published));
   });
 });
