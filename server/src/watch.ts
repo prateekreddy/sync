@@ -128,6 +128,28 @@ export async function mintWatch(
   return raw;
 }
 
+/**
+ * How long a revocation goes on refusing pushes.
+ *
+ * A revoked lease is a verdict, and the fence must refuse while the agent might
+ * still be holding the work it just did — that window is minutes, and it is the
+ * entire reason the fence exists (SYNC-74).
+ *
+ * It must not last forever, which is what it did. Measured 2026-08-10: one
+ * scratch item revoked in one project blocked EVERY push from that session
+ * afterwards, in every repo, while `held` returned an empty list. A watch
+ * credential covers a session rather than an item, `stale` is set if any lease
+ * under it is revoked, and a revoked row stays revoked — so doing the supported
+ * thing (a person reassigning an item in Plane, SYNC-71) cost that agent its
+ * ability to push anything until it restarted.
+ *
+ * The obvious fix is worse than the bug: "the agent holds nothing, so allow"
+ * would allow exactly the case the fence is for, because losing a lease always
+ * leaves you holding nothing. Recency is the honest discriminator — an hour is
+ * far longer than any in-flight push and far shorter than a working session.
+ */
+export const REVOKE_BLOCKS_FOR_MS = 60 * 60_000;
+
 interface Row {
   work_item_id: string;
   session_id: string | null;
@@ -135,6 +157,7 @@ interface Row {
   epoch: number;
   claimed_at: Date;
   expires_at: Date;
+  ended_at: Date | null;
   end_reason: string | null;
   holder: string;
 }
@@ -212,7 +235,7 @@ export async function pollWatch(
 ): Promise<WatchState | null> {
   const hash = sha256(raw);
   const { rows } = await pool.query<Row>(
-    `select work_item_id, session_id, state, epoch, claimed_at, expires_at, end_reason, holder
+    `select work_item_id, session_id, state, epoch, claimed_at, expires_at, ended_at, end_reason, holder
        from lease
       where watch_expires_at > now()
         and ( watch_sha256 = $1
@@ -250,8 +273,18 @@ export async function pollWatch(
     // conversation nothing looks different — so it is said plainly and the reason
     // a human's action produced is passed through verbatim.
     if (row.state === 'revoked') {
-      stale = true;
-      say.push(row.end_reason ?? `${row.work_item_id} is no longer yours — stop and discard that work.`);
+      // Only while it is recent. See REVOKE_BLOCKS_FOR_MS: this used to be
+      // permanent, so one revoked item refused every push from the session for
+      // the rest of its life -- including work that had nothing to do with it,
+      // and long after the agent had let go.
+      // No ended_at means we cannot date the verdict, and an undatable verdict
+      // blocks: this is the one branch where being wrong in the permissive
+      // direction lets an agent push work somebody else now owns.
+      const ended = row.ended_at?.getTime();
+      if (ended === undefined || Date.now() - ended < REVOKE_BLOCKS_FOR_MS) {
+        stale = true;
+        say.push(row.end_reason ?? `${row.work_item_id} is no longer yours — stop and discard that work.`);
+      }
       continue;
     }
 

@@ -59,8 +59,37 @@ export interface Drift {
   detail: string;
 }
 
-/** The classes this pass will act on. The other two are never repaired. */
-export const REPAIRABLE: ReadonlySet<DriftKind> = new Set<DriftKind>(['claimLost', 'staleAssignee']);
+/**
+ * The one class this pass will act on. Everything else is reported and left.
+ *
+ * `claimLost` was here until it was driven end to end on 2026-08-10, and the
+ * run showed it cannot be repaired safely. The reason is not a bug in the rule,
+ * it is that the rule asks a question the gateway cannot answer.
+ *
+ * Observed: a held item was edited in Plane to Backlog with no assignee — what a
+ * person does when taking work back. `revoke.ts` saw it and ended the lease with
+ * "This item was taken off you in Plane", correctly, within 32 seconds. `board`
+ * reported `claimLost: 1` for the same item in the same window, and the repair
+ * for that class re-assigns the item and puts it back to In Progress.
+ *
+ * The same observation, two opposite conclusions. Revoke won only because the
+ * sweep runs every 30s and this every 15 minutes, which is a race and not a
+ * design. And there is a case revoke never sees at all: a human who leaves the
+ * assignee alone and only moves the item OUT of In Progress. `divergence()`
+ * returns null there; `claimLost` fires on the state alone and would put it
+ * back, every fifteen minutes, forever.
+ *
+ * So the gateway cannot tell "our write was lost" from "a human undid it" —
+ * exactly the ambiguity SYNC-75 named for assignees, which revoke.ts already
+ * resolves in the safe direction. Where the two overlap revoke is right; where
+ * they do not, repairing is wrong. Reporting it stays useful; acting on it does
+ * not.
+ *
+ * `staleAssignee` survives because it is safe on its own terms: the lease has
+ * ENDED and Plane still shows the item in progress under our name. No human
+ * action produces that, and nothing else will ever clean it up.
+ */
+export const REPAIRABLE: ReadonlySet<DriftKind> = new Set<DriftKind>(['staleAssignee']);
 
 /**
  * More repairs than this in one project and the pass does nothing at all.

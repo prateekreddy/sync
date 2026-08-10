@@ -219,22 +219,63 @@ describe('refusing to act on an implausible amount of drift', () => {
     for (let i = 0; i < n; i++) {
       const id = randomUUID();
       await held(id);
-      // Live lease, Plane shows it free: the repairable class.
       items.push(item({ id, assignees: [], state: 'backlog' }));
     }
     return items;
   };
 
-  it('repairs a handful, which is what real drift looks like', async () => {
+  /** Ended leases whose name is still on an in-progress item: the repairable class. */
+  const staleFor = async (n: number) => {
+    const items: WorkItem[] = [];
+    for (let i = 0; i < n; i++) {
+      const id = randomUUID();
+      await held(id);
+      await pool.query(
+        `update lease set state = 'released', ended_at = now(), expires_at = now()
+          where work_item_id = $1`,
+        [id],
+      );
+      items.push(item({ id, assignees: [AGENT_USER], state: 'doing' }));
+    }
+    return items;
+  };
+
+  it('reports a lost claim without ever putting it back', async () => {
+    // Driven end to end on 2026-08-10 and removed from REPAIRABLE as a result.
+    // A human moving a held item to Backlog produces exactly this state, and
+    // revoke.ts reads the same observation as a takeback — correctly. Repairing
+    // it re-assigns the item and re-starts it, undoing the person.
     const items = await claimLostFor(3);
     const r = await reconcile(fakePlane(items), pool, { projectId: PROJECT, repair: true });
     expect(r.counts.claimLost).toBe(3);
-    expect(r.repaired).toBe(3);
+    expect(r.repaired).toBe(0);
     expect(r.refused).toBeUndefined();
+    const { rows } = await pool.query<{ n: string }>(
+      "select count(*)::text as n from lease where pending_mirror is not null and project_id = $1",
+      [PROJECT],
+    );
+    expect(rows[0]!.n).toBe('0');
+  }, 30_000);
+
+  it('repairs a handful of stale assignees, which is what real drift looks like', async () => {
+    const items: WorkItem[] = [];
+    for (let i = 0; i < 3; i++) {
+      const id = randomUUID();
+      await held(id);
+      await pool.query(
+        `update lease set state = 'released', ended_at = now(), expires_at = now()
+          where work_item_id = $1`,
+        [id],
+      );
+      items.push(item({ id, assignees: [AGENT_USER], state: 'doing' }));
+    }
+    const r = await reconcile(fakePlane(items), pool, { projectId: PROJECT, repair: true });
+    expect(r.counts.staleAssignee).toBe(3);
+    expect(r.repaired).toBe(3);
   }, 30_000);
 
   it('repairs nothing at all once the set is implausibly large', async () => {
-    const items = await claimLostFor(4);
+    const items = await staleFor(4);
     const r = await reconcile(fakePlane(items), pool, {
       projectId: PROJECT,
       repair: true,
@@ -254,14 +295,14 @@ describe('refusing to act on an implausible amount of drift', () => {
   it('still reports every one of them', async () => {
     // Refusal stops the writing, not the looking. The count is the thing a
     // person needs in order to decide.
-    const items = await claimLostFor(4);
+    const items = await staleFor(4);
     const r = await reconcile(fakePlane(items), pool, {
       projectId: PROJECT,
       repair: true,
       ceiling: 3,
     });
     expect(r.drift).toHaveLength(4);
-    expect(r.counts.claimLost).toBe(4);
+    expect(r.counts.staleAssignee).toBe(4);
   }, 30_000);
 
   it('never repairs the two classes that are somebody else’s business', async () => {

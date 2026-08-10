@@ -646,3 +646,64 @@ describe('who is doing the polling', () => {
     expect(await seenAt(holder)).not.toBeNull();
   });
 });
+
+/**
+ * How long a revocation goes on refusing pushes.
+ *
+ * It used to be forever, and that was hit for real: one scratch item revoked in
+ * one project refused EVERY push from that session afterwards, in every repo,
+ * while `held` returned an empty list. Revocation is the SUPPORTED way for a
+ * person to take work back, so doing the right thing once cost the agent its
+ * ability to push anything until it restarted.
+ *
+ * The tempting fix — "the agent holds nothing, so allow" — is worse than the
+ * bug, because losing a lease always leaves you holding nothing. That is
+ * precisely the case the fence exists for, and the first test here is the one
+ * that must never be weakened to make the second pass.
+ */
+describe('a revocation, over time', () => {
+  const revoked = async (agoMinutes: number) => {
+    const { workItemId, raw } = await held();
+    await pool.query(
+      `update lease
+          set state = 'revoked',
+              ended_at = now() - make_interval(mins => $2),
+              end_reason = 'This item was taken off you in Plane.',
+              expires_at = now()
+        where work_item_id = $1`,
+      [workItemId, agoMinutes],
+    );
+    return { workItemId, raw };
+  };
+
+  it('refuses a push right after the work was taken', async () => {
+    // The whole point of the fence: the agent may still be holding what it just
+    // did, and this is the only thing standing between that and a push.
+    const { raw } = await revoked(0);
+    const state = await pollWatch(pool, raw, BASE);
+    expect(state!.stale).toBe(true);
+    expect(state!.say).toMatch(/taken off you/i);
+  });
+
+  it('still refuses well inside the window', async () => {
+    const { raw } = await revoked(30);
+    expect((await pollWatch(pool, raw, BASE))!.stale).toBe(true);
+  });
+
+  it('stops refusing once the revocation is old news', async () => {
+    // Measured hitting this: a commit for an unrelated repo, refused, with the
+    // agent holding nothing at all.
+    const { raw } = await revoked(90);
+    const state = await pollWatch(pool, raw, BASE);
+    expect(state!.stale).toBeUndefined();
+    expect(state!.say).toBeUndefined();
+  });
+
+  it('does not reinstate the revoked lease on the way past', async () => {
+    // Aged out of the warning is not the same as given back. Somebody took this
+    // work; the lease must stay ended however long ago that was.
+    const { workItemId, raw } = await revoked(90);
+    await pollWatch(pool, raw, BASE);
+    expect((await stateOf(workItemId)).state).toBe('revoked');
+  });
+});
