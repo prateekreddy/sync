@@ -177,8 +177,26 @@ case "$CMD" in
 
     # The lease protects the gateway's bookkeeping; it cannot stop an agent
     # writing files. A push is where private work becomes everyone else's
-    # problem, so it is the last cheap moment to stop a stale holder -- and the
-    # only one that would have prevented the collision this design exists to fix.
+    # problem, so it is the last cheap moment to stop a stale holder.
+    #
+    # What this does NOT do, stated here because the previous wording claimed it
+    # did and somebody would eventually rely on that. This hook runs on
+    # PreToolUse and there is no PostToolUse on Bash at all, so:
+    #
+    #   poll -> answer -> allow -> git push runs -> published
+    #           ^ verdict formed                    ^ nothing revisits it
+    #
+    # The check and the publish are not atomic and no PreToolUse hook can make
+    # them so. Measured 2026-08-10: the poll alone takes ~350ms, so the verdict
+    # is already that stale before git starts, and the push itself took ~2.5s as
+    # a DRY RUN against a warm remote -- longer for a real pack or a cold link.
+    #
+    # So this catches a holder that lost the item BEFORE it pushed, not one that
+    # loses it DURING. That is still worth having: it shrinks the exposure from
+    # unbounded -- a stale holder pushing hours later, which is the 2026-08-04
+    # collision that motivated all of this -- to about one push. It is a
+    # narrowing, not a guarantee, and calling it a guarantee is how somebody ends
+    # up trusting it for the case it cannot cover. See SYNC-116.
     #
     # The distinction that matters is between a verdict and ignorance:
     #
