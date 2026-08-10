@@ -260,6 +260,52 @@ EOF
 chmod 600 .env
 echo "wrote $(pwd)/.env (0600)"
 
+# A database volume older than the password we just generated (SYNC-63).
+#
+# Postgres applies POSTGRES_PASSWORD only when it FIRST initialises its data
+# directory. A pgdata volume that survived an earlier run keeps the old password
+# forever, so every service connecting over TCP fails auth — and the migrator
+# reports it as a Django traceback ending in `password authentication failed`
+# immediately after printing "Database available!", which points the reader at
+# networking rather than at credentials. Hit on a real deploy, 2026-07-31.
+#
+# The refusal above already warns about rotating this password. It warns on the
+# wrong path: it only prints when .env EXISTS, and the dangerous case is exactly
+# the one where it does not — somebody moved it aside, as that message told them
+# to, and the volume outlived it. So the check belongs here, where a new password
+# has just been written.
+#
+# Checked, not assumed. `docker` may not be on PATH and this script must not fail
+# because of a diagnostic; silence is the right answer when we cannot look.
+if command -v docker >/dev/null 2>&1; then
+  stale=$(docker volume ls --quiet 2>/dev/null | grep -E '(^|_)pgdata$' || true)
+  if [ -n "$stale" ]; then
+    cat >&2 <<MSG
+
+WARNING: a Postgres data volume already exists:
+
+$(printf '  %s\n' $stale)
+
+The password just written to .env will NOT reach it. Postgres sets
+POSTGRES_PASSWORD only when it first initialises its data directory, so that
+volume keeps whatever password it was created with, and every service will fail
+authentication with a message that reads like a networking fault.
+
+Either remove the volume (destroys the data), or bring the database into line
+with the new .env after starting it — this keeps the data, and works without
+knowing the old password because the image trusts unix-socket connections:
+
+  PW=\$(grep '^POSTGRES_PASSWORD=' .env | cut -d= -f2-)
+  docker compose exec -T plane-db psql -U plane -d postgres -h /var/run/postgresql \\
+    -v pw="\$PW" <<<"ALTER USER plane WITH PASSWORD :'pw';"
+  docker compose up -d
+
+The -h is required: PGHOST is set inside the container, so psql would otherwise
+dial TCP and hit the very authentication it is repairing.
+MSG
+  fi
+fi
+
 # Compose treats the network as external so that attaching to an existing Plane
 # works with the same file. When we are the ones deploying Plane, that means
 # creating it here.
