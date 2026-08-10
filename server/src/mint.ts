@@ -10,6 +10,7 @@
  *
  * See "Who issues agent tokens" in docs/architecture.md.
  */
+import type { Pool } from './db.js';
 import { GatewayError } from './errors.js';
 
 export interface PlaneIdentity {
@@ -141,29 +142,56 @@ export function agentName(identity: PlaneIdentity, label: string): string {
 }
 
 /**
- * Per-IP limiter for the mint endpoint.
+ * Per-address limiter for the mint endpoint, counted in Postgres.
  *
  * It is reachable without any gateway credential and calls Plane twice per
  * request, so an unthrottled one lets a stranger burn the workspace's rate-limit
  * budget — which would take the whole fleet down, not just this endpoint.
  *
- * In-memory and therefore per-process: with more than one gateway replica the
- * effective limit multiplies by the replica count. That is the same caveat the
- * mirror ordering carries, and it is fine at one replica.
+ * It was an in-memory Map, and that was the last thing in the gateway assuming a
+ * single process once mirror ordering stopped (SYNC-6, SYNC-122). It failed in
+ * the worst direction: two replicas meant twenty a minute from one address,
+ * three meant thirty. So the limit scaled the exposure it existed to bound, and
+ * did it precisely when replicas were added for resilience.
+ *
+ * One statement, and a sliding window rather than a fixed one — a per-minute
+ * bucket would let twice the limit through either side of a boundary, which on
+ * this endpoint is the whole quantity being defended.
+ *
+ * The three parts, in the order they matter:
+ *
+ *   delete   everything past the window, fleet-wide, on every call. That is what
+ *            keeps the table to at most one minute of mints with no sweeper to
+ *            own; a full-table delete over a few hundred rows costs far less
+ *            than the Plane request this call is about to make.
+ *   count    this address inside the window.
+ *   insert   only when the count is under the limit. Refusals are deliberately
+ *            not recorded, matching the in-memory version: a client hammering
+ *            the endpoint must not extend its own lockout past the window.
+ *
+ * `gone`, `recent` and `ins` share one snapshot, so `recent` cannot see its own
+ * insert and the count is the state before this attempt — which is exactly what
+ * the comparison wants.
+ *
+ * No fallback when the database is unreachable, and none is needed: issuing a
+ * token writes to the same database, so a failure here fails the mint anyway.
  */
-export function createRateLimiter(perMinute: number) {
-  const hits = new Map<string, number[]>();
-  return function allow(key: string, now: number): boolean {
-    const cutoff = now - 60_000;
-    const recent = (hits.get(key) ?? []).filter((t) => t > cutoff);
-    // Bound the map so a spray of source addresses cannot grow it without limit.
-    if (hits.size > 10_000) hits.clear();
-    if (recent.length >= perMinute) {
-      hits.set(key, recent);
-      return false;
-    }
-    recent.push(now);
-    hits.set(key, recent);
-    return true;
+export function createRateLimiter(pool: Pool, perMinute: number) {
+  return async function allow(key: string): Promise<boolean> {
+    const { rows } = await pool.query<{ n: number }>(
+      `with gone as (
+         delete from mint_attempt where at <= now() - interval '1 minute'
+       ), recent as (
+         select count(*)::int as n
+           from mint_attempt
+          where key = $1 and at > now() - interval '1 minute'
+       ), ins as (
+         insert into mint_attempt (key, at)
+         select $1, now() from recent where recent.n < $2
+       )
+       select n from recent`,
+      [key, perMinute],
+    );
+    return (rows[0]?.n ?? 0) < perMinute;
   };
 }

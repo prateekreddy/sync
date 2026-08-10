@@ -439,7 +439,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   // header comment in mint.ts. It is *not* an admin endpoint — deliberately, per
   // "admin can't do this for every user": each person mints their own agents
   // with their own credential, and gets exactly their own reach.
-  const mintAllowed = createRateLimiter(deps.mintRatePerMinute);
+  const mintAllowed = createRateLimiter(pool, deps.mintRatePerMinute);
 
   /**
    * Shared by the JSON endpoint and the OAuth consent form, so the two doors
@@ -519,7 +519,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     if (!deps.allowMinting) {
       throw new GatewayError('FORBIDDEN', 'Self-service tokens are disabled on this gateway.');
     }
-    if (!mintAllowed(req.ip, Date.now())) {
+    if (!(await mintAllowed(req.ip))) {
       return reply.status(429).send({ error: 'too_many_requests' });
     }
     const c = await registerClient(pool, (req.body ?? {}) as Record<string, unknown>);
@@ -589,7 +589,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
    * rate-limit budget with someone else's stolen token.
    */
   app.post('/oauth/projects', async (req, reply) => {
-    if (!mintAllowed(req.ip, Date.now())) {
+    if (!(await mintAllowed(req.ip))) {
       return reply.status(429).send({ error: 'RATE_LIMITED' });
     }
     const b = z.object({ planeToken: z.string().min(1) }).parse(req.body);
@@ -617,7 +617,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       })
       .parse(req.body);
 
-    if (!mintAllowed(req.ip, Date.now())) {
+    if (!(await mintAllowed(req.ip))) {
       return reply.status(429).type('text/html').send(
         consentPage({
           action: '/oauth/authorize',
@@ -755,7 +755,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         'Self-service token management is disabled on this gateway (MINT_TOKENS=off). Ask your operator to list them with the CLI.',
       );
     }
-    if (!mintAllowed(req.ip, Date.now())) {
+    if (!(await mintAllowed(req.ip))) {
       return reply.status(429).send({
         error: 'RATE_LIMITED',
         message: 'Too many requests from this address.',
@@ -792,7 +792,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         'Self-service token management is disabled on this gateway (MINT_TOKENS=off). Ask your operator to revoke it with the CLI.',
       );
     }
-    if (!mintAllowed(req.ip, Date.now())) {
+    if (!(await mintAllowed(req.ip))) {
       return reply.status(429).send({
         error: 'RATE_LIMITED',
         message: 'Too many requests from this address.',
@@ -853,7 +853,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         'Self-service tokens are disabled on this gateway (MINT_TOKENS=off). Ask your operator to issue one with the CLI.',
       );
     }
-    if (!mintAllowed(req.ip, Date.now())) {
+    if (!(await mintAllowed(req.ip))) {
       return reply.status(429).send({
         error: 'RATE_LIMITED',
         message: 'Too many token requests from this address.',

@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import {
   issueToken,
@@ -190,21 +190,103 @@ describe('revocation', () => {
   });
 });
 
+/**
+ * The limiter, counted in Postgres so it means one thing however many replicas
+ * run (SYNC-122).
+ *
+ * It was an in-memory Map and therefore per process, which failed in the worst
+ * direction: two replicas meant twice the limit from one address. That scales
+ * the exact exposure the limit exists to bound — a stranger burning the
+ * workspace's Plane rate budget — precisely when replicas are added.
+ *
+ * The window is real time now rather than an injected clock, so these assert the
+ * properties that hold within one window and drive the recovery case through a
+ * backdated row instead of sleeping a minute.
+ */
 describe('mint rate limiter', () => {
-  it('allows up to the limit, then refuses, then recovers after the window', () => {
-    const allow = createRateLimiter(3);
-    const t0 = 1_000_000;
-    expect([allow('ip', t0), allow('ip', t0), allow('ip', t0)]).toEqual([true, true, true]);
-    expect(allow('ip', t0)).toBe(false);
-    expect(allow('ip', t0 + 60_001)).toBe(true);
+  const address = () => `ip-${randomUUID().slice(0, 8)}`;
+
+  beforeEach(async () => {
+    await pool.query('truncate mint_attempt');
   });
 
-  it('counts per address, so one caller cannot lock everyone out', () => {
-    const allow = createRateLimiter(1);
-    const t0 = 1_000_000;
-    expect(allow('a', t0)).toBe(true);
-    expect(allow('a', t0)).toBe(false);
-    expect(allow('b', t0)).toBe(true);
+  it('allows up to the limit, then refuses', async () => {
+    const allow = createRateLimiter(pool, 3);
+    const ip = address();
+    expect([await allow(ip), await allow(ip), await allow(ip)]).toEqual([true, true, true]);
+    expect(await allow(ip)).toBe(false);
+  });
+
+  it('recovers once the attempts fall outside the window', async () => {
+    const allow = createRateLimiter(pool, 2);
+    const ip = address();
+    await allow(ip);
+    await allow(ip);
+    expect(await allow(ip)).toBe(false);
+
+    // Backdated rather than slept: the window is a minute, and a test that waits
+    // one out is a test nobody runs.
+    await pool.query("update mint_attempt set at = at - interval '2 minutes' where key = $1", [ip]);
+    expect(await allow(ip)).toBe(true);
+  });
+
+  it('counts per address, so one caller cannot lock everyone out', async () => {
+    const allow = createRateLimiter(pool, 1);
+    const [a, b] = [address(), address()];
+    expect(await allow(a)).toBe(true);
+    expect(await allow(a)).toBe(false);
+    expect(await allow(b)).toBe(true);
+  });
+
+  it('does not let a refusal extend its own lockout', async () => {
+    // Refused attempts are deliberately not recorded, matching the in-memory
+    // version. Recording them would mean a client hammering the endpoint keeps
+    // itself blocked indefinitely rather than for the window.
+    const allow = createRateLimiter(pool, 1);
+    const ip = address();
+    expect(await allow(ip)).toBe(true);
+    for (let i = 0; i < 5; i++) expect(await allow(ip)).toBe(false);
+
+    const { rows } = await pool.query<{ n: string }>(
+      'select count(*) as n from mint_attempt where key = $1',
+      [ip],
+    );
+    expect(Number(rows[0]!.n)).toBe(1);
+  });
+
+  it('holds one limit across two separate pools, which is the whole point', async () => {
+    // Two pools stand in for two replicas. With the in-memory Map this passed
+    // twice the limit and looked healthy — the counters simply never met.
+    const second = createPool(
+      process.env['GATEWAY_DATABASE_URL'] ??
+        'postgres://agent_gw:agent_gw_dev@localhost:15432/gateway',
+    );
+    try {
+      const replicaA = createRateLimiter(pool, 2);
+      const replicaB = createRateLimiter(second, 2);
+      const ip = address();
+
+      expect(await replicaA(ip)).toBe(true);
+      expect(await replicaB(ip)).toBe(true);
+      // The third is refused whichever replica it lands on.
+      expect(await replicaB(ip)).toBe(false);
+      expect(await replicaA(ip)).toBe(false);
+    } finally {
+      await second.end();
+    }
+  });
+
+  it('keeps the table bounded without a sweeper', async () => {
+    // Every call deletes past the window fleet-wide, which is what makes it safe
+    // to have no owner for this table. Left to grow it would be an unbounded
+    // write log on an unauthenticated endpoint.
+    const allow = createRateLimiter(pool, 100);
+    await allow(address());
+    await pool.query("update mint_attempt set at = at - interval '5 minutes'");
+    await allow(address());
+
+    const { rows } = await pool.query<{ n: string }>('select count(*) as n from mint_attempt');
+    expect(Number(rows[0]!.n)).toBe(1);
   });
 });
 

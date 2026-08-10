@@ -419,11 +419,11 @@ prior `SELECT`, so two concurrent mints cannot both pass and then race.
 **Rate limiting.** The endpoint takes no gateway credential and calls Plane twice
 per request, so it is limited per source address (`MINT_RATE_LIMIT`, default
 10/min): unthrottled, a stranger could burn the workspace's rate-limit budget and
-take the whole fleet down. The limiter is in-memory and therefore per-process —
-with more than one replica the effective limit multiplies. Mirror ordering used to
-carry the same caveat and no longer does: it is held by a Postgres advisory lock
-per work item, so this is now the only part of the gateway that assumes one
-process.
+take the whole fleet down. The limiter counts in Postgres, on a
+sliding window, so the limit means the same thing at one replica and at three.
+It was in-memory and therefore per-process, which failed in the worst direction:
+adding replicas for resilience multiplied the exact exposure the limit exists to
+bound. Nothing in the gateway now assumes a single process.
 
 `MINT_TOKENS=off` disables the endpoint and returns issuance to the CLI alone.
 
