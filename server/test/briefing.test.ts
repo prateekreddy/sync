@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import Fastify from 'fastify';
-import { briefing, briefingOrNull } from '../src/briefing.js';
+import { briefing, briefingFor } from '../src/briefing.js';
 import { issueToken } from '../src/auth.js';
 import { createPool } from '../src/db.js';
 import { registerRoutes } from '../src/routes.js';
@@ -245,10 +245,42 @@ describe('nothing here may cost an agent its lease', () => {
   });
 
   it('returns null rather than throwing when the item itself cannot be read', async () => {
-    // briefingOrNull is what `claim` calls: a lease already granted must not be
+    // briefingFor is what `claim` calls: a lease already granted must not be
     // undone by a context lookup failing.
     const plane = fakePlane({ items: {}, missing: new Set(['a']) });
-    expect(await briefingOrNull(plane, { projectId: PROJECT, workItemId: randomUUID() })).toBeNull();
+    expect(
+      (await briefingFor(plane, { projectId: PROJECT, workItemId: randomUUID() })).briefing,
+    ).toBeNull();
+  });
+
+  it('says why, instead of leaving the absence to speak for itself', async () => {
+    // The defect: `.catch(() => null)` made a briefing that threw look exactly
+    // like a gateway too old to have the feature. That ambiguity cost a real
+    // diagnosis on 2026-08-03 — two claims in one session against the same
+    // project and token, one briefed and one not, and the absence was read as
+    // evidence of a stale production build. It was not.
+    const plane = fakePlane({ items: {}, missing: new Set(['a']) });
+    const out = await briefingFor(plane, { projectId: PROJECT, workItemId: randomUUID() });
+    expect(out.briefingError).toMatch(/could not be built/);
+  });
+
+  it('hands the real error somewhere a person can act on it', async () => {
+    // The agent gets a summary; the gateway log gets the thing itself. Splitting
+    // them is the point — an agent cannot debug Plane, and whoever can is not
+    // reading the agent's transcript.
+    const plane = fakePlane({ items: {}, missing: new Set(['a']) });
+    const seen: unknown[] = [];
+    await briefingFor(plane, { projectId: PROJECT, workItemId: randomUUID() }, (e) => seen.push(e));
+    expect(seen).toHaveLength(1);
+  });
+
+  it('says nothing about an error when there was none', async () => {
+    // `briefingError` present on a healthy claim would be worse than the bug:
+    // every agent would learn to ignore the field.
+    const plane = fakePlane({ items: { a: item({ id: 'a' }) } });
+    const out = await briefingFor(plane, { projectId: PROJECT, workItemId: 'a' });
+    expect(out.briefing).not.toBeNull();
+    expect(out.briefingError).toBeUndefined();
   });
 });
 

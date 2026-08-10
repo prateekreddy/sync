@@ -153,12 +153,47 @@ export async function briefing(
 }
 
 /** Build a work item's briefing, or nothing at all if it cannot be built. */
-export async function briefingOrNull(
+/**
+ * The briefing, or an explicit statement that it could not be built.
+ *
+ * The catch is right and stays: a claim must never fail because the briefing
+ * could not be assembled. The lease is the thing the agent asked for and it is
+ * already held, so losing the context is a degraded answer where losing the
+ * lease would be a broken one.
+ *
+ * Discarding the reason was the defect (SYNC-67). `.catch(() => null)` made a
+ * briefing that threw indistinguishable from a gateway too old to have the
+ * feature, and that ambiguity cost a real diagnosis: observed twice in one
+ * session on 2026-08-03, against the same project and the same token, one claim
+ * came back with a full briefing and one with nothing — and the absence was read
+ * as evidence that production was running a stale build, which it was not.
+ *
+ * It matters past the wrong diagnosis. The whole point of the briefing is that
+ * an agent should not have to remember to go and ask for context after claiming.
+ * An agent that silently gets none does not know it is missing anything, and
+ * neither does anyone reading the transcript later — so the failure is invisible
+ * in exactly the situation it was built for.
+ *
+ * Returned as a spreadable pair rather than a bare value so both keys reach the
+ * caller together and neither can be forgotten at a call site.
+ */
+export async function briefingFor(
   plane: PlaneClient,
   opts: { projectId: string; workItemId: string },
-): Promise<Briefing | null> {
-  // A claim must never fail because the briefing could not be assembled. The
-  // lease is the thing the agent asked for and it is already held; losing the
-  // context is a degraded answer, losing the lease is a broken one.
-  return briefing(plane, opts).catch(() => null);
+  /** Somewhere to put the real error, since the agent only gets a summary. */
+  log?: (err: unknown) => void,
+): Promise<{ briefing: Briefing | null; briefingError?: string }> {
+  try {
+    return { briefing: await briefing(plane, opts) };
+  } catch (err) {
+    log?.(err);
+    return {
+      briefing: null,
+      // Short, and never the stack. The agent's decision here is binary — do I
+      // have context or not — and the detail belongs in the gateway's log where
+      // whoever can act on it is looking.
+      briefingError:
+        `could not be built: ${err instanceof Error ? err.message : String(err)}`.slice(0, 200),
+    };
+  }
 }

@@ -61,7 +61,7 @@ import { mirrorClaim, mirrorComplete, mirrorReturn } from './mirror.js';
 import type { PlaneClient } from './plane.js';
 import type { PlaneMcp } from './planemcp.js';
 import { explain, readyCandidates, verifyClaimable } from './readiness.js';
-import { briefingOrNull } from './briefing.js';
+import { briefingFor } from './briefing.js';
 import { find } from './find.js';
 import { tree } from './tree.js';
 import { parseFields } from './view.js';
@@ -1279,10 +1279,13 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         watchUrl: `${publicBase(deps.publicUrl, req.headers, req.protocol)}/v1/watch/${watch}`,
         ...(await livenessNote(pool, actor.holder)),
         ...takeoverNote(l),
-        briefing: await briefingOrNull(plane.as(actor.planeToken), {
-          projectId: b.projectId,
-          workItemId: l.workItemId,
-        }),
+        // Spread, so `briefingError` travels with `briefing: null` rather than
+        // the absence being left to speak for itself — it cannot (SYNC-67).
+        ...(await briefingFor(
+          plane.as(actor.planeToken),
+          { projectId: b.projectId, workItemId: l.workItemId },
+          (err) => req.log.warn({ err, workItemId: l.workItemId }, 'briefing failed'),
+        )),
       };
     }
 
@@ -1352,10 +1355,13 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         watchUrl: `${publicBase(deps.publicUrl, req.headers, req.protocol)}/v1/watch/${watch}`,
         ...(await livenessNote(pool, actor.holder)),
         ...takeoverNote(l),
-        briefing: await briefingOrNull(plane.as(actor.planeToken), {
-          projectId: b.projectId,
-          workItemId: l.workItemId,
-        }),
+        // Spread, so `briefingError` travels with `briefing: null` rather than
+        // the absence being left to speak for itself — it cannot (SYNC-67).
+        ...(await briefingFor(
+          plane.as(actor.planeToken),
+          { projectId: b.projectId, workItemId: l.workItemId },
+          (err) => req.log.warn({ err, workItemId: l.workItemId }, 'briefing failed'),
+        )),
       };
     }
 
