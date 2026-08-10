@@ -140,6 +140,41 @@ case "$CMD" in
     ;;
 
   fence)
+    # Scope decided here rather than in hooks.json.
+    #
+    # That file declares `"if": "Bash(git push*)"` next to the matcher, and the
+    # intent reads clearly, but it does not gate: measured 2026-08-10, commands
+    # containing no git and no push were run through this branch. Two costs, and
+    # the first is severe -- a credential the gateway no longer recognises made
+    # the fence deny EVERYTHING, so an agent could not run a single shell command
+    # and was told its work had been taken; and every Bash call paid an HTTP
+    # round trip with a ten second timeout for a check irrelevant to it.
+    #
+    # Getting the declarative syntax right is not the fix. A guard that fails
+    # open on its own scope is the same class of defect as the matcher that
+    # never matched, and the way out is the same: decide it where it is
+    # enforced, from the command actually being run.
+    #
+    # `push` has to be git's SUBCOMMAND, not merely a word near it. The first
+    # cut looked for git and push anywhere in the command and fenced
+    # `git commit -m "push the button"` and `cat notes-about-git-push.md` --
+    # which is how a guard meant for one command ends up blocking a working day.
+    #
+    # So: git at a command boundary (start, or after a separator -- never after
+    # `-` or `/`, which is what excludes the filename), then optionally its own
+    # options and their values, then push as the next word.
+    #
+    #   git push                    git push --force origin main
+    #   git -C /repo push           npm test && git push
+    #
+    # Still generous where it is cheap: a false positive costs one request, a
+    # false negative is the collision this whole design exists to prevent.
+    boundary='(^|[;&|(]|[[:space:]])'
+    option='-[^[:space:]]+[[:space:]]+([^-][^[:space:]]*[[:space:]]+)?'
+    cmd=$(jqr '.tool_input.command')
+    printf '%s' "$cmd" \
+      | grep -Eq "${boundary}git[[:space:]]+(${option})*push([[:space:]]|$)" || exit 0
+
     # The lease protects the gateway's bookkeeping; it cannot stop an agent
     # writing files. A push is where private work becomes everyone else's
     # problem, so it is the last cheap moment to stop a stale holder -- and the

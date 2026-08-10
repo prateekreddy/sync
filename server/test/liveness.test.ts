@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -326,4 +326,70 @@ describe('polling the watch credential', () => {
 
     gw.stop();
   }, 30_000);
+});
+
+/**
+ * What the push fence is allowed to touch.
+ *
+ * hooks.json declares `"if": "Bash(git push*)"` beside the matcher and it reads
+ * as though only a push is fenced. Measured 2026-08-10: it does not gate, and
+ * commands containing no git and no push at all were run through the fence.
+ * While the watch credential was dead that made the fence deny EVERY shell
+ * command, telling the agent its work had been taken — and it made every
+ * ordinary Bash call pay an HTTP round trip with a ten second timeout.
+ *
+ * Getting the declarative condition right is not the fix. A guard that fails
+ * open on its own scope is the matcher-that-never-matched again, so the script
+ * decides from the command it was given, and that is what is pinned here.
+ */
+describe('what the push fence acts on', () => {
+  // Points at a gateway that is not there. A command in scope would hang on it
+  // and fail the test; one out of scope must never reach it.
+  const fence = (command: string) => {
+    const state = mkdtempSync(join(tmpdir(), 'sync-fence-'));
+    writeFileSync(join(state, `${SESSION}.watch`), 'http://127.0.0.1:9/v1/watch/dead');
+    return spawnSync(bin('sync-session'), ['fence'], {
+      input: JSON.stringify({ session_id: SESSION, tool_input: { command } }),
+      encoding: 'utf8',
+      env: {
+        PATH: process.env['PATH'] ?? '',
+        HOME: state,
+        SYNC_STATE_DIR: state,
+        CLAUDE_CODE_SESSION_ID: SESSION,
+      },
+    });
+  };
+
+  const outOfScope = [
+    'echo hello',
+    'ls -la',
+    'npm test',
+    'git status',
+    'git commit -m "push the button"',
+    'cat notes-about-git-push.md',
+  ];
+
+  it.each(outOfScope)('does not contact the gateway for: %s', (command) => {
+    // stderr is the discriminator, not stdout. A fence that DOES reach for the
+    // credential and fails to connect says so on stderr ("could not reach the
+    // gateway; allowing the push unchecked") while writing nothing to stdout --
+    // so asserting on stdout alone would have passed before this fix too.
+    const r = fence(command);
+    expect(r.stderr).toBe('');
+    expect(r.stdout).toBe('');
+  });
+
+  const inScope = [
+    'git push',
+    'git push --force origin main',
+    'git -C /repo push',
+    'npm test && git push',
+  ];
+
+  it.each(inScope)('does check the lease for: %s', (command) => {
+    // The gateway is unreachable here, which is ignorance rather than a verdict,
+    // so the fence allows -- and says so on stderr. That message is the proof it
+    // looked, which is what this asserts.
+    expect(fence(command).stderr).toMatch(/could not reach the gateway/i);
+  });
 });
