@@ -11,6 +11,7 @@ import type { EvidencePolicy } from './evidence.js';
 import { configFromEnv } from './ghcheck.js';
 import { registerRoutes } from './routes.js';
 import { DEFAULT_THRESHOLDS, reviewAll } from './review.js';
+import { reconcileAll } from './reconcile.js';
 
 function required(name: string): string {
   const v = process.env[name];
@@ -195,10 +196,56 @@ async function review(): Promise<void> {
 // had a chance to set the thresholds for their own board.
 const reviewTimer = REVIEW_ON ? setInterval(() => void review(), REVIEW_MS) : null;
 
+/**
+ * Reconciliation, on a faster clock than the structural review.
+ *
+ * They answer different questions and drift at different speeds. Board shape
+ * changes over days; a lost mirror write makes the board wrong the moment it
+ * happens, and every minute after that is a minute in which the item looks free
+ * to the next agent. Fifteen minutes is a compromise: one item listing per
+ * project, and drift caught long before anybody is misled by it.
+ *
+ * Shares REVIEW's off switch on purpose. Both are the same kind of thing — a
+ * background pass that writes to Plane without an agent asking — and an operator
+ * turning that off should not have to discover a second flag.
+ */
+const RECONCILE_MS = Number(process.env.RECONCILE_INTERVAL_MS ?? 15 * 60 * 1000);
+
+async function reconciliation(): Promise<void> {
+  try {
+    for (const r of await reconcileAll(plane, pool, { repair: true })) {
+      const total = r.drift.length;
+      // Quiet passes are logged too, at debug: the interesting number over time
+      // is how often this finds nothing, and a check that only speaks when it
+      // fires cannot be told from one that is not running.
+      if (!total) {
+        app.log.debug({ projectId: r.projectId, checked: r.checked }, 'reconciliation: no drift');
+        continue;
+      }
+      app.log.warn(
+        { projectId: r.projectId, checked: r.checked, ...r.counts, repaired: r.repaired },
+        'plane and the lease table disagree',
+      );
+      // Named individually only for the two nobody will repair, because those are
+      // the ones a person has to look at.
+      for (const d of r.drift) {
+        if (d.kind === 'humanIntervened' || d.kind === 'untracked') {
+          app.log.warn({ projectId: r.projectId, workItemId: d.workItemId, kind: d.kind }, d.detail);
+        }
+      }
+    }
+  } catch (err) {
+    app.log.error({ err }, 'reconciliation failed');
+  }
+}
+
+const reconcileTimer = REVIEW_ON ? setInterval(() => void reconciliation(), RECONCILE_MS) : null;
+
 async function shutdown(signal: string): Promise<void> {
   app.log.info({ signal }, 'shutting down');
   clearInterval(timer);
   if (reviewTimer) clearInterval(reviewTimer);
+  if (reconcileTimer) clearInterval(reconcileTimer);
   await app.close();
   // Child MCP processes are ours to clean up; leaving them would strand one node
   // process per agent identity after every restart.

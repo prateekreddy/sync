@@ -3,6 +3,7 @@ import { GatewayError } from './errors.js';
 import type { PlaneClient, State, WorkItem } from './plane.js';
 import { resolve } from './query.js';
 import { readableId } from './view.js';
+import { classify, leasesOf, type DriftKind } from './reconcile.js';
 
 /**
  * Where a project stands: progress per module, and what the fleet is holding.
@@ -112,6 +113,19 @@ export interface Board {
     title: string;
     expiresAt: string;
   }>;
+  /**
+   * Where Plane and the lease table disagree. Absent when they do not.
+   *
+   * Reported here because this is a place a person actually looks, and a
+   * reconciliation whose findings live only in a log line is the same silence it
+   * was built to end. The scheduled pass repairs; this only counts, so reading a
+   * board never writes to Plane.
+   *
+   * `humanIntervened` and `untracked` are not faults to be fixed — they are a
+   * person having taken work back, and work nobody told the gateway about. They
+   * are here so somebody can see them, not so something can act on them.
+   */
+  drift?: Record<DriftKind, number>;
 }
 
 const DONE = new Set<State['group']>(['completed', 'cancelled']);
@@ -255,6 +269,16 @@ export async function board(
 
   const wanted = opts.moduleId ? modules.filter((m) => m.id === opts.moduleId) : modules;
 
+  // Read-only, and cheap: both sides are already in hand. Only project-wide,
+  // like `structure` and for the same reason -- scoped to one module the lease
+  // rows outside it would all read as drift.
+  const drift = opts.moduleId
+    ? []
+    : classify(all, await leasesOf(pool, opts.projectId), (id) => groupOf.get(id)).reduce(
+        (acc, d) => ({ ...acc, [d.kind]: (acc[d.kind] ?? 0) + 1 }),
+        {} as Record<DriftKind, number>,
+      );
+
   // One call per module. Membership lives behind its own endpoint, so there is no
   // way to get this from the item listing — worth knowing before pointing this at
   // a project with fifty modules.
@@ -299,6 +323,7 @@ export async function board(
     // is not merely incomplete but wrong.
     ...(opts.moduleId ? {} : { structure: structureOf(all, filed, groupOf) }),
     ...(blockersUnchecked ? { blockersUnchecked } : {}),
+    ...(Object.keys(drift).length ? { drift: drift as Record<DriftKind, number> } : {}),
     fleet: [...ctx.leases.entries()]
       .map(([id, l]) => {
         const item = byId.get(id);

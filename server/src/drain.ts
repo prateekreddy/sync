@@ -22,7 +22,7 @@
  */
 import type { Pool } from './db.js';
 import { log } from './log.js';
-import { mirrorComplete, mirrorReturn, type MirrorIntent, type PortableActor } from './mirror.js';
+import { mirrorComplete, mirrorReclaim, mirrorReturn, type MirrorIntent, type PortableActor } from './mirror.js';
 import type { PlaneClient } from './plane.js';
 import type { Actor } from './auth.js';
 
@@ -148,6 +148,16 @@ async function replay(
   workItemId: string,
   intent: MirrorIntent,
 ): Promise<void> {
+  if (intent.kind === 'reclaim') {
+    await mirrorReclaim(plane, pool, {
+      projectId: intent.projectId,
+      workItemId,
+      holder: intent.holder,
+      planeUserId: intent.planeUserId,
+    });
+    return;
+  }
+
   if (intent.kind === 'return') {
     await mirrorReturn(plane, pool, {
       projectId: intent.projectId,

@@ -60,6 +60,24 @@ export type MirrorIntent =
       reason: string;
       holder: string;
       expiryCount?: number;
+    }
+  | {
+      /**
+       * Put back a claim Plane has lost.
+       *
+       * Raised by reconciliation rather than by an agent: the lease is live and
+       * says this item is being worked, and Plane no longer shows it. Nothing was
+       * owed — the original write is recorded as having landed — so no retry
+       * would ever have fixed it. See reconcile.ts.
+       *
+       * Carries the assignee outright instead of an actor. The agent that made
+       * the claim is not on this call and may be hours gone; what the board needs
+       * is the name the lease already implies.
+       */
+      kind: 'reclaim';
+      projectId: string;
+      holder: string;
+      planeUserId: string | null;
     };
 
 export interface PortableActor {
@@ -394,6 +412,54 @@ export async function mirrorReturn(
       // Left owed on purpose. This is the path a dead agent's item takes, so a
       // failure here is exactly when nobody is watching.
       log.warn({ err, workItemId: args.workItemId, op: 'return' }, 'plane mirror failed, queued');
+    }
+  });
+}
+
+/**
+ * Put back a claim Plane has lost.
+ *
+ * Every other mirror function is driven by something an agent just did. This one
+ * is driven by a comparison: reconciliation found a live lease whose item no
+ * longer shows as claimed, and nothing was owed — the original write is recorded
+ * as having landed — so no retry would ever have addressed it.
+ *
+ * Deliberately quieter than `mirrorClaim`. It restores the assignee and the
+ * state and leaves no comment: nobody made a decision here, and a "Claimed by …"
+ * note on an item that has been claimed for an hour would read to a human as a
+ * second agent arriving. The log line is the record that it happened.
+ */
+export async function mirrorReclaim(
+  plane: PlaneClient,
+  pool: Pool,
+  args: {
+    projectId: string;
+    workItemId: string;
+    holder: string;
+    planeUserId: string | null;
+  },
+): Promise<void> {
+  return serial(args.workItemId, async () => {
+    await owe(pool, args.workItemId, {
+      kind: 'reclaim',
+      projectId: args.projectId,
+      holder: args.holder,
+      planeUserId: args.planeUserId,
+    });
+    try {
+      const started = await plane.stateByGroup(args.projectId, 'started');
+      await plane.updateWorkItem(args.projectId, args.workItemId, {
+        ...(started ? { state: started.id } : {}),
+        ...(args.planeUserId ? { assignees: [args.planeUserId] } : {}),
+      });
+      await settled(pool, args.workItemId);
+      log.info(
+        { workItemId: args.workItemId, projectId: args.projectId, holder: args.holder },
+        'reconciliation restored a claim Plane had lost',
+      );
+    } catch (err) {
+      // Left owed, like the others: the drain will retry it with backoff.
+      log.warn({ err, workItemId: args.workItemId, op: 'reclaim' }, 'plane mirror failed, queued');
     }
   });
 }
