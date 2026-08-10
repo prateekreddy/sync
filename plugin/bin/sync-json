@@ -24,8 +24,29 @@ path="${1:-}"
 # of a leading dot is exactly the kind of failure this helper exists to prevent.
 path="${path#.}"
 
+# A numeric segment indexes an array: `content.0.text`. Needed because an MCP
+# tool result carries its payload inside a content list, so every caller reading
+# one has to step through an index.
+#
+# Spelled out per backend because the three disagreed about it, which is worse
+# than any of them failing: node's reduce indexes arrays with a string key and
+# worked, python raised and returned empty, and jq rejected `.0` outright. The
+# answer therefore depended on which parser happened to be installed -- one
+# machine's working fence was another's silent no-op.
 if command -v jq >/dev/null 2>&1; then
-  jq -r "try (.${path}) // empty" 2>/dev/null
+  # Built as an explicit path expression: `.a[0].b`, never `.a.0.b`.
+  expr=''
+  saved_ifs=$IFS
+  IFS='.'
+  for seg in $path; do
+    case "$seg" in
+      '' ) ;;
+      *[!0-9]* ) expr="${expr}[\"${seg}\"]" ;;
+      * ) expr="${expr}[${seg}]" ;;
+    esac
+  done
+  IFS=$saved_ifs
+  jq -r "try (.${expr}) // empty" 2>/dev/null
 elif command -v node >/dev/null 2>&1; then
   node -e '
     let raw = "";
@@ -48,7 +69,9 @@ import json, sys
 try:
     v = json.load(sys.stdin)
     for k in sys.argv[1].split("."):
-        v = v[k]
+        # A list is indexed by an int, a dict by the key as written. Without
+        # this, any path through an array raised and was reported as absent.
+        v = v[int(k)] if isinstance(v, list) else v[k]
     if v is not None:
         sys.stdout.write(str(v))
 except Exception:

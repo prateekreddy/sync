@@ -2,7 +2,7 @@
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "mcp__sync__claim",
+        "matcher": "mcp__.*sync__claim",
         "hooks": [
           {
             "type": "command",

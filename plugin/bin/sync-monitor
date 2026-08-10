@@ -29,8 +29,24 @@ set -uo pipefail
 # cannot claim, complete, capture, or read a work item. That is why a generous
 # lifetime is safe, and why this file only needs to be user-readable rather than
 # guarded like a password.
-TOKEN_DIR="${SYNC_STATE_DIR:-$HOME/.claude/sync}"
-WATCH_FILE="$TOKEN_DIR/${CLAUDE_SESSION_ID:-default}.watch"
+# shellcheck source=./sync-paths.sh
+. "$(dirname "$0")/sync-paths.sh"
+TOKEN_DIR=$(sync_state_dir)
+
+# The monitor has no hook stdin, so the environment is the only thing it and the
+# writer can both see. This used to read CLAUDE_SESSION_ID -- a variable Claude
+# Code does not set -- and fall back to `default.watch`, so it polled a file
+# nothing ever writes and kept nothing alive, quietly, forever.
+SESSION=$(sync_session_id)
+if [ -z "$SESSION" ]; then
+  # Nothing this process can do will work, so say so once and stop rather than
+  # looping on a filename that cannot exist. Sitting here polling would be the
+  # original bug with extra steps: a monitor that looks alive and guarantees
+  # nothing.
+  echo "sync: this session has no id, so your claim cannot be kept alive. It may lapse while you work."
+  exit 0
+fi
+WATCH_FILE=$(sync_watch_file "$SESSION")
 
 INTERVAL="${SYNC_POLL_SECONDS:-120}"
 # Backoff is per-process and resets on any success. A gateway that is down must

@@ -20,7 +20,9 @@
 set -uo pipefail
 
 CMD="${1:-}"
-STATE_DIR="${SYNC_STATE_DIR:-$HOME/.claude/sync}"
+# shellcheck source=./sync-paths.sh
+. "$(dirname "$0")/sync-paths.sh"
+STATE_DIR=$(sync_state_dir)
 mkdir -p "$STATE_DIR" 2>/dev/null || true
 
 input=$(cat 2>/dev/null || true)
@@ -32,21 +34,15 @@ input=$(cat 2>/dev/null || true)
 jqr() { printf '%s' "$input" | "$(dirname "$0")/sync-json" "$1" 2>/dev/null; }
 get() { printf '%s' "$1" | "$(dirname "$0")/sync-json" "$2" 2>/dev/null; }
 
-# Hook input first, environment second. The fallback matters more than it looks:
-# it named CLAUDE_SESSION_ID, which is not a variable Claude Code sets, so every
-# hook that could not parse its stdin quietly agreed on the session "default" --
-# and two windows both called "default" share one watch file, which is precisely
-# the confusion between concurrent sessions this design removes. A wrong name
-# fails silently here; there is no error, only a wrong answer.
-SESSION=$(jqr '.session_id')
-case "$SESSION" in
-  ''|null) SESSION="${CLAUDE_CODE_SESSION_ID:-}" ;;
-esac
-# Still nothing: use a per-process name rather than a shared one. Being unable to
-# group this session's state is a small loss; merging it with an unrelated
-# session's is a real one.
-[ -n "$SESSION" ] || SESSION="pid-$PPID"
-WATCH_FILE="$STATE_DIR/$SESSION.watch"
+# Hook input first, environment second -- resolved in sync-paths.sh, because the
+# monitor has to arrive at the same filename and cannot see this stdin.
+#
+# There is deliberately no third fallback. A per-process name was tried, and it
+# is unreachable by construction: the monitor is a different process, so a name
+# built from this one's pid is a file only the writer can find. Better to hold
+# nothing than to hold it somewhere nobody looks.
+SESSION=$(sync_session_id "$(jqr '.session_id')")
+WATCH_FILE=$([ -n "$SESSION" ] && sync_watch_file "$SESSION")
 
 case "$CMD" in
   preflight)
@@ -58,13 +54,34 @@ case "$CMD" in
       echo "sync is degraded: no JSON parser found, so the push fence and session tracking are OFF."
       echo "Install jq to restore them:  brew install jq   |   apt-get install -y jq"
     fi
+    # The other way this goes inert, and the one that used to be invisible. With
+    # no session id the hook and the monitor have no filename to agree on, so the
+    # lease is kept alive by nothing. Said here rather than at each hook: this
+    # runs once per session, and it is the same reason the parser check lives
+    # here -- a guard nobody knows is off is worse than no guard.
+    if [ -z "$SESSION" ]; then
+      echo "sync is degraded: this session has no id (CLAUDE_CODE_SESSION_ID is unset), so"
+      echo "your claim will NOT be kept alive and may lapse while you are still working."
+    fi
     ;;
 
   harvest)
     # `claim` is the one call an agent must make, so it is the one place a
     # credential can be handed over without adding an obligation. The model never
     # sees this happen and cannot forget to do it.
+    [ -n "$WATCH_FILE" ] || exit 0
     url=$(jqr '.tool_response.watchUrl')
+    if [ -z "$url" ] || [ "$url" = "null" ]; then
+      # An MCP tool result is not the tool's JSON. It is a CallToolResult, and
+      # the payload is a JSON *string* inside a text content block -- so the URL
+      # sits behind a second parse rather than at .tool_response.watchUrl. Read
+      # the plain shape first because the REST and stdio paths do return one;
+      # this is the MCP shape, which is what an agent with the plugin installed
+      # actually produces, and reading only the first found nothing for as long
+      # as the hook has existed.
+      inner=$(jqr '.tool_response.content.0.text')
+      [ -n "$inner" ] && url=$(get "$inner" watchUrl)
+    fi
     if [ -n "$url" ] && [ "$url" != "null" ]; then
       # 0600: possession of this URL is authorisation. Its powers are small --
       # extend this session's leases and report them -- but small is not none.
