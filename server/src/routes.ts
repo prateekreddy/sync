@@ -1503,9 +1503,11 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     await handleMcpHttp(toolDeps, actor, req.headers['authorization'] as string, req, reply);
   });
 
-  // The spec lets a client open a GET stream or DELETE a session. We run
-  // stateless, so both are answered by the transport rather than 404ing — a
-  // client that probes them should get a protocol-level answer, not an HTML page.
+  // The spec lets a client open a GET stream or DELETE a session, and both are
+  // real here: GET is the standalone notification stream, DELETE ends the
+  // conversation and releases the session rather than waiting for it to go idle.
+  // Both go through the same handler so session lookup and the holder check
+  // happen once, in one place.
   for (const method of ['GET', 'DELETE'] as const) {
     app.route({
       method,
