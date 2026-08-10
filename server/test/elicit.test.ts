@@ -154,6 +154,19 @@ async function connect(
   return { client, asked, transport };
 }
 
+/** A tools/list POST made by hand, for the session cases no client will produce. */
+const post = (url: URL, token: string, extra: Record<string, string>): Promise<Response> =>
+  fetch(url, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+      ...extra,
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+  });
+
 const ARGS = { projectId: PROJECT, workItemIds: [LOOSE], containerId: CONTAINER };
 
 const textOf = (result: unknown): string =>
@@ -246,29 +259,26 @@ describe('the session the conversation runs in', () => {
     await app.close();
   }, 30_000);
 
-  it('tells a client whose session this process never had to initialize again', async () => {
-    // What a deploy looks like from the client side. 404 is the spec's cue to
-    // initialize again, so a restart costs a round trip instead of the
-    // conversation — the property statelessness used to give for free.
+  it('still serves a client whose session this process never had', async () => {
+    // What a deploy looks like from the client side. The spec says answer 404 and
+    // let the client initialize again, and the client SDK does not implement that
+    // — it throws, and the conversation is over. So a session the gateway has
+    // never heard of is served the old sessionless way instead. A restart costs
+    // the ability to be *asked* something until the client reconnects; it does
+    // not cost every tool call.
     const { app, url, token } = await gateway();
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${token}`,
-        'content-type': 'application/json',
-        accept: 'application/json, text/event-stream',
-        'mcp-session-id': randomUUID(),
-      },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
-    });
-    expect(res.status).toBe(404);
+    const res = await post(url, token, { 'mcp-session-id': randomUUID() });
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('gather');
     await app.close();
   }, 30_000);
 
   it('will not serve one agent a session opened by another', async () => {
     // A session carries an identity, and every write it makes is attributed to
     // that identity. Serving a second bearer token from it would file one
-    // agent's work under the other's name.
+    // agent's work under the other's name — so it does not match, and gets a
+    // sessionless answer of its own.
     const { app, url, token } = await gateway();
     const { client, transport } = await connect(url, token, null);
 
@@ -286,17 +296,18 @@ describe('the session the conversation runs in', () => {
       defaultProjectId: PROJECT,
     });
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${other.token}`,
-        'content-type': 'application/json',
-        accept: 'application/json, text/event-stream',
-        'mcp-session-id': opened!,
-      },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
-    });
-    expect(res.status).toBe(403);
+    const res = await post(url, other.token, { 'mcp-session-id': opened! });
+
+    // Served, but not from the borrowed session: a sessioned reply names the
+    // session it came from, and this one has no session to name.
+    expect(res.status).toBe(200);
+    expect(res.headers.get('mcp-session-id')).toBeNull();
+
+    // And the borrowed session is untouched — still the first agent's, still
+    // usable by the client that opened it.
+    const after = await client.callTool({ name: 'find', arguments: { projectId: PROJECT } });
+    expect(after.isError).toBeFalsy();
+    expect(transport.sessionId).toBe(opened);
 
     await client.close();
     await app.close();

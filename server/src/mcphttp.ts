@@ -4,6 +4,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  isInitializeRequest,
   type CallToolResult,
   type RequestId,
   type Tool,
@@ -34,10 +35,16 @@ import { callTool, listTools, type AskHuman, type ToolDeps } from './tools.js';
  * mutually exclusive, and for as long as this was stateless both features that
  * ask were inert. See test/elicit.test.ts for the measurement.
  *
- * What statelessness bought was surviving a gateway restart mid-conversation.
- * That is now paid for by the spec instead: a session this process has never
- * heard of gets a 404, which is the client's cue to initialize again. The cost
- * is one extra round trip after a deploy rather than a broken conversation.
+ * What statelessness bought was surviving a gateway restart mid-conversation,
+ * and that is kept: a request whose session this process has never heard of is
+ * served the old way, statelessly, rather than refused. The spec's answer there
+ * is 404-and-initialize-again, which the client SDK does not implement — it
+ * throws, and the conversation is over. So a deploy costs a client the ability
+ * to be *asked* something until it reconnects, and costs it nothing else.
+ *
+ * Which means there are two modes here, and the difference between them is
+ * exactly one capability. Opening a conversation gets a session; carrying on
+ * without one gets what the gateway always did.
  */
 
 /**
@@ -279,9 +286,9 @@ function sweep(): void {
   for (const [id] of oldest.slice(0, sessions.size - MAX_SESSIONS)) drop(id);
 }
 
-/** A JSON-RPC error the client can read, for the cases that never reach a transport. */
-function refuse(reply: FastifyReply, status: number, code: number, message: string): void {
-  void reply.code(status).send({ jsonrpc: '2.0', error: { code, message }, id: null });
+/** Whether this body is a client opening a conversation, rather than continuing one. */
+function opensSession(body: unknown): boolean {
+  return (Array.isArray(body) ? body : [body]).some(isInitializeRequest);
 }
 
 export async function handleMcpHttp(
@@ -295,67 +302,87 @@ export async function handleMcpHttp(
 
   const header = request.headers['mcp-session-id'];
   const sessionId = Array.isArray(header) ? header[0] : header;
-  const existing = sessionId ? sessions.get(sessionId) : undefined;
+  const found = sessionId ? sessions.get(sessionId) : undefined;
 
-  if (sessionId && !existing) {
-    // The gateway restarted, or the session went idle. 404 is what the spec
-    // tells the client to answer by initializing again, so this is a round trip
-    // rather than a broken conversation — the property statelessness used to
-    // provide, obtained from the protocol instead of from the architecture.
-    refuse(reply, 404, -32001, 'Session not found. Initialize again.');
-    return;
-  }
+  // A session carries an identity and every write it makes is attributed to that
+  // identity, so a second bearer token is not served from it — that would file
+  // one agent's work under another's name. It is not refused either: it simply
+  // does not match, and falls through to the sessionless path below like any
+  // other request without a session of its own.
+  const session = found?.holder === actor.holder ? found : undefined;
 
-  if (existing && existing.holder !== actor.holder) {
-    // Bearer tokens are per agent, and a session is a conversation with one of
-    // them. Serving a second holder from it would run their calls under the
-    // first one's identity — every write attributed to the wrong agent.
-    refuse(reply, 403, -32001, 'This session belongs to another agent.');
-    return;
-  }
-
-  let session = existing;
   if (session) {
-    // Re-authenticated above by the route, so this is the current credential
-    // rather than whichever one opened the conversation.
-    session.ctx.authorization = authorization;
+    // Re-authenticated by the route on this request, so this is the current
+    // credential rather than whichever one opened the conversation. A session
+    // outliving a token rotation must not keep writing with the old one.
     session.ctx.actor = actor;
+    session.ctx.authorization = authorization;
     session.lastSeen = Date.now();
-  } else {
-    const ctx: Context = { actor, authorization };
-    const server = build(deps, ctx);
-    const transport = new StreamableHTTPServerTransport({
-      // Sessioned, and SSE rather than a plain JSON body: both are what give a
-      // server-initiated question somewhere to go and somewhere to come back to.
-      // See the note at the top of this file.
-      sessionIdGenerator: () => randomUUID(),
-      onsessioninitialized: (id) => {
-        sessions.set(id, { server, transport, holder: actor.holder, ctx, lastSeen: Date.now() });
-      },
-      onsessionclosed: (id) => {
-        sessions.delete(id);
-      },
-    });
 
-    // The SDK's own Transport interface declares optional callbacks as required-
-    // but-possibly-undefined, which exactOptionalPropertyTypes rejects. The cast
-    // is confined to this one call rather than loosening the setting for the
-    // project.
-    await server.connect(transport as Parameters<typeof server.connect>[0]);
-    session = { server, transport, holder: actor.holder, ctx, lastSeen: Date.now() };
-
-    // A request that never initializes a session — a malformed body, or a probe —
-    // leaves this transport unreachable, so release it with the response rather
-    // than leaving its keep-alive timer running for nothing.
-    reply.raw.on('close', () => {
-      const id = transport.sessionId;
-      if (id && sessions.get(id)?.transport === transport) return;
-      void transport.close();
-      void server.close();
-    });
+    reply.hijack();
+    await session.transport.handleRequest(request.raw, reply.raw, request.body);
+    return;
   }
+
+  const opening = opensSession(request.body);
+  const ctx: Context = { actor, authorization };
+  const server = build(deps, ctx);
+
+  /**
+   * Two modes, and which one this is decides whether a person can be asked.
+   *
+   * Opening a conversation gets a session and SSE, which is what makes
+   * elicitation possible at all.
+   *
+   * Everything else is served the way this gateway served everything before
+   * sessions existed: one throwaway Server, a single JSON body, no state. That
+   * is the path a client takes after a deploy, still holding a session id this
+   * process has never heard of. The spec's answer there is 404 and re-initialize,
+   * and the client SDK does not implement it — it throws, and the conversation is
+   * over. So the old behaviour is kept as the floor: a restart costs the ability
+   * to be *asked* something until the client reconnects, rather than costing
+   * every tool call. Degrade, do not break.
+   */
+  const transport = new StreamableHTTPServerTransport(
+    opening
+      ? {
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (id) => {
+            sessions.set(id, {
+              server,
+              transport,
+              holder: actor.holder,
+              ctx,
+              lastSeen: Date.now(),
+            });
+          },
+          onsessionclosed: (id) => {
+            sessions.delete(id);
+          },
+        }
+      : // The key is omitted rather than set to undefined: with
+        // exactOptionalPropertyTypes those are different types, and absent is
+        // what the transport actually checks for. A stateless transport ignores
+        // an incoming session header entirely, which is exactly what a client
+        // carrying a dead one needs.
+        { enableJsonResponse: true },
+  );
+
+  // The SDK's own Transport interface declares optional callbacks as required-
+  // but-possibly-undefined, which exactOptionalPropertyTypes rejects. The cast is
+  // confined to this one call rather than loosening the setting for the project.
+  await server.connect(transport as Parameters<typeof server.connect>[0]);
+
+  // Release anything the session map did not take ownership of — every
+  // sessionless request, and any opening one that failed before it registered.
+  reply.raw.on('close', () => {
+    const id = transport.sessionId;
+    if (id && sessions.get(id)?.transport === transport) return;
+    void transport.close();
+    void server.close();
+  });
 
   // Fastify must not also try to reply: the transport writes to the raw socket.
   reply.hijack();
-  await session.transport.handleRequest(request.raw, reply.raw, request.body);
+  await transport.handleRequest(request.raw, reply.raw, request.body);
 }
