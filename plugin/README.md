@@ -117,7 +117,7 @@ launched from that shell, which is a confusing way to lose half your sessions.
 | `.mcp.json` | the gateway — coordination tools plus Plane's own surface |
 | `bin/sync-connect` | connects a box that has no browser to sign in with |
 | `monitors/` | keeps your claim alive while you work, and tells you if it is taken away |
-| `hooks/` | harvest the lease credential, report on resume, hand work back on exit, fence `git push` |
+| `hooks/` | harvest the lease credential, report on resume, hand work back on exit, fence `git push` and re-check after it |
 | `skills/` | the working rules |
 
 ## Why a monitor rather than a heartbeat

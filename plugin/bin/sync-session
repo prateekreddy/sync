@@ -13,6 +13,15 @@
 #   report   on resume     -- say what is still held, so a restored session knows
 #   close    on session end-- hand back what is still held
 #   fence    before push   -- refuse to publish work the lease no longer covers
+#   postpush after push    -- say so when it went out anyway
+#
+# The last two are one mechanism with a gap down the middle. A PreToolUse verdict
+# is formed ~350ms before git starts and the push itself takes seconds, so a
+# revocation landing in between is published and the fence never knows. Nothing
+# in this architecture can make the check and the publish atomic. `fence` shrinks
+# the exposure from unbounded to about one push; `postpush` makes what gets
+# through loud instead of silent. Neither is a guarantee and the wording here has
+# been wrong about that before -- see SYNC-116.
 #
 # Hook input arrives as JSON on stdin. Every path here exits 0 unless it means to
 # block, because a hook that errors on an unrelated failure would wedge the agent
@@ -44,6 +53,33 @@ get() { printf '%s' "$1" | "$SYNC_BIN/sync-json" "$2" 2>/dev/null; }
 # nothing than to hold it somewhere nobody looks.
 SESSION=$(sync_session_id "$(jqr '.session_id')")
 WATCH_FILE=$([ -n "$SESSION" ] && sync_watch_file "$SESSION")
+
+# Is the Bash command on stdin a `git push`?
+#
+# Shared by the two hooks that care -- the fence before, the re-check after --
+# because a guard and its follow-up disagreeing about what they cover is the
+# same defect one step removed: the push would be checked and then not, or the
+# reverse, depending on which regex someone last edited.
+is_push() {
+  # `push` has to be git's SUBCOMMAND, not merely a word near it. The first cut
+  # looked for git and push anywhere in the command and fenced
+  # `git commit -m "push the button"` and `cat notes-about-git-push.md` -- which
+  # is how a guard meant for one command ends up blocking a working day.
+  #
+  # So: git at a command boundary (start, or after a separator -- never after
+  # `-` or `/`, which is what excludes the filename), then optionally its own
+  # options and their values, then push as the next word.
+  #
+  #   git push                    git push --force origin main
+  #   git -C /repo push           npm test && git push
+  #
+  # Still generous where it is cheap: a false positive costs one request, a
+  # false negative is the collision this whole design exists to narrow.
+  _boundary='(^|[;&|(]|[[:space:]])'
+  _option='-[^[:space:]]+[[:space:]]+([^-][^[:space:]]*[[:space:]]+)?'
+  printf '%s' "$(jqr '.tool_input.command')" \
+    | grep -Eq "${_boundary}git[[:space:]]+(${_option})*push([[:space:]]|$)"
+}
 
 case "$CMD" in
   preflight)
@@ -190,27 +226,8 @@ case "$CMD" in
     # Getting the declarative syntax right is not the fix. A guard that fails
     # open on its own scope is the same class of defect as the matcher that
     # never matched, and the way out is the same: decide it where it is
-    # enforced, from the command actually being run.
-    #
-    # `push` has to be git's SUBCOMMAND, not merely a word near it. The first
-    # cut looked for git and push anywhere in the command and fenced
-    # `git commit -m "push the button"` and `cat notes-about-git-push.md` --
-    # which is how a guard meant for one command ends up blocking a working day.
-    #
-    # So: git at a command boundary (start, or after a separator -- never after
-    # `-` or `/`, which is what excludes the filename), then optionally its own
-    # options and their values, then push as the next word.
-    #
-    #   git push                    git push --force origin main
-    #   git -C /repo push           npm test && git push
-    #
-    # Still generous where it is cheap: a false positive costs one request, a
-    # false negative is the collision this whole design exists to prevent.
-    boundary='(^|[;&|(]|[[:space:]])'
-    option='-[^[:space:]]+[[:space:]]+([^-][^[:space:]]*[[:space:]]+)?'
-    cmd=$(jqr '.tool_input.command')
-    printf '%s' "$cmd" \
-      | grep -Eq "${boundary}git[[:space:]]+(${option})*push([[:space:]]|$)" || exit 0
+    # enforced, from the command actually being run. See is_push.
+    is_push || exit 0
 
     # The lease protects the gateway's bookkeeping; it cannot stop an agent
     # writing files. A push is where private work becomes everyone else's
@@ -281,6 +298,55 @@ case "$CMD" in
         echo "sync: could not reach the gateway to check your lease; allowing the push unchecked." >&2
         ;;
     esac
+    ;;
+
+  postpush)
+    # The other half of the window the fence cannot close (SYNC-116).
+    #
+    # The fence forms its verdict on PreToolUse and nothing revisits it:
+    #
+    #   poll -> answer -> allow -> git push runs -> published
+    #           ^ verdict                           ^ nothing looked again
+    #
+    # Measured on the other box: the poll alone is ~350ms, so the verdict is
+    # already that stale before git starts, and the push itself took ~2.5s as a
+    # DRY RUN against a warm remote. A revocation landing anywhere in that window
+    # is published, and no PreToolUse hook can change it -- the check and the
+    # publish are not atomic and nothing in this architecture can make them so.
+    #
+    # THE DECISION, recorded here because SYNC-116 asked for it either way: add
+    # the re-check. It does not prevent the publication and is not meant to. It
+    # converts "never finds out" into "told immediately", which is the same trade
+    # every loud-failure line in this project makes, and it is the trade the
+    # project keeps discovering it should have made -- the recurring defect here
+    # is a mechanism that stopped working and said nothing.
+    #
+    # What it costs, stated rather than buried: one process spawn on every Bash
+    # call, and one HTTP round trip on the ones that are pushes. The spawn is the
+    # real price, since it doubles what the fence already pays per command; the
+    # early exit below is why that is a few milliseconds and not a request.
+    #
+    # What it cannot do: unpublish. So the message says what to do, because an
+    # agent told "that was not yours" with no next step will either invent one or
+    # carry on.
+    is_push || exit 0
+    [ -r "$WATCH_FILE" ] || exit 0
+    tmp="$STATE_DIR/.postpush.$$"
+    code=$(sync_poll "$WATCH_FILE" "$tmp")
+    body=$(cat "$tmp" 2>/dev/null); rm -f "$tmp"
+
+    # Only a verdict speaks. 401 is an aged-out credential and 000 is a gateway
+    # we could not reach; neither is evidence that anything happened, and this
+    # hook runs after every push -- a line on ignorance here would be noise on
+    # the ordinary path, which is how a channel stops being read.
+    if [ "$code" = "410" ]; then
+      echo "sync: that push went out AFTER your claim ended. The work is published and is no longer yours." >&2
+      echo "sync: tell the human immediately, and do not push again on this item. Recovering it is their call -- a revert may be right, or the other holder may already have it in hand." >&2
+    elif [ "$code" = "200" ] && [ "$(get "$body" stale)" = "true" ]; then
+      reason=$(get "$body" say)
+      echo "sync: that push went out, and the gateway now says the work is not yours: ${reason:-your lease has lapsed or was revoked}" >&2
+      echo "sync: tell the human immediately rather than pushing anything further on this item." >&2
+    fi
     ;;
 
 esac

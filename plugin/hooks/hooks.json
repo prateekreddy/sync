@@ -9,6 +9,15 @@
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/sync-session harvest"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/sync-session postpush"
+          }
+        ]
       }
     ],
     "SessionStart": [

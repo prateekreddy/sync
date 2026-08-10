@@ -958,3 +958,129 @@ describe('a monitor told its work is all finished', () => {
     }
   }, 25_000);
 });
+
+/**
+ * The half of the window the fence cannot close (SYNC-116).
+ *
+ * The fence forms its verdict on PreToolUse and nothing revisits it: poll,
+ * answer, allow, push, published. Measured on the other box, the poll alone is
+ * ~350ms and the push took ~2.5s as a dry run against a warm remote, so a
+ * revocation landing anywhere in between goes out and the fence never knows.
+ * No PreToolUse hook can fix that — the check and the publish are not atomic.
+ *
+ * So the re-check does not prevent anything, and is not meant to. It converts
+ * "never finds out" into "told immediately". What is pinned here is that it
+ * stays quiet on every ordinary path, because a hook that runs after every Bash
+ * call and speaks on ignorance would be noise on the channel that carries the
+ * one message that matters.
+ */
+describe('the re-check after a push', () => {
+  const postpush = (command: string, url?: string) => {
+    const state = mkdtempSync(join(tmpdir(), 'sync-post-'));
+    if (url) writeFileSync(join(state, `${SESSION}.watch`), url);
+    return spawnSync(bin('sync-session'), ['postpush'], {
+      input: JSON.stringify({ session_id: SESSION, tool_input: { command } }),
+      encoding: 'utf8',
+      env: {
+        PATH: process.env['PATH'] ?? '',
+        HOME: state,
+        SYNC_STATE_DIR: state,
+        CLAUDE_CODE_SESSION_ID: SESSION,
+      },
+    });
+  };
+
+  it.each(['echo hello', 'git status', 'cat notes-about-git-push.md'])(
+    'does not contact the gateway for: %s',
+    (command) => {
+      // The same scope as the fence, and now literally the same function — a
+      // guard and its follow-up disagreeing about what they cover is the same
+      // defect one step removed.
+      const r = postpush(command, 'http://127.0.0.1:9/v1/watch/dead');
+      expect(r.stderr).toBe('');
+      expect(r.stdout).toBe('');
+    },
+  );
+
+  it('says nothing when the gateway cannot be reached', () => {
+    // Ignorance, on a hook that runs after every push. The fence says "allowing
+    // unchecked" because it had a decision to make and made it; this one has
+    // nothing to report, and a line here would be noise on the ordinary path.
+    expect(postpush('git push', 'http://127.0.0.1:9/v1/watch/dead').stderr).toBe('');
+  });
+
+  it('says nothing when there is no credential at all', () => {
+    expect(postpush('git push').stderr).toBe('');
+  });
+
+  const answering = async (status: number, body: string) => {
+    const port = 19200 + Math.floor(process.hrtime()[1] % 300);
+    const script = join(mkdtempSync(join(tmpdir(), 'sync-gw5-')), 'gw.py');
+    writeFileSync(
+      script,
+      [
+        'import http.server, sys',
+        'STATUS = int(sys.argv[2]); BODY = sys.argv[3].encode()',
+        'class H(http.server.BaseHTTPRequestHandler):',
+        '    def do_GET(self):',
+        '        self.send_response(STATUS)',
+        '        self.send_header("content-type", "application/json")',
+        '        self.send_header("content-length", str(len(BODY)))',
+        '        self.end_headers(); self.wfile.write(BODY)',
+        '    def log_message(self, *a): pass',
+        'http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()',
+      ].join('\n'),
+    );
+    const proc = spawn('python3', [script, String(port), String(status), body], {
+      stdio: 'ignore',
+      detached: true,
+    });
+    for (let i = 0; i < 100; i++) {
+      try {
+        execFileSync('curl', ['-sS', '-o', '/dev/null', `http://127.0.0.1:${port}/x`], {
+          timeout: 500,
+        });
+        break;
+      } catch {
+        execFileSync('sleep', ['0.05']);
+      }
+    }
+    return { url: `http://127.0.0.1:${port}/v1/watch/t`, stop: () => proc.kill() };
+  };
+
+  it('says the work went out anyway when the gateway answers 410', async () => {
+    const gw = await answering(410, '{}');
+    try {
+      const r = postpush('git push origin main', gw.url);
+      // Past tense, because it is. The fence's wording ("do not push") would be
+      // advice about something that has already happened.
+      expect(r.stderr).toMatch(/went out AFTER your claim ended/);
+      // And a next step, because an agent told "that was not yours" with nothing
+      // to do will either invent something or carry on.
+      expect(r.stderr).toMatch(/tell the human/i);
+    } finally {
+      gw.stop();
+    }
+  }, 20_000);
+
+  it('relays the gateway"s own reason on a stale 200', async () => {
+    const gw = await answering(200, '{"stale":true,"say":"worker-9 took SYNC-1"}');
+    try {
+      const r = postpush('git push', gw.url);
+      expect(r.stderr).toMatch(/worker-9 took SYNC-1/);
+    } finally {
+      gw.stop();
+    }
+  }, 20_000);
+
+  it('stays quiet on a healthy 200', async () => {
+    // The overwhelmingly common case: the push was fine. This is the assertion
+    // that decides whether the hook is worth having at all.
+    const gw = await answering(200, '{"holding":"SYNC-1"}');
+    try {
+      expect(postpush('git push', gw.url).stderr).toBe('');
+    } finally {
+      gw.stop();
+    }
+  }, 20_000);
+});
