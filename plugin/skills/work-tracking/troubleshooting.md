@@ -1,12 +1,39 @@
 # When sync refuses, or comes back empty
 
 ## Contents
+- No sync tools at all — installed, but not connected
 - `NO_WORK`, and why an empty result is usually correct
 - What the gateway refuses to do, and the reason for each
 - Reading a failure: the error code and its recovery line
 
 Every refusal here is deliberate and carries a recovery line. Follow it rather
 than working around it. The loop is in [SKILL.md](SKILL.md).
+
+## No sync tools at all
+
+You have this playbook and no `capture`, `claim` or `complete` to use it with. That is not a
+half-broken install: the plugin ships the rules, the hooks and the liveness monitor from disk, while
+every tool comes from the gateway over an authenticated connection. Installing the plugin does not
+make that connection. Sign-in is a browser flow, so a box nobody has signed in on has all of the
+former and none of the latter.
+
+**This is the one sync failure that does not refuse you**, and it is worth being clear about why
+that matters. Every other failure here hands back a code and a recovery line. This one hands back
+nothing, because there is no tool to call — so an agent that does not check simply works without a
+lease, which is the state the gateway exists to abolish. The most dangerous-looking symptom is the
+quietest.
+
+Do not carry on unclaimed, and do not look for another way to record the work. Say plainly that sync
+is installed but not connected, and offer the two ways out:
+
+- **someone is at this machine** — ask them to run `/mcp`, pick `sync`, and sign in. One browser
+  page, then restart the session.
+- **nobody is** (a container, a CI runner, a provisioned box) — run
+  `${CLAUDE_PLUGIN_ROOT}/bin/sync-connect --help`. It exchanges a Plane personal token for an agent
+  token and writes the server entry itself, with no browser anywhere in it. Restart afterwards.
+
+Both end in a restart, because a client picks its MCP servers up at startup. Until then, treat every
+item as unclaimed by you.
 
 ## When `next` or `claim` comes back empty
 

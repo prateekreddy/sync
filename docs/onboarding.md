@@ -21,6 +21,37 @@ offers the flow when you next open `/mcp`.
 so either run `claude mcp login` once on that machine first, or use the token flow
 below.
 
+### Or install the plugin
+
+```
+/plugin marketplace add prateekreddy/sync
+/plugin install sync@sync
+```
+
+Same server, plus the working rules, the session hooks and the liveness monitor —
+and no URL to know. Sign-in is the same browser flow, offered on the first tool
+call.
+
+**Installing is not connecting**, and this is the one failure mode worth learning
+before you hand the plugin to anyone. The rules, hooks and monitor come from disk;
+every *tool* comes from the gateway over an authenticated connection. On a box
+where nobody has signed in you get all of the former and none of the latter — and
+because there is no `claim` tool to call, nothing refuses, so an agent works with
+no lease at all. Every other fault in this document announces itself. This one is
+an absence.
+
+Two things bound it. The plugin says so once, on the first session on a machine
+that has never held a claim, and stops once a claim succeeds; and the playbook
+tells the agent to check for `claim` before it starts and to stop if it is not
+there. On a box with nobody to run `/mcp`, connect it without a browser:
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/bin/sync-connect --url https://<gateway-host> --agent worker-1
+```
+
+That is the same script as `bin/onboard.sh` below, shipped inside the plugin
+because a box that installed the plugin has no clone of this repository.
+
 ## The token way
 
 Use this for headless boxes, CI, and provisioning scripts.
@@ -79,6 +110,16 @@ It checks the gateway answers before registering anything, so a wrong URL or a
 rejected token fails here rather than inside an agent session. Every value comes
 from a flag, then an environment variable, then a prompt. `--client codex` prints
 Codex config instead of registering.
+
+The script itself lives at `plugin/bin/sync-connect` and `bin/onboard.sh` forwards
+to it, so a machine with only the plugin installed can run the same flow:
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/bin/sync-connect --help
+```
+
+One copy rather than two, because two onboarding scripts drift and the drift shows
+up as a box that will not connect.
 
 ## Listing the agents you own
 
@@ -170,6 +211,7 @@ gone rather than two thirds of it. `issue-token`, `list-tokens` and
 | `refusing to send a token unencrypted` | Gateway URL is `http://` on a remote host | Use `https://`, or a localhost address |
 | `claude mcp list` shows `✘ Failed to connect` | Wrong URL, or the gateway is down | `curl https://<gateway-host>/healthz` should return `{"ok":true,…}` |
 | A tool is missing, or behaves like an older version | The host is running an older build than you think | `curl https://<gateway-host>/healthz` reports `build.sha` — compare it with `git rev-parse HEAD`. `schema.level` is the highest migration that host's database has had |
+| **No `capture`/`claim` tools, and no error anywhere** | The plugin is installed and nobody has signed in. Nothing refuses in this state, so an agent will work with no lease unless it checks | `/mcp` in the session, or `${CLAUDE_PLUGIN_ROOT}/bin/sync-connect` where there is no browser. Restart either way |
 | Connects, but the agent has no `capture`/`claim` tools | Registered against the wrong server name, or an old stdio config is shadowing it | `claude mcp remove sync` then re-add |
 | `UNAUTHENTICATED` on every tool call | Token revoked, or replaced by a later mint with the same agent name | Mint again and re-run `claude mcp add` |
 | `next` returns nothing | Nothing is ready | Call `why` on the item you expected to see. It answers with the reasons the gate itself used, rather than leaving you to guess |

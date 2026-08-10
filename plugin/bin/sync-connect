@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+#
+# Point an agent at a sync gateway, on a machine with no browser.
+#
+#   sync-connect                          # asks for what it needs
+#   sync-connect --url … --plane-token … --agent worker-1 --project … -y
+#
+# Sign-in is normally a browser flow the plugin starts for you, and on a laptop
+# that is the better path. This is for everywhere else: a container, a CI runner,
+# a box somebody else provisioned. Claude Code disables its OAuth fallback the
+# moment an Authorization header is configured, so a token and a browser sign-in
+# are alternatives rather than a belt and braces — which is why this writes a
+# server entry of its own rather than adding a header to the plugin's.
+#
+# Needs no server access. You create a personal token in Plane's UI, and this
+# exchanges it for an agent token — a strictly weaker credential that cannot
+# reach Plane directly and cannot take work without a lease.
+#
+# Nothing is hardcoded. Every value comes from a flag, then the environment, then
+# a prompt — in that order — so the same script works for a person setting up a
+# laptop and for a provisioning system creating a project.
+#
+#   --url URL          gateway base URL          (env: SYNC_GATEWAY_URL)
+#   --plane-token TOK  your Plane personal token (env: PLANE_TOKEN)
+#                      Plane → your avatar → Settings → Personal access tokens
+#   --agent NAME       what to call this agent   (env: SYNC_AGENT_NAME)
+#                      namespaced by you server-side, so "worker-1" is yours alone
+#   --project UUID     Plane project to bind     (env: SYNC_PROJECT_ID)
+#                      the uuid in the project's URL; offered as a list if omitted
+#   --token TOKEN      an existing sync_agent_ token — skips minting
+#                                                (env: SYNC_AGENT_TOKEN)
+#   --client claude|codex                        (env: SYNC_CLIENT; default: detected)
+#   --scope local|user|project                   (default: local)
+#   --name NAME        MCP server name           (default: sync)
+#   -y, --yes          never prompt; fail if something is missing
+set -euo pipefail
+
+URL="${SYNC_GATEWAY_URL:-}"
+TOKEN="${SYNC_AGENT_TOKEN:-}"
+PLANE_TOKEN="${PLANE_TOKEN:-}"
+AGENT="${SYNC_AGENT_NAME:-}"
+PROJECT="${SYNC_PROJECT_ID:-}"
+CLIENT="${SYNC_CLIENT:-}"
+SCOPE=local
+NAME=sync
+ASSUME_YES=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --url)         URL="$2"; shift 2 ;;
+    --token)       TOKEN="$2"; shift 2 ;;
+    --plane-token) PLANE_TOKEN="$2"; shift 2 ;;
+    --agent)       AGENT="$2"; shift 2 ;;
+    --project)     PROJECT="$2"; shift 2 ;;
+    --client)      CLIENT="$2"; shift 2 ;;
+    --scope)       SCOPE="$2"; shift 2 ;;
+    --name)        NAME="$2"; shift 2 ;;
+    -y|--yes)      ASSUME_YES=1; shift ;;
+    # The whole header comment, however long it grows. A line range was pinned
+    # here and stopped short of the options the day the header gained a
+    # paragraph, so `--help` documented some of the flags and hid the rest.
+    -h|--help)     sed -n '2,/^set /{/^set /!p;}' "$0"; exit 0 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+
+die() { echo "error: $*" >&2; exit 1; }
+
+ask() { # ask <prompt> <current> [silent]
+  local prompt="$1" current="$2" silent="${3:-}" answer
+  if [ -n "$current" ]; then printf '%s' "$current"; return; fi
+  [ "$ASSUME_YES" -eq 1 ] && die "$prompt is required (running with --yes)"
+  [ -t 0 ] || die "$prompt is required and there is no terminal to ask on"
+  if [ -n "$silent" ]; then read -rsp "$prompt: " answer </dev/tty; echo >&2
+  else read -rp "$prompt: " answer </dev/tty; fi
+  printf '%s' "$answer"
+}
+
+json() { # json <expression> — reads stdin, prints '' on any failure
+  python3 -c "
+import json,sys
+try: print(json.load(sys.stdin)$1)
+except Exception: print('')
+" 2>/dev/null || echo ''
+}
+
+URL=$(ask "Gateway URL (e.g. https://mcp.example.dev)" "$URL")
+[ -n "$URL" ] || die "no gateway URL"
+URL="${URL%/}"
+case "$URL" in http://*|https://*) ;; *) die "URL must start with http:// or https://" ;; esac
+
+# Refuse to send a credential over plaintext to anything but the local machine.
+# This now matters more than it did: the Plane personal token below is the
+# stronger of the two credentials, and anyone on the path could copy it.
+case "$URL" in
+  https://*) ;;
+  http://localhost*|http://127.0.0.1*|http://host.docker.internal*|http://[::1]*) ;;
+  *) die "refusing to send a token unencrypted to $URL — use https, or a local address" ;;
+esac
+
+# ── reachable? ───────────────────────────────────────────────────────────────
+# Checked before anything is sent, so a wrong hostname costs one clear error
+# rather than a leaked token and a confusing one.
+echo "checking ${URL} …"
+health=$(curl -sS -m 20 "${URL}/healthz" 2>&1) || die "could not reach ${URL} — $health"
+case "$health" in
+  *'"ok"'*) ;;
+  # Plane and the gateway usually live on sibling hostnames, and pointing at
+  # Plane returns its web app. Say that, rather than printing a page of HTML at
+  # someone who is only trying to set up a tool.
+  *'<html'*|*'<!DOCTYPE'*|*'<!doctype'*)
+    die "$URL served a web page, not a gateway. This wants the gateway host (often mcp.<your-plane-host>), not Plane itself." ;;
+  *) die "unexpected reply from ${URL}/healthz: $(printf '%s' "$health" | tr -d '\n' | head -c 200)" ;;
+esac
+
+# ── get an agent token ───────────────────────────────────────────────────────
+if [ -z "$TOKEN" ]; then
+  echo
+  echo "No agent token given, so let's mint one."
+  echo "  In Plane: your avatar → Settings → Personal access tokens → Add token."
+  echo "  Any role works — you do not need to be a workspace admin."
+  echo
+  PLANE_TOKEN=$(ask "Your Plane personal token (plane_api_…)" "$PLANE_TOKEN" silent)
+  [ -n "$PLANE_TOKEN" ] || die "no Plane token, and no --token to use instead"
+
+  AGENT=$(ask "Name for this agent (e.g. worker-1)" "${AGENT:-worker-1}")
+
+  # Offer the projects this person can actually see rather than making them go
+  # and dig a uuid out of a URL. Best-effort: a failure here just means typing it.
+  if [ -z "$PROJECT" ] && [ "$ASSUME_YES" -eq 0 ] && [ -t 0 ]; then
+    listing=$(curl -sS -m 20 -X POST "${URL}/v1/agent-tokens" \
+      -H "Authorization: Bearer ${PLANE_TOKEN}" -H 'Content-Type: application/json' \
+      -d "{\"agent\":\"${AGENT}\",\"projectId\":\"00000000-0000-0000-0000-000000000000\"}" 2>/dev/null || true)
+    ids=$(printf '%s' "$listing" | json "['visibleProjects']" | tr -d "[]'\," )
+    if [ -n "$ids" ]; then
+      echo "  projects you can see: $ids"
+    fi
+  fi
+  PROJECT=$(ask "Plane project uuid to bind this agent to" "$PROJECT")
+
+  body="{\"agent\":$(printf '%s' "$AGENT" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))')"
+  [ -n "$PROJECT" ] && body="${body},\"projectId\":\"${PROJECT}\""
+  body="${body}}"
+
+  minted=$(curl -sS -m 30 -X POST "${URL}/v1/agent-tokens" \
+    -H "Authorization: Bearer ${PLANE_TOKEN}" -H 'Content-Type: application/json' \
+    -d "$body" 2>&1) || die "could not reach ${URL}/v1/agent-tokens — $minted"
+
+  TOKEN=$(printf '%s' "$minted" | json "['token']")
+  if [ -z "$TOKEN" ]; then
+    msg=$(printf '%s' "$minted" | json "['message']")
+    die "${msg:-the gateway would not issue a token: $(printf '%s' "$minted" | head -c 200)}"
+  fi
+  echo "  minted $(printf '%s' "$minted" | json "['agent']") for $(printf '%s' "$minted" | json "['planeUser']['email']")"
+fi
+
+# ── verify the token before registering it ───────────────────────────────────
+# Registering first and discovering the problem later means debugging inside an
+# agent session, where the only symptom is a tool that is not there.
+probe=$(curl -sS -m 20 -X POST "${URL}/mcp" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"onboard","version":"1"}}}' \
+  2>&1) || die "could not reach ${URL}/mcp — $probe"
+
+case "$probe" in
+  *'"serverInfo"'*) ;;
+  *UNAUTHENTICATED*) die "the gateway rejected that agent token. Mint a new one, or check --token." ;;
+  *) die "unexpected reply from ${URL}/mcp: $(printf '%s' "$probe" | tr -d '\n' | head -c 200)" ;;
+esac
+
+tools=$(curl -sS -m 20 -X POST "${URL}/mcp" \
+  -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' 2>/dev/null \
+  | json "['result']['tools'].__len__()")
+echo "  ok — ${tools:-?} tools available"
+
+# ── which client ─────────────────────────────────────────────────────────────
+if [ -z "$CLIENT" ]; then
+  if command -v claude >/dev/null 2>&1; then CLIENT=claude
+  elif command -v codex >/dev/null 2>&1; then CLIENT=codex
+  else CLIENT=$(ask "Client (claude or codex)" "" ); fi
+fi
+
+case "$CLIENT" in
+  claude)
+    command -v claude >/dev/null 2>&1 || die "the claude CLI is not on PATH"
+    claude mcp remove "$NAME" >/dev/null 2>&1 || true
+    if [ "$SCOPE" = project ]; then
+      # A project-scoped server lives in .mcp.json, which is committed — so the
+      # token must be a reference, never a literal. It also needs a one-time
+      # approval the first time someone opens the repo.
+      python3 - "$NAME" "$URL" <<'PY'
+import json, pathlib, sys
+name, url = sys.argv[1], sys.argv[2]
+p = pathlib.Path('.mcp.json')
+cfg = json.loads(p.read_text()) if p.exists() else {}
+cfg.setdefault('mcpServers', {})[name] = {
+    'type': 'http',
+    'url': '${SYNC_GATEWAY_URL:-' + url + '}/mcp',
+    'headers': {'Authorization': 'Bearer ${SYNC_AGENT_TOKEN}'},
+}
+p.write_text(json.dumps(cfg, indent=2) + '\n')
+print(f'wrote .mcp.json (server "{name}")')
+PY
+      cat <<EOF
+
+  .mcp.json holds no secret: it reads SYNC_AGENT_TOKEN from the environment, so
+  each agent supplies its own. Export it where your agents run:
+
+    export SYNC_AGENT_TOKEN=${TOKEN}
+
+  Project-scoped servers need approving once per machine — Claude Code will ask
+  the first time, or pre-approve by adding "$NAME" to enabledMcpjsonServers for
+  this project in ~/.claude.json.
+EOF
+    else
+      claude mcp add --transport http --scope "$SCOPE" "$NAME" "${URL}/mcp" \
+        --header "Authorization: Bearer ${TOKEN}" >/dev/null
+      echo "registered \"$NAME\" with Claude Code (scope: $SCOPE)"
+      claude mcp list 2>/dev/null | grep -E "^${NAME}:" || true
+    fi
+    ;;
+
+  codex)
+    # Codex's config is TOML and may already have hand-written entries, so print
+    # rather than rewrite it. Losing someone's config to a careless edit is worse
+    # than asking them to paste four lines.
+    cat <<EOF
+
+Add this to ~/.codex/config.toml:
+
+  [mcp_servers.${NAME}]
+  url = "${URL}/mcp"
+  http_headers = { Authorization = "Bearer ${TOKEN}" }
+
+If your Codex build does not accept an HTTP MCP server, use the stdio bridge
+instead (build it once with: cd mcp && npm ci && npm run build):
+
+  [mcp_servers.${NAME}]
+  command = "node"
+  args = ["$(cd "$(dirname "$0")/../mcp" 2>/dev/null && pwd || echo /path/to)/dist/index.js"]
+  env = { SYNC_GATEWAY_URL = "${URL}", SYNC_AGENT_TOKEN = "${TOKEN}" }
+EOF
+    ;;
+  *) die "unknown client: $CLIENT (expected claude or codex)" ;;
+esac
+
+cat <<'EOF'
+
+Done. Two things worth doing next, neither automatic:
+
+  * Add the discipline to the repo's CLAUDE.md / AGENTS.md. The server tells the
+    model the rules on connect, but not every client surfaces that, and a repo
+    file is the one place guaranteed to be in context. See docs/onboarding.md.
+
+  * Check what you are holding before starting work: ask the agent to call
+    `held`. After a crash or a restart that is the only way it finds out what it
+    had already claimed.
+EOF

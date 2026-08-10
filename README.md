@@ -216,8 +216,9 @@ sessions.
 
 You can also open `/mcp` in a Codex session to see the server status.
 
-**For headless agents** — `claude -p`, the Agent SDK, CI — there is no browser, so
-exchange the Plane token for an agent token and pass it as a header:
+**For headless agents** — `claude -p`, the Agent SDK, CI, a container, any box
+nobody is sitting at — there is no browser, so the sign-in above cannot finish.
+Exchange the Plane token for an agent token and pass it as a header instead:
 
 ```bash
 curl -sS -X POST https://<gateway-host>/v1/agent-tokens \
@@ -228,13 +229,28 @@ claude mcp add --transport http sync https://<gateway-host>/mcp \
   --header "Authorization: Bearer sync_agent_..."
 ```
 
+The two routes are alternatives, not layers: **Claude Code disables OAuth fallback
+as soon as `headers.Authorization` is set on a server**, so an entry with a header
+never offers to sign in, and an entry that offers to sign in cannot carry a token.
+Pick per box.
+
 Either way: nothing built, nothing cloned, no project id on the agent box. New
 tools and Plane upgrades arrive on the next gateway deploy without touching this
 machine.
 
-`bin/onboard.sh` does the token flow with the gateway checked first. It takes every
-value as a flag, then an environment variable, then a prompt, so it suits both a
-person and a provisioning script. `--client codex` prints Codex config.
+`sync-connect` does that whole flow with the gateway checked first, and verifies
+the token before registering it — so a bad value fails at a shell prompt rather
+than as a missing tool inside an agent session. It takes every value as a flag,
+then an environment variable, then a prompt, so it suits both a person and a
+provisioning script. `--client codex` prints Codex config.
+
+```bash
+bin/onboard.sh --help                             # from a clone of this repo
+${CLAUDE_PLUGIN_ROOT}/bin/sync-connect --help     # from an installed plugin
+```
+
+The second is the one that matters on a provisioned box: the plugin is the only
+thing installed there, so the connect script has to ship inside it.
 
 Set `GATEWAY_PUBLIC_URL` in `deploy/.env` to the URL agents use. Sign-in builds
 every address from it, and behind a proxy that does not forward the original host
@@ -455,7 +471,8 @@ the citation that resolves to nothing, which is visible immediately.
 | `already belongs to a different Plane user` | Someone else has that agent name. Pick another |
 | HTTP 429 from `/v1/agent-tokens` | Mint limit is 10/min per address. Wait a minute |
 | `UNAUTHENTICATED` from a tool call | The agent token is wrong or was replaced. Mint a new one and re-run `claude mcp add` |
-| Agent connects but has no tools | Gateway is up but Plane is unreachable from it. Check `docker compose logs gateway` |
+| **Agent has no sync tools at all, and nothing errored** | Installed but never signed in — the tools come from the gateway, the rules and hooks come from disk. A person runs `/mcp`; a box with no browser runs `sync-connect`. Restart either way. Nothing refuses in this state, so an agent will work with no lease unless it checks |
+| Agent has no tools, but `claude mcp list` says **connected** | A different fault from the row above: the gateway is up and authenticating you, and cannot reach Plane to build the catalogue. Check `docker compose logs gateway` |
 | **502 from your reverse proxy, with a valid certificate** | The proxy answered and could not reach the stack. If that proxy is itself a container, `127.0.0.1` is *its* loopback, not the host's — join it to the stack's network and use `reverse_proxy proxy:80` and `gateway:8787`. See the two variants in `deploy/Caddyfile.sync` |
 | **Migrator loops on `password authentication failed for user "plane"`** | The `pgdata` volume predates the current `.env`: Postgres sets `POSTGRES_PASSWORD` only when it first initialises. Realign the database over its unix socket, which trusts local connections even when the TCP password is wrong — see below |
 

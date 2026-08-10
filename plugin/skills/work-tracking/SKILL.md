@@ -6,6 +6,11 @@ user-invocable: true
 
 # Working through the tracker
 
+**First, check the tools are actually there.** If you cannot see `claim` in the tool list, sync is
+installed but not connected, and the failure is an absence rather than a refusal — nothing will stop
+you working, and two agents can take the same item. Stop and say so; see
+[troubleshooting.md](troubleshooting.md) § No sync tools.
+
 Two halves live on one MCP server. Do not confuse them:
 
 - **Coordination tools** — 18 of them — exist because Plane has no equivalent. They are the only

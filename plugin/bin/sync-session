@@ -64,6 +64,37 @@ case "$CMD" in
       echo "sync is degraded: this session has no id (CLAUDE_CODE_SESSION_ID is unset), so"
       echo "your claim will NOT be kept alive and may lapse while you are still working."
     fi
+
+    # The third way this is off, and the only one an agent cannot notice for
+    # itself (SYNC-117).
+    #
+    # Installing the plugin does not connect it. The gateway answers 401 with a
+    # sign-in offer, and completing that offer needs a browser and a person, so a
+    # freshly provisioned box has the hooks, the monitor and the playbook -- and
+    # no tools. Reported from a fresh box on 2026-08-10: no sync tool existed
+    # in-session for the first twenty minutes, and nothing the box could do from
+    # inside the session fixed it.
+    #
+    # The danger is the SHAPE of that failure, not the friction. Every other way
+    # this breaks produces a refusal an agent can read. This one produces an
+    # absence: there is no claim tool to call, so nothing refuses, so the agent
+    # works WITHOUT a lease -- the pre-gateway world, and the exact collision the
+    # gateway exists to prevent. The safest-looking failure gives the least safe
+    # behaviour.
+    #
+    # Said on a box that has never held a claim, and only there. The marker is
+    # written by `harvest`, so this stops the moment the first claim succeeds and
+    # a connected machine never sees it twice. That is deliberately not "once per
+    # install": the question is not whether this is a new session, it is whether
+    # anything on this machine has ever reached the gateway.
+    if [ ! -e "$STATE_DIR/connected" ]; then
+      echo "sync: nothing on this machine has claimed anything yet, so this may not be connected."
+      echo "If you can see the sync tools (capture, claim, complete), it is — carry on."
+      echo "If you CANNOT see them, sync is installed but not signed in. Do not do tracked work"
+      echo "anyway: with no claim tool there is nothing to refuse you, and two agents can take"
+      echo "the same item. Say so, and either have a human run /mcp in this session, or connect"
+      echo "without a browser:  $SYNC_BIN/sync-connect --help"
+    fi
     ;;
 
   harvest)
@@ -104,6 +135,12 @@ case "$CMD" in
       # extend this session's leases and report them -- but small is not none.
       umask 077
       printf '%s' "$url" > "$WATCH_FILE"
+      # Proof that this machine reached the gateway: a watch URL only exists
+      # because a claim was authenticated and granted. It retires the "you may
+      # not be connected" notice in preflight, and it is written here rather than
+      # on any successful poll because a poll only proves a credential from some
+      # earlier claim still works.
+      : > "$STATE_DIR/connected" 2>/dev/null || true
     else
       # This hook only runs after a claim, and a claim always returns a watch
       # URL. Finding none means the result arrived in a shape none of the above

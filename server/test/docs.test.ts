@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync, readdirSync } from 'node:fs';
+import { accessSync, constants, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { NATIVE_TOOLS } from '../src/toolspec.js';
 import { INSTRUCTIONS } from '../src/mcphttp.js';
@@ -225,5 +225,69 @@ describe('the always-on channels agree', () => {
     // sentence that was wrong in three places at once, and a canary on the exact
     // drift that happened is worth more than a check for drift in the abstract.
     expect(plain(text)).not.toMatch(/capture once per child/i);
+  });
+});
+
+/**
+ * Connecting a box nobody is sitting at (SYNC-117).
+ *
+ * The plugin's whole proposition is that nothing is cloned and nothing is built,
+ * which is exactly why the script that connects a browser-less machine cannot
+ * live only in this repository: the boxes that need it are the ones that do not
+ * have it. It ships inside the plugin, and `bin/onboard.sh` — the path the README
+ * and provisioning have always used — forwards to it rather than being a second
+ * copy, because two onboarding scripts drift and the drift reads as a box that
+ * will not connect.
+ */
+describe('the connect script reaches the boxes that need it', () => {
+  it('ships in the plugin, executable', () => {
+    // Not executable is the same as absent here: it is invoked by path, from a
+    // shell, by somebody who has no way to know they need to chmod it.
+    accessSync(repo('plugin/bin/sync-connect'), constants.X_OK);
+  });
+
+  it('is forwarded to, not copied, by the documented repo path', () => {
+    const forwarder = read('bin/onboard.sh');
+    expect(forwarder).toMatch(/exec .*plugin\/bin\/sync-connect/);
+    // A forwarder is short by nature. If this has grown into a script again,
+    // somebody has started keeping logic in two places.
+    expect(forwarder.split('\n').length).toBeLessThan(30);
+  });
+
+  it('is documented where each kind of box would look', () => {
+    expect(read('plugin/README.md')).toMatch(/sync-connect/);
+    expect(read('docs/onboarding.md')).toMatch(/sync-connect/);
+    expect(read('README.md')).toMatch(/sync-connect/);
+  });
+});
+
+/**
+ * The plugin's server entry must stay browser-only.
+ *
+ * Measured 2026-08-10 against a live gateway: Claude Code reports "OAuth fallback
+ * is disabled when headers.Authorization is set", and it means it — an entry
+ * whose Authorization header expands to the EMPTY STRING still gets no sign-in
+ * offer, just a hard 401. So the obvious-looking improvement, `Authorization:
+ * Bearer ${SYNC_AGENT_TOKEN:-}` so that provisioned boxes carry a token and
+ * everyone else falls back to the browser, does not degrade gracefully: it
+ * silently converts every unprovisioned install into one that can never sign in.
+ *
+ * A token and a browser sign-in are alternatives, not layers. `sync-connect`
+ * therefore writes a server entry of its own, and this one stays clean.
+ */
+describe("the plugin's MCP server", () => {
+  const config = () => JSON.parse(read('plugin/.mcp.json')).mcpServers.sync;
+
+  it('configures no Authorization header', () => {
+    const headers: Record<string, string> = config().headers ?? {};
+    const names = Object.keys(headers).map((h) => h.toLowerCase());
+    expect(names).not.toContain('authorization');
+  });
+
+  it('still passes the session id, which is what headers are for here', () => {
+    // The other direction of the same check: this must not be "solved" by
+    // dropping headers altogether. Session identity is what every protection
+    // built on sessions rests on.
+    expect(config().headers['X-Sync-Session']).toMatch(/CLAUDE_CODE_SESSION_ID/);
   });
 });

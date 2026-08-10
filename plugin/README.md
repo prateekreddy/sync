@@ -16,10 +16,43 @@ its own single-plugin marketplace. To pick up a new version later:
 
 Sign-in happens in the browser on first use. Nothing secret lives in this plugin.
 
+**Installing is not connecting.** Until somebody signs in, this box has the rules,
+the hooks and the monitor — and no tools. See **On a box with no browser** below;
+it is the one failure that does not announce itself.
+
 **Already added the gateway by hand?** If you ran `claude mcp add --transport http sync …`
 at some point, that entry wins and the plugin's is skipped with a note saying so —
 you keep the tools, but not the OAuth sign-in. Remove it with `claude mcp remove sync`
 and restart, or keep it and accept a long-lived token sitting in your config.
+
+## On a box with no browser
+
+A container, a CI runner, a machine someone else provisioned: there is no browser
+to open, so the sign-in below cannot finish and the session comes up with no sync
+tools at all.
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/bin/sync-connect --url https://<gateway-host> --agent worker-1
+```
+
+It asks for a Plane personal token, exchanges it for an agent token, writes the
+server entry, and verifies it before it says it worked. `--help` lists every flag;
+each one also reads from an environment variable, so a provisioning script can run
+it with `-y` and no terminal. Restart the session afterwards — a client reads its
+MCP servers at startup.
+
+That entry replaces the plugin's rather than adding a header to it, and it has to:
+**Claude Code turns OAuth fallback off the moment `headers.Authorization` is set**,
+even when the value is empty. So a single server entry cannot offer both a token
+and a browser sign-in, and the plugin's stays browser-only so that the common case
+keeps working with nothing to configure.
+
+**What it looks like when this has not been done**, because it does not look like
+an error. Every other sync failure hands back a refusal with a recovery line. This
+one hands back nothing — there is no `claim` to call, so nothing refuses, and an
+agent that does not check works with no lease at all. On the first session on a
+machine that has never held a claim, the plugin says so once, and stops saying it
+the moment a claim succeeds.
 
 ## Signing in
 
@@ -75,6 +108,7 @@ launched from that shell, which is a confusing way to lose half your sessions.
 | | |
 |---|---|
 | `.mcp.json` | the gateway — coordination tools plus Plane's own surface |
+| `bin/sync-connect` | connects a box that has no browser to sign in with |
 | `monitors/` | keeps your claim alive while you work, and tells you if it is taken away |
 | `hooks/` | harvest the lease credential, report on resume, hand work back on exit, fence `git push` |
 | `skills/` | the working rules |

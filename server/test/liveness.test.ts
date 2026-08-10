@@ -203,6 +203,72 @@ describe('the writer and the reader agree on a filename', () => {
   });
 });
 
+/**
+ * The one sync failure that produces no refusal (SYNC-117).
+ *
+ * Installing the plugin does not connect it: the hooks, the monitor and the
+ * playbook come off disk, every tool comes from the gateway over an
+ * authenticated connection, and completing that authentication needs a browser
+ * and a person. So a freshly provisioned box has all of the former and none of
+ * the latter — and because there is no `claim` tool to call, nothing refuses,
+ * and the agent works with no lease at all. Reported from a fresh box on
+ * 2026-08-10: no sync tool existed in-session for the first twenty minutes.
+ *
+ * Every other fault in this file announces itself. This one is an absence, which
+ * is why it has to be announced from the outside.
+ */
+describe('a box that has never reached the gateway', () => {
+  it('says the tools may not be there, and names both ways out', () => {
+    const { stdout } = run('sync-session', ['preflight'], {}, { CLAUDE_CODE_SESSION_ID: SESSION });
+    expect(stdout).toMatch(/may not be connected/i);
+    // Both routes, because each is useless on the other kind of box: /mcp needs
+    // somebody at a keyboard, and sync-connect is what a container has instead.
+    expect(stdout).toMatch(/\/mcp/);
+    expect(stdout).toMatch(/sync-connect/);
+    // The instruction, not just the diagnosis. Without this the agent reads a
+    // note about tooling and carries on doing exactly the unclaimed work the
+    // notice exists to stop.
+    expect(stdout).toMatch(/do not do tracked work/i);
+  });
+
+  it('stops saying it once a claim has been harvested here', () => {
+    // Keyed on "has this machine ever held a claim", not on "is this a new
+    // session" — a connected box would otherwise be told this every time it
+    // starts, and a notice that fires on every healthy session is one people
+    // learn to scroll past before the day it is true.
+    const { state } = run(
+      'sync-session',
+      ['harvest'],
+      { session_id: SESSION, tool_response: CLAIM_RESULT },
+      { CLAUDE_CODE_SESSION_ID: SESSION },
+    );
+    const stdout = execFileSync(bin('sync-session'), ['preflight'], {
+      input: '{}',
+      encoding: 'utf8',
+      env: {
+        PATH: process.env['PATH'] ?? '',
+        HOME: state,
+        SYNC_STATE_DIR: state,
+        CLAUDE_CODE_SESSION_ID: SESSION,
+      },
+    });
+    expect(stdout).toBe('');
+  });
+
+  it('does not count a claim whose watch URL could not be read', () => {
+    // That harvest failed, so nothing proves this box ever authenticated —
+    // and it is exactly the case where a further warning is warranted rather
+    // than suppressed.
+    const { state } = run(
+      'sync-session',
+      ['harvest'],
+      { session_id: SESSION, tool_response: { somethingElse: true } },
+      { CLAUDE_CODE_SESSION_ID: SESSION },
+    );
+    expect(existsSync(join(state, 'connected'))).toBe(false);
+  });
+});
+
 describe('the hook that starts the chain', () => {
   it('matches the tool name the plugin actually publishes', () => {
     // A plugin's MCP server is namespaced by the plugin, so the tool an agent
