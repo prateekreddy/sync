@@ -19,6 +19,25 @@ set -u
 
 path="${1:-}"
 [ -n "$path" ] || exit 0
+
+# `count:a.b` answers how many elements are in an array, rather than reading a
+# value out of it.
+#
+# Added for one caller and worth the shared code anyway: sync-connect reports how
+# many tools the gateway offered, and "connects, but zero tools" is a documented
+# fault with a cause of its own (the gateway is up and cannot reach Plane). Doing
+# that count in the caller means picking a parser there, which is the dependency
+# this file exists to remove.
+#
+# Only an array counts. A string has a length too, and every backend would happily
+# return it -- so `count:` on a field that turned out to be a string would report a
+# plausible number for something that is not a list at all. Nothing is a better
+# answer than a wrong one.
+count=''
+case "$path" in
+  count:*) count=1; path="${path#count:}" ;;
+esac
+
 # Accept both `.a.b` and `a.b`. Callers write it either way depending on whether
 # they are thinking in jq or in dotted paths, and a silent empty answer because
 # of a leading dot is exactly the kind of failure this helper exists to prevent.
@@ -46,7 +65,13 @@ if command -v jq >/dev/null 2>&1; then
     esac
   done
   IFS=$saved_ifs
-  jq -r "try (.${expr}) // empty" 2>/dev/null
+  if [ -n "$count" ]; then
+    # `// empty` would not do here: it fires on false and null, and 0 is neither,
+    # so a genuinely empty array still reports 0 rather than nothing.
+    jq -r "try (.${expr} | if type == \"array\" then length else empty end)" 2>/dev/null
+  else
+    jq -r "try (.${expr}) // empty" 2>/dev/null
+  fi
 elif command -v node >/dev/null 2>&1; then
   node -e '
     let raw = "";
@@ -56,13 +81,17 @@ elif command -v node >/dev/null 2>&1; then
         const v = process.argv[1]
           .split(".")
           .reduce((o, k) => (o == null ? o : o[k]), JSON.parse(raw));
-        if (v !== undefined && v !== null) process.stdout.write(String(v));
+        if (process.argv[2]) {
+          if (Array.isArray(v)) process.stdout.write(String(v.length));
+        } else if (v !== undefined && v !== null) {
+          process.stdout.write(String(v));
+        }
       } catch {
         // Absent, or not JSON at all. Both mean "no value", and neither is worth
         // failing a hook over.
       }
     });
-  ' "$path" 2>/dev/null
+  ' "$path" "$count" 2>/dev/null
 elif command -v python3 >/dev/null 2>&1; then
   python3 -c '
 import json, sys
@@ -72,11 +101,14 @@ try:
         # A list is indexed by an int, a dict by the key as written. Without
         # this, any path through an array raised and was reported as absent.
         v = v[int(k)] if isinstance(v, list) else v[k]
-    if v is not None:
+    if sys.argv[2]:
+        if isinstance(v, list):
+            sys.stdout.write(str(len(v)))
+    elif v is not None:
         sys.stdout.write(str(v))
 except Exception:
     pass
-' "$path" 2>/dev/null
+' "$path" "$count" 2>/dev/null
 else
   # Nothing to parse JSON with. This is the one case that must NOT be quiet:
   # every caller here treats an empty answer as "the field was absent", so

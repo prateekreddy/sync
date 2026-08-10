@@ -75,7 +75,7 @@ its own without touching Plane.
 
 ## Requirements
 
-**`jq`.** Used by the hooks to read JSON.
+**`jq`.** Used by the hooks and by `sync-connect` to read JSON.
 
 ```
 brew install jq          # macOS
@@ -87,6 +87,13 @@ on that. If none of the three exists, the push fence and session tracking are
 **off**, and the plugin says so once per session rather than pretending to work.
 That is the whole reason the check exists: a guard nobody knows is disabled is
 worse than no guard, because you push stale work believing something checked it.
+
+Any *one* of the three is enough for everything here, and that is tested per
+parser with the other two removed from `PATH` — a machine with jq and no python3
+is an ordinary macOS box without the Xcode command line tools, not a corner case.
+The single exception is `sync-connect --scope project` merging into a `.mcp.json`
+that already exists, which asks for jq specifically and prints what to paste when
+it is missing, rather than rewriting a committed file with `sed`.
 
 ## Pointing it at your own gateway
 

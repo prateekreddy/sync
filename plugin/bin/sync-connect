@@ -76,12 +76,41 @@ ask() { # ask <prompt> <current> [silent]
   printf '%s' "$answer"
 }
 
-json() { # json <expression> — reads stdin, prints '' on any failure
-  python3 -c "
-import json,sys
-try: print(json.load(sys.stdin)$1)
-except Exception: print('')
-" 2>/dev/null || echo ''
+# Reading JSON goes through the same helper as everything else in the plugin.
+#
+# This used to be four lines of python3, which was a fair assumption while the
+# script lived in a clone of the repository -- a machine with a checkout is a
+# machine with a toolchain. It stopped being fair the moment it shipped inside
+# the plugin: sync-json exists precisely so that jq OR node OR python3 is enough,
+# and an ordinary macOS box without the Xcode command line tools has jq and no
+# python3. That box ran the hooks, the fence and the monitor perfectly well, and
+# could not run the one script it needed to connect at all.
+SELF_BIN="$(cd "$(dirname "$0")" && pwd -P)"
+[ -x "$SELF_BIN/sync-json" ] || {
+  echo "error: sync-json is missing from $SELF_BIN — copy the whole bin directory, not this file alone" >&2
+  exit 1
+}
+json() { # json <dotted.path> — reads stdin, prints '' if absent
+  "$SELF_BIN/sync-json" "$1" 2>/dev/null || true
+}
+
+# The agent name, reduced to what the gateway will actually store.
+#
+# The same transformation mint.ts applies, done here so that two things are true
+# at once: you are shown the name you are going to get rather than the one you
+# typed, and the value is safe to interpolate into a JSON body by construction --
+# which is what removes the second python3 call, the one that was there only to
+# quote a string.
+#
+# Deliberately not a rejection. The server maps a space to a dash rather than
+# refusing, so "worker 1" has always been a working answer to this prompt, and
+# turning it into an error would be a regression dressed as strictness.
+clean_label() {
+  printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed 's/[^a-z0-9._-]\{1,\}/-/g; s/^-*//; s/-*$//' \
+    | cut -c1-40 \
+    | sed 's/-*$//'
 }
 
 URL=$(ask "Gateway URL (e.g. https://mcp.example.dev)" "$URL")
@@ -123,7 +152,13 @@ if [ -z "$TOKEN" ]; then
   PLANE_TOKEN=$(ask "Your Plane personal token (plane_api_…)" "$PLANE_TOKEN" silent)
   [ -n "$PLANE_TOKEN" ] || die "no Plane token, and no --token to use instead"
 
-  AGENT=$(ask "Name for this agent (e.g. worker-1)" "${AGENT:-worker-1}")
+  typed=$(ask "Name for this agent (e.g. worker-1)" "${AGENT:-worker-1}")
+  AGENT=$(clean_label "$typed")
+  [ -n "$AGENT" ] || die "an agent name must contain a letter or a digit"
+  # Said only when it happened, and worth saying: the name is what appears in
+  # Plane's activity log and what you revoke by later, so quietly minting a
+  # different one than you typed is a thing to find out about now.
+  [ "$AGENT" = "$typed" ] || echo "  using \"$AGENT\" — the gateway keeps names lowercase and dash-separated"
 
   # Offer the projects this person can actually see rather than making them go
   # and dig a uuid out of a URL. Best-effort: a failure here just means typing it.
@@ -131,14 +166,34 @@ if [ -z "$TOKEN" ]; then
     listing=$(curl -sS -m 20 -X POST "${URL}/v1/agent-tokens" \
       -H "Authorization: Bearer ${PLANE_TOKEN}" -H 'Content-Type: application/json' \
       -d "{\"agent\":\"${AGENT}\",\"projectId\":\"00000000-0000-0000-0000-000000000000\"}" 2>/dev/null || true)
-    ids=$(printf '%s' "$listing" | json "['visibleProjects']" | tr -d "[]'\," )
-    if [ -n "$ids" ]; then
-      echo "  projects you can see: $ids"
+    # One line per uuid, read by index rather than as a whole array. The three
+    # JSON backends stringify a list three different ways -- `["a","b"]`, `a,b`
+    # and `['a', 'b']` -- and the old code stripped the punctuation of exactly
+    # one of them, so this display was already parser-specific. Indexing is the
+    # one thing all three are pinned to agree on.
+    n=$(printf '%s' "$listing" | json count:visibleProjects)
+    if [ -n "$n" ] && [ "$n" -gt 0 ] 2>/dev/null; then
+      echo "  projects you can see:"
+      i=0
+      while [ "$i" -lt "$n" ]; do
+        echo "    $(printf '%s' "$listing" | json "visibleProjects.$i")"
+        i=$((i + 1))
+      done
     fi
   fi
   PROJECT=$(ask "Plane project uuid to bind this agent to" "$PROJECT")
+  # Checked rather than quoted. A project id is a uuid or it is nothing the
+  # gateway will accept, so validating here both keeps the body well-formed
+  # without a JSON encoder and turns a typo into a message at the prompt.
+  if [ -n "$PROJECT" ]; then
+    printf '%s' "$PROJECT" \
+      | grep -Eqi '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' \
+      || die "that is not a project uuid — it is the id in the project's URL, e.g. 74661462-b37a-421d-b51d-2b2d3ca6c1ad"
+  fi
 
-  body="{\"agent\":$(printf '%s' "$AGENT" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))')"
+  # Safe to interpolate without an encoder: clean_label leaves only
+  # [a-z0-9._-] and PROJECT has been checked against the uuid shape above.
+  body="{\"agent\":\"${AGENT}\""
   [ -n "$PROJECT" ] && body="${body},\"projectId\":\"${PROJECT}\""
   body="${body}}"
 
@@ -146,12 +201,12 @@ if [ -z "$TOKEN" ]; then
     -H "Authorization: Bearer ${PLANE_TOKEN}" -H 'Content-Type: application/json' \
     -d "$body" 2>&1) || die "could not reach ${URL}/v1/agent-tokens — $minted"
 
-  TOKEN=$(printf '%s' "$minted" | json "['token']")
+  TOKEN=$(printf '%s' "$minted" | json token)
   if [ -z "$TOKEN" ]; then
-    msg=$(printf '%s' "$minted" | json "['message']")
+    msg=$(printf '%s' "$minted" | json message)
     die "${msg:-the gateway would not issue a token: $(printf '%s' "$minted" | head -c 200)}"
   fi
-  echo "  minted $(printf '%s' "$minted" | json "['agent']") for $(printf '%s' "$minted" | json "['planeUser']['email']")"
+  echo "  minted $(printf '%s' "$minted" | json agent) for $(printf '%s' "$minted" | json planeUser.email)"
 fi
 
 # ── verify the token before registering it ───────────────────────────────────
@@ -174,8 +229,15 @@ tools=$(curl -sS -m 20 -X POST "${URL}/mcp" \
   -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' 2>/dev/null \
-  | json "['result']['tools'].__len__()")
+  | json count:result.tools)
+# Worth printing even though the probe above already passed: "connects, but zero
+# tools" is a fault of its own -- the gateway is up and authenticating you, and
+# cannot reach Plane to build the catalogue -- and it is indistinguishable from
+# success anywhere else until an agent goes looking for a tool.
 echo "  ok — ${tools:-?} tools available"
+if [ "${tools:-1}" = "0" ]; then
+  echo "  warning: zero tools. The gateway is up but cannot reach Plane — check its logs before relying on this."
+fi
 
 # ── which client ─────────────────────────────────────────────────────────────
 if [ -z "$CLIENT" ]; then
@@ -192,19 +254,36 @@ case "$CLIENT" in
       # A project-scoped server lives in .mcp.json, which is committed — so the
       # token must be a reference, never a literal. It also needs a one-time
       # approval the first time someone opens the repo.
-      python3 - "$NAME" "$URL" <<'PY'
-import json, pathlib, sys
-name, url = sys.argv[1], sys.argv[2]
-p = pathlib.Path('.mcp.json')
-cfg = json.loads(p.read_text()) if p.exists() else {}
-cfg.setdefault('mcpServers', {})[name] = {
-    'type': 'http',
-    'url': '${SYNC_GATEWAY_URL:-' + url + '}/mcp',
-    'headers': {'Authorization': 'Bearer ${SYNC_AGENT_TOKEN}'},
-}
-p.write_text(json.dumps(cfg, indent=2) + '\n')
-print(f'wrote .mcp.json (server "{name}")')
-PY
+      #
+      # The one operation here that shell cannot do safely is MERGING into a file
+      # that already exists: rewriting somebody's committed config with sed is the
+      # quiet-wrong-answer failure this project keeps finding, and losing an entry
+      # a team depends on is worse than asking someone to paste four lines.
+      #
+      # So: writing a new file is done here, merging needs jq, and without jq this
+      # prints exactly what to add rather than failing. That is a real degradation
+      # and it is stated, which is the difference between a limit and a bug.
+      entry='    "'"$NAME"'": {
+      "type": "http",
+      "url": "${SYNC_GATEWAY_URL:-'"$URL"'}/mcp",
+      "headers": { "Authorization": "Bearer ${SYNC_AGENT_TOKEN}" }
+    }'
+      if [ ! -e .mcp.json ]; then
+        printf '{\n  "mcpServers": {\n%s\n  }\n}\n' "$entry" > .mcp.json
+        echo "wrote .mcp.json (server \"$NAME\")"
+      elif command -v jq >/dev/null 2>&1; then
+        jq --arg n "$NAME" --arg u "\${SYNC_GATEWAY_URL:-${URL}}/mcp" \
+          '.mcpServers[$n] = {type: "http", url: $u,
+                              headers: {Authorization: "Bearer ${SYNC_AGENT_TOKEN}"}}' \
+          .mcp.json > .mcp.json.tmp && mv .mcp.json.tmp .mcp.json
+        echo "updated .mcp.json (server \"$NAME\")"
+      else
+        echo
+        echo ".mcp.json already exists and jq is not installed, so it has been left alone."
+        echo "Add this inside its \"mcpServers\" object:"
+        echo
+        printf '%s\n' "$entry"
+      fi
       cat <<EOF
 
   .mcp.json holds no secret: it reads SYNC_AGENT_TOKEN from the environment, so
