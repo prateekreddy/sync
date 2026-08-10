@@ -18,7 +18,11 @@ Work lives in Plane, reached through the `sync` MCP server. Three rules:
    around it.
 3. **Finish explicitly.** End with `complete` — include the evidence, a PR link or
    commit and what you verified — or `release`. Going silent means the lease
-   expires and someone redoes your work. Call `heartbeat` on long tasks.
+   expires and someone redoes your work.
+
+An item you claim stays yours for as long as you are working on it, however long
+that takes. If it is ever taken from you, you will be told so in plain words —
+stop then, and discard that work rather than submitting it.
 
 After a restart, call `held` first to find out what you were in the middle of.
 
@@ -28,7 +32,14 @@ refuses it, and the reason it refuses is in `docs/architecture.md`.
 To break a large item up, call `decompose` once with every child, not `capture`
 per child. A parent with unfinished children is deliberately unclaimable, so the
 plan goes live at its *first* child: written one call at a time, another agent can
-start work under a decomposition you have not finished writing.
+start work under a decomposition you have not finished writing. To do the reverse
+— put items that already exist under one container — call `gather`; it asks a
+person before it moves anything.
+
+The full playbook is `skills/work-tracking/SKILL.md` and the references beside it.
+Claude Code gets it as a skill from the sync plugin; anywhere else, read the file.
+Do not keep a second copy — one went a month stale telling agents to call a tool
+that no longer exists.
 
 ## How to build here
 

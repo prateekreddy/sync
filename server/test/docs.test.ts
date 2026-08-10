@@ -135,6 +135,16 @@ describe('what the agent is told to keep doing', () => {
     expect(promisesToHeartbeat(read('skills/work-tracking/SKILL.md'))).toBe(false);
   });
 
+  it('does not ask for a heartbeat in the always-on instructions', () => {
+    // AGENTS.md is read as CLAUDE.md and is in context for every request, so a
+    // stale rule here outranks every other copy. It went on saying "call
+    // heartbeat on long tasks" for weeks after the tool was removed from the
+    // surface, and the two checks above both passed the whole time — they
+    // covered the files somebody thought to name.
+    expect(promisesToHeartbeat(read('AGENTS.md'))).toBe(false);
+    expect(read('AGENTS.md')).not.toMatch(/`heartbeat`/);
+  });
+
   it('tells the agent its claim holds, without naming the machinery', () => {
     // Silence is not reassurance: an agent that reads no mention of leases at all
     // reasonably assumes a long task is unprotected. But the reassurance has to be
