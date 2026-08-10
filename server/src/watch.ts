@@ -159,6 +159,41 @@ interface Row {
  * accepted for WATCH_GRACE_S, and only `claim` and `closeWatch` clear it — which
  * is what keeps a genuine theft answering 410.
  */
+/**
+ * Did this credential exist and simply get old?
+ *
+ * Only worth asking when `pollWatch` has already returned null, and it is the
+ * difference between two things that were indistinguishable until 2026-08-10.
+ * A theft CLEARS `watch_sha256` — the winning `claim` does it — so a stolen
+ * item matches no row at any expiry. Ageing out leaves the row perfectly
+ * matchable; only `watch_expires_at` has passed. The information was always
+ * there, and putting both conditions in one WHERE clause threw it away.
+ *
+ * What that cost: a laptop shut on Friday and opened on Monday polled with an
+ * aged-out credential, was answered 410, and the monitor told the agent another
+ * session had taken its work and to discard it. Nobody had. The push fence
+ * refused on the same signal. That is the direction this design must never fail
+ * in — and it is the rotation bug of eeee49c again, a check manufacturing the
+ * evidence it then acts on.
+ *
+ * Granting nothing is what makes this safe to answer at all: it reports a fact
+ * about a credential the caller already holds, extends no lease, and returns no
+ * work item.
+ */
+export async function watchExpired(pool: Pool, raw: string): Promise<boolean> {
+  const { rows } = await pool.query(
+    `select 1
+       from lease
+      where watch_expires_at <= now()
+        and ( watch_sha256 = $1
+              or ( watch_prev_sha256 = $1
+                   and watch_prev_at > now() - make_interval(secs => $2) ) )
+      limit 1`,
+    [sha256(raw), WATCH_GRACE_S],
+  );
+  return rows.length > 0;
+}
+
 export async function pollWatch(
   pool: Pool,
   raw: string,

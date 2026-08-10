@@ -30,7 +30,7 @@ import {
   registerClient,
 } from './oauth.js';
 import { assertCanRead } from './access.js';
-import { closeWatch, mintWatch, pollWatch } from './watch.js';
+import { closeWatch, mintWatch, pollWatch, watchExpired } from './watch.js';
 import { approvalNeeded, takeoverApproval } from './assignment.js';
 import { board } from './board.js';
 import { buildIdentity, schemaLevel } from './build.js';
@@ -171,13 +171,17 @@ const WORKSPACE_SWEEP_LIMIT = 25;
  * invent it — a body field the model has to populate would be exactly the kind of
  * promise-for-later this design exists to stop relying on.
  *
- * Measured on the first real plugin install, 2026-08-09, and not yet fixed:
- * Claude Code sets CLAUDE_CODE_SESSION_ID in the environment of processes it
- * SPAWNS — hooks and Bash see it — but not in its own, which is what the MCP
- * config is expanded against. So the header arrives empty and every lease is
- * recorded with a null session. The fallbacks below are correct and the gateway
- * degrades to holder-level behaviour, which is why this is a quiet loss of
- * precision rather than a failure. See SYNC-87.
+ * Measured on the first real plugin install, 2026-08-09: Claude Code sets
+ * CLAUDE_CODE_SESSION_ID in the environment of processes it SPAWNS — hooks and
+ * Bash see it — but NOT in its own, which is what an MCP server config is
+ * expanded against. So no `${...}` form of it can ever resolve there, and for a
+ * while every lease was recorded with a null session while the gateway quietly
+ * degraded to holder-level behaviour.
+ *
+ * Fixed and verified live 2026-08-10 (SYNC-87): the config defaults the variable
+ * to empty so the server loads at all, and `sessionKey` falls back to the MCP
+ * session id, which is what now populates `lease.session_id`. The fallbacks
+ * below still matter for clients that are not the plugin.
  *
  * The header therefore wins over the body. The body remains as a fallback for
  * clients that are not the plugin, and it is the less trustworthy of the two:
@@ -336,11 +340,28 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     const base = publicBase(deps.publicUrl, req.headers, req.protocol);
     const state = await pollWatch(pool, req.params.capability, base);
     if (!state) {
-      // Gone, not Unauthorized. The distinction is the whole point: 410 means
-      // "this work is definitively not yours any more" — the capability was
-      // cleared because another session claimed the item — whereas a network
-      // failure means the client simply could not ask. The push fence must
-      // refuse on the first and allow on the second, so they cannot share a code.
+      // Two very different things arrive here, and until 2026-08-10 they shared
+      // a status code and therefore a meaning.
+      //
+      // 401: the credential aged out. Nobody touched the work. This is ignorance
+      // about who holds the item now, not a verdict on it, so the fence must NOT
+      // refuse a push on it and nobody may be told to discard anything. A plugin
+      // too old to know this code falls into its `*` branch, which allows the
+      // push and stays quiet — the safe direction by construction.
+      if (await watchExpired(pool, req.params.capability)) {
+        return reply.status(401).send({
+          error: 'EXPIRED',
+          message:
+            "This session's credential expired after a long gap, so the lease is no longer being kept alive. " +
+            'Nobody has taken your work. Call `held` to see where you stand and re-claim the item if it is free.',
+        });
+      }
+
+      // 410: gone, not unauthorized, and the distinction is the whole point. The
+      // capability was cleared because another session claimed the item, so this
+      // work is definitively not yours any more. A network failure means the
+      // client could not ask at all. The push fence must refuse on this and
+      // allow on the other, so they cannot share a code.
       return reply.status(410).send({ error: 'GONE', message: 'This lease is no longer yours.' });
     }
     return state;

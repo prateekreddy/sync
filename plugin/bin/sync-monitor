@@ -80,14 +80,12 @@ while true; do
       # would train people to ignore the channel that carries the one message
       # that matters. Removing the file is what makes it once: the next pass
       # reads no URL and stays quiet.
-      # Says what is known, and no more. This used to assert theft outright and
-      # order the work discarded, but the gateway answers 410 for an aged-out
-      # credential too -- so an agent coming back after a long absence was told
-      # somebody had taken its work when nobody had. SYNC-104 is the fix that
-      # separates the two at the endpoint; until then the message must not claim
-      # to know which happened, and must not tell anyone to throw work away on a
-      # guess.
-      echo "sync: this session's claim is no longer active -- another session may have taken it, the lease may have been revoked, or this session's credential expired while you were away. Call 'held' before continuing, and re-claim the item if it is still free."
+      #
+      # This is now genuinely a verdict again. It briefly had to hedge, because
+      # the gateway answered 410 for an aged-out credential too and an agent
+      # returning from a weekend was told its work had been taken; that case has
+      # its own status below, so this branch can say plainly what it means.
+      echo "sync: your claim is no longer yours -- another session took it, or the lease was revoked. Do not continue on it: discard that work, and call 'held' to see where you stand."
       rm -f "$WATCH_FILE"
       # NOT a reason to back off, and this used to set the maximum.
       #
@@ -104,6 +102,18 @@ while true; do
       # default lease TTL of 600s. A single 410, which is an ORDINARY event,
       # left the following lease unwatched for most of its life, which is the
       # collision this whole process exists to prevent.
+      BACKOFF=0
+    elif [ "$code" = "401" ]; then
+      # Ignorance, not a verdict, and the difference is the whole reason this
+      # branch exists. The credential aged out because the machine was away
+      # longer than a full idle window -- a long weekend, a holiday. Nobody has
+      # taken anything, and saying so is the point: this case used to arrive as
+      # 410 and told people to discard correct work.
+      #
+      # Same handling otherwise: say it once, drop the dead credential, and do
+      # not back off, because with no file there is nothing left to poll.
+      echo "sync: this session's credential expired while you were away, so your claim is no longer being kept alive. Nobody has taken your work -- call 'held' to see where you stand, and re-claim the item if it is still free."
+      rm -f "$WATCH_FILE"
       BACKOFF=0
     elif [ "$code" = "200" ]; then
       BACKOFF=0

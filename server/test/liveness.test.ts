@@ -392,6 +392,79 @@ describe('what the push fence acts on', () => {
     // looked, which is what this asserts.
     expect(fence(command).stderr).toMatch(/could not reach the gateway/i);
   });
+
+  /**
+   * What the fence does with each answer, which is the rule the whole design
+   * rests on: only a VERDICT may block a push, never ignorance.
+   *
+   * A gateway that answers on demand, so the three cases are driven for real
+   * rather than reasoned about.
+   */
+  const answering = async (status: number, body = '{}') => {
+    const port = 18900 + Math.floor(process.hrtime()[1] % 300);
+    const script = join(mkdtempSync(join(tmpdir(), 'sync-gw3-')), 'gw.py');
+    writeFileSync(
+      script,
+      [
+        'import http.server, sys',
+        'class H(http.server.BaseHTTPRequestHandler):',
+        '    def do_GET(self):',
+        '        b = BODY.encode()',
+        '        self.send_response(STATUS)',
+        '        self.send_header("content-type", "application/json")',
+        '        self.send_header("content-length", str(len(b)))',
+        '        self.end_headers(); self.wfile.write(b)',
+        '    def log_message(self, *a): pass',
+        'PORT, STATUS, BODY = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]',
+        'http.server.HTTPServer(("127.0.0.1", PORT), H).serve_forever()',
+      ].join('\n'),
+    );
+    const proc = spawn('python3', [script, String(port), String(status), body], {
+      stdio: 'ignore',
+      detached: true,
+    });
+    for (let i = 0; i < 100; i++) {
+      try {
+        execFileSync('curl', ['-sS', '-o', '/dev/null', `http://127.0.0.1:${port}/x`], {
+          timeout: 500,
+        });
+        break;
+      } catch {
+        execFileSync('sleep', ['0.05']);
+      }
+    }
+    const state = mkdtempSync(join(tmpdir(), 'sync-fence2-'));
+    writeFileSync(join(state, `${SESSION}.watch`), `http://127.0.0.1:${port}/v1/watch/c`);
+    const r = spawnSync(bin('sync-session'), ['fence'], {
+      input: JSON.stringify({ session_id: SESSION, tool_input: { command: 'git push' } }),
+      encoding: 'utf8',
+      env: {
+        PATH: process.env['PATH'] ?? '',
+        HOME: state,
+        SYNC_STATE_DIR: state,
+        CLAUDE_CODE_SESSION_ID: SESSION,
+      },
+    });
+    proc.kill();
+    return r;
+  };
+
+  it('refuses the push when the gateway says the work was taken', async () => {
+    const r = await answering(410);
+    expect(r.stdout).toContain('"permissionDecision":"deny"');
+    expect(r.stdout).toMatch(/no longer yours/i);
+  }, 30_000);
+
+  it('allows the push when the credential merely expired, and says why', async () => {
+    // The case that used to arrive as 410. A laptop opened after a long weekend
+    // refused every push and told the agent its work had been taken -- on a
+    // credential that had done nothing but get old. Ignorance never blocks.
+    const r = await answering(401, '{"error":"EXPIRED"}');
+    expect(r.stdout).not.toContain('deny');
+    expect(r.stderr).toMatch(/expired while you were away/i);
+    // And it must not repeat the accusation in any form.
+    expect(r.stderr).not.toMatch(/discard/i);
+  }, 30_000);
 });
 
 /**

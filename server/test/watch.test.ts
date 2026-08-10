@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
 import { createPool } from '../src/db.js';
 import { claim } from '../src/lease.js';
-import { EXTEND_S, MAX_HOLD_MS, WATCH_TTL_MS, closeWatch, mintWatch, pollWatch } from '../src/watch.js';
+import { EXTEND_S, MAX_HOLD_MS, WATCH_TTL_MS, closeWatch, mintWatch, pollWatch, watchExpired } from '../src/watch.js';
 
 /**
  * The credential the background monitor polls with, and the liveness it produces.
@@ -381,6 +381,64 @@ describe('the closed laptop', () => {
     const state = await pollWatch(pool, raw, BASE);
     expect(state).not.toBeNull();
     expect(state!.holding).toBe(workItemId);
+  });
+
+  /**
+   * The pair. Both of these make pollWatch return null, and until they could be
+   * told apart both were answered 410 -- which the monitor reports as theft and
+   * the push fence refuses on.
+   */
+  it('can tell an aged-out credential from one another session cleared', async () => {
+    // Aged out: the row is still perfectly matchable, only the expiry passed.
+    const old = await held();
+    await pool.query(
+      `update lease set watch_expires_at = now() - interval '1 minute' where work_item_id = $1`,
+      [old.workItemId],
+    );
+    expect(await pollWatch(pool, old.raw, BASE)).toBeNull();
+    expect(await watchExpired(pool, old.raw)).toBe(true);
+
+    // Taken: the winning claim clears watch_sha256, so it matches no row at any
+    // expiry. This one must stay a verdict, or the fence stops protecting
+    // anything.
+    //
+    // Its own session, deliberately. One credential covers a whole session, so
+    // minting here would otherwise stamp this credential onto the aged-out lease
+    // above and refresh its expiry -- and the poll would then find the work item
+    // through the wrong row.
+    const mine = await held({ sessionId: 's-taken' });
+    await ageTo(mine.workItemId, '1 minute');
+    await claim(pool, {
+      workItemId: mine.workItemId,
+      projectId: PROJECT,
+      holder: 'agent:someone-else/w',
+      ttlSeconds: 600,
+      sessionId: 's-other',
+    });
+    expect(await pollWatch(pool, mine.raw, BASE)).toBeNull();
+    expect(await watchExpired(pool, mine.raw)).toBe(false);
+  });
+
+  it('grants nothing on the aged-out path', async () => {
+    // Answering at all is only safe because it extends no lease and returns no
+    // work item -- it reports a fact about a credential the caller already has.
+    const { workItemId, raw } = await held();
+    await pool.query(
+      `update lease set watch_expires_at = now() - interval '1 minute' where work_item_id = $1`,
+      [workItemId],
+    );
+    const before = await expiryOf(workItemId);
+
+    await watchExpired(pool, raw);
+
+    expect((await expiryOf(workItemId)).getTime()).toBe(before.getTime());
+    // And the credential is not renewed by asking, or the ceiling means nothing.
+    const { rows } = await pool.query<{ n: number }>(
+      `select count(*)::int as n from lease
+        where work_item_id = $1 and watch_expires_at > now()`,
+      [workItemId],
+    );
+    expect(rows[0]!.n).toBe(0);
   });
 
   it('does not resurrect a lease the agent deliberately finished', async () => {
