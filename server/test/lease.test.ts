@@ -8,6 +8,7 @@ import {
   complete,
   heartbeat,
   heldBy,
+  monitorSeen,
   record,
   release,
   sweepExpired,
@@ -352,5 +353,74 @@ describe('lease record', () => {
     const r = await record(pool, workItemId);
     expect(r?.endReason).toContain('needs a decision');
     expect(r?.endedAt).toMatch(/^20/);
+  });
+});
+
+/**
+ * Whether the thing that protects a claim actually exists.
+ *
+ * The liveness chain — hook matcher, credential harvest, watch file, poll — was
+ * broken end to end for weeks, and every link reported success. Nothing on the
+ * agent's machine could notice, because each failure looks exactly like "nothing
+ * to do". A poll is the only thing that moves heartbeat_at past claimed_at, so
+ * the gateway can see the absence without any cooperation, and it is the only
+ * participant that can.
+ */
+describe('noticing that a liveness monitor is not running', () => {
+  const holder = () => `agent:t-mon-${randomUUID().slice(0, 8)}/w`;
+
+  /** A finished lease of a given age and duration, optionally ever polled. */
+  const past = async (h: string, opts: { minutes: number; polled: boolean }) => {
+    const workItemId = randomUUID();
+    await claim(pool, { workItemId, projectId: PROJECT, holder: h, ttlSeconds: 600 });
+    await pool.query(
+      `update lease
+          set claimed_at   = now() - make_interval(mins => $2),
+              ended_at     = now(),
+              state        = 'released',
+              heartbeat_at = case when $3 then now() else now() - make_interval(mins => $2) end
+        where work_item_id = $1`,
+      [workItemId, opts.minutes, opts.polled],
+    );
+    return workItemId;
+  };
+
+  it('says nothing about an agent it has never seen', async () => {
+    // A new agent's first claim must not cry wolf: no history is not evidence.
+    expect(await monitorSeen(pool, holder())).toEqual({ known: false, polled: false });
+  });
+
+  it('reports a monitor that has never polled a long-held lease', async () => {
+    const h = holder();
+    await past(h, { minutes: 45, polled: false });
+    expect(await monitorSeen(pool, h)).toEqual({ known: true, polled: false });
+  });
+
+  it('is satisfied by a single poll across all of an agent\u2019s leases', async () => {
+    // One working session is proof the chain is wired. This is about "does the
+    // mechanism exist", not about auditing every lease.
+    const h = holder();
+    await past(h, { minutes: 45, polled: false });
+    await past(h, { minutes: 30, polled: true });
+    expect((await monitorSeen(pool, h)).polled).toBe(true);
+  });
+
+  it('does not count a lease that is merely young with a long TTL', async () => {
+    // Caught in review: the first cut measured expires_at - claimed_at, so a
+    // lease claimed one second ago with a ten minute TTL read as ten minutes
+    // old, and every agent's very first claim warned that its monitor was
+    // missing before the monitor had had any chance to poll. Elapsed time, not
+    // the time it is allowed to run for.
+    const h = holder();
+    await claim(pool, { workItemId: randomUUID(), projectId: PROJECT, holder: h, ttlSeconds: 3600 });
+    expect(await monitorSeen(pool, h)).toEqual({ known: false, polled: false });
+  });
+
+  it('does not judge an agent on work shorter than one poll interval', async () => {
+    // The monitor polls every two minutes, so a lease that started and finished
+    // inside one interval showing no poll means nothing at all.
+    const h = holder();
+    await past(h, { minutes: 1, polled: false });
+    expect(await monitorSeen(pool, h)).toEqual({ known: false, polled: false });
   });
 });

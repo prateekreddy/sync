@@ -317,6 +317,16 @@ describe('the session the conversation runs in', () => {
     );
     expect(rows[0]?.session_id).toBe(transport.sessionId);
 
+    // And it comes back in the reply. It was null on every lease for weeks and
+    // nothing said so, because it is exposed nowhere — the only way to find out
+    // was a query against the gateway's own database. A field that is silently
+    // always null is one nobody can notice is broken.
+    expect(textOf(claimed)).toContain(transport.sessionId!);
+
+    // No warning for an agent with no history. The liveness note must not cry
+    // wolf on a first claim: having seen nothing is not evidence of absence.
+    expect(textOf(claimed)).not.toMatch(/liveness monitor is not running/i);
+
     await client.close();
     await app.close();
   }, 30_000);

@@ -20,6 +20,15 @@ export interface Lease {
   expiresAt: Date;
   heartbeatAt: Date;
   /**
+   * Which window claimed this, or null when the client did not say.
+   *
+   * Returned rather than kept internal because it was null on every lease for
+   * weeks and nothing said so — it is exposed nowhere, so the only way to find
+   * out was a query against the gateway's database. A field that is silently
+   * always null is one nobody can notice is broken.
+   */
+  sessionId: string | null;
+  /**
    * This claim was already held by the same session -- a re-sent request rather
    * than a new grant.
    *
@@ -41,6 +50,7 @@ interface Row {
   claimed_at: Date;
   expires_at: Date;
   heartbeat_at: Date;
+  session_id: string | null;
 }
 
 const toLease = (r: Row): Lease => ({
@@ -53,10 +63,11 @@ const toLease = (r: Row): Lease => ({
   claimedAt: r.claimed_at,
   expiresAt: r.expires_at,
   heartbeatAt: r.heartbeat_at,
+  sessionId: r.session_id,
 });
 
 const RETURNING =
-  'work_item_id, project_id, holder, holder_chain, epoch, state, claimed_at, expires_at, heartbeat_at';
+  'work_item_id, project_id, holder, holder_chain, epoch, state, claimed_at, expires_at, heartbeat_at, session_id';
 
 export interface ClaimOpts {
   workItemId: string;
@@ -467,6 +478,54 @@ export async function lastWorkedOn(
   );
   const row = rows[0];
   return row ? { workItemId: row.work_item_id, live: row.live } : null;
+}
+
+/**
+ * A lease shorter than this proves nothing about the monitor.
+ *
+ * It polls every two minutes by default, so work that started and finished
+ * inside one interval is expected to show no poll at all.
+ */
+const POLL_PROOF_MS = 6 * 60_000;
+
+/**
+ * Whether this agent's liveness monitor has ever been seen running.
+ *
+ * The monitor keeps a claim alive by polling its watch URL, and a poll is the
+ * only thing that moves `heartbeat_at` past `claimed_at`. So the gateway can
+ * tell, without any cooperation from the agent's machine, whether the thing that
+ * is supposed to be protecting its work exists.
+ *
+ * This is here because the whole chain was broken for weeks and every part of it
+ * reported success — the hook matcher never matched, so no credential was ever
+ * written, so nothing ever polled, and the only symptom was leases quietly
+ * lapsing an hour later looking like unrelated bad luck. A guard nobody knows is
+ * off is worse than no guard, and the gateway is the one participant that can
+ * see the absence.
+ *
+ * Returns false only on evidence: at least one lease that lived long enough for
+ * a poll to be expected, and no poll on any of them. A new agent with no history
+ * says nothing rather than crying wolf on its first claim.
+ */
+export async function monitorSeen(
+  pool: Pool,
+  holder: string,
+): Promise<{ known: boolean; polled: boolean }> {
+  const { rows } = await pool.query<{ total: string; polled: string }>(
+    `select count(*)::text as total,
+            count(*) filter (where heartbeat_at > claimed_at)::text as polled
+       from lease
+      where holder = $1
+        and claimed_at > now() - interval '7 days'
+        -- Elapsed time, not the TTL. Using expires_at counted a lease claimed one
+        -- second ago as ten minutes old, so every agent's first claim warned that
+        -- its monitor was missing before the monitor had had a chance to poll.
+        and coalesce(ended_at, now()) - claimed_at > make_interval(secs => $2)`,
+    [holder, POLL_PROOF_MS / 1000],
+  );
+  const total = Number(rows[0]?.total ?? 0);
+  const polled = Number(rows[0]?.polled ?? 0);
+  return { known: total > 0, polled: polled > 0 };
 }
 
 /**

@@ -189,6 +189,34 @@ const WORKSPACE_SWEEP_LIMIT = 25;
  * session, which is worse than having no session at all: retries would match
  * across unrelated agents and hand one the other's lease.
  */
+/**
+ * Said on a claim when this agent's liveness monitor has never been seen.
+ *
+ * The monitor is what keeps a claim alive, and its entire chain — hook matcher,
+ * credential harvest, watch file, poll — was broken for weeks with every part
+ * reporting success. Nothing on the agent's machine could notice, because each
+ * link's failure looks exactly like "nothing to do". The gateway is the one
+ * participant that can see the absence, so it is the one that has to say it.
+ *
+ * On `claim` because that is the call every agent makes and the moment the
+ * protection is supposed to start. Absent from the reply when the monitor is
+ * working or when there is no evidence either way — a field that appears only
+ * when something is wrong is one nobody learns to ignore.
+ */
+async function livenessNote(
+  pool: Pool,
+  holder: string,
+): Promise<{ warning?: string }> {
+  const seen = await lease.monitorSeen(pool, holder);
+  if (!seen.known || seen.polled) return {};
+  return {
+    warning:
+      'Your liveness monitor is not running: no claim of yours has ever been polled, so ' +
+      'this lease will lapse on its timer and another agent may take the item. Tell the ' +
+      'person you are working with — the sync plugin may need updating or reinstalling.',
+  };
+}
+
 export function sessionOf(
   req: Pick<FastifyRequest, 'headers'>,
   body?: { sessionId?: string | undefined },
@@ -1137,6 +1165,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       return {
         lease: l,
         watchUrl: `${publicBase(deps.publicUrl, req.headers, req.protocol)}/v1/watch/${watch}`,
+        ...(await livenessNote(pool, actor.holder)),
         briefing: await briefingOrNull(plane.as(actor.planeToken), {
           projectId: b.projectId,
           workItemId: l.workItemId,
