@@ -5,21 +5,23 @@ Track work in Plane with an atomic claim, so two agents never take the same task
 ```
 /plugin marketplace add prateekreddy/sync
 /plugin install sync@sync
+```
+
+Claude Code asks for your gateway address as it enables the plugin. That is the
+whole configuration: the plugin ships no address, because one baked in would
+point every install at whoever published it. Give it the host — something like
+`https://sync.your-company.internal`, usually `mcp.` in front of your Plane host —
+and leave off the `/mcp`, which is added for you. **Restart afterwards**: MCP
+servers are read once at startup.
+
+To change it later, or to set it from a provisioning script rather than a dialog:
+
+```
 /sync-setup https://<your-gateway-host>
 ```
 
-The third line is the one people forget, and it is not optional: the plugin ships
-no gateway address, so until it runs there is no server to connect to. It checks
-the address answers like a gateway before writing anything, and merges into your
-`settings.json` rather than replacing it. **Restart afterwards** — MCP servers are
-read once at startup.
-
-Setting `SYNC_MCP_URL` by hand does the same thing:
-
-```jsonc
-// ~/.claude/settings.json
-{ "env": { "SYNC_MCP_URL": "https://sync.your-company.internal/mcp" } }
-```
+That checks the address answers like a gateway before writing anything, and
+merges into your `settings.json` rather than replacing it.
 
 `sync@sync` is `<plugin>@<marketplace>`; both are called sync because the repo is
 its own single-plugin marketplace. To pick up a new version later:
@@ -112,27 +114,43 @@ it is missing, rather than rewriting a committed file with `sed`.
 ## Pointing it at your own gateway
 
 sync is self-hosted and there is no bundled URL, so this is required rather than
-an override. Set `SYNC_MCP_URL`:
+an override. Claude Code prompts for it when the plugin is enabled and stores it
+as a plugin option in your user `settings.json`:
 
 ```jsonc
-// ~/.claude/settings.json — or .claude/settings.json to scope it to one repo
-{ "env": { "SYNC_MCP_URL": "https://sync.your-company.internal/mcp" } }
+// ~/.claude/settings.json — written for you; shown so you can recognise it
+{ "pluginConfigs": { "sync@sync": { "options": {
+  "gateway_url": "https://sync.your-company.internal"
+} } } }
 ```
 
-That is enough on its own; the variable is read where the plugin's `.mcp.json`
-declares the server, so there is nothing to edit inside the plugin and nothing to
-re-do when it updates. Exporting it in your shell works too, but only for windows
-launched from that shell, which is a confusing way to lose half your sessions.
+Store the **host**. The server entry appends `/mcp`, so an address that already
+ends in it resolves to `/mcp/mcp` and 404s every call — the session start says so
+in words rather than leaving you with an unexplained absence of tools.
+
+There is no per-repository scope, and that is Claude Code's rule rather than
+ours: plugin options are read from user, `--settings` and managed settings only,
+so a cloned repository cannot point your agents at a gateway it chose.
 
 **There is deliberately no default.** A URL baked in here would ship to everyone
 who installs from a public marketplace and point their agents at whichever
 deployment published the plugin — reachable, authenticating, and rate-limited on
-behalf of strangers. Requiring the address costs one line per machine and cannot
-send anyone's work to somebody else's tracker by accident.
+behalf of strangers. Requiring the address costs one prompt per machine and
+cannot send anyone's work to somebody else's tracker by accident.
 
-Unset, the server cannot connect and you get the **Installing is not connecting**
-symptom above: rules and hooks present, no tools, nothing named. If a box has the
-plugin and no `claim`, check this variable before assuming nobody has signed in.
+Unconfigured, the server cannot connect and you get the **Installing is not
+connecting** symptom above: rules and hooks present, no tools, nothing named. If
+a box has the plugin and no `claim`, check the address before assuming nobody has
+signed in — `/sync-status`, or `bin/sync-url --show`, reads it from the one place
+it lives.
+
+**Upgrading from 1.x**, where the address was the `SYNC_MCP_URL` environment
+variable: that variable is no longer read. Run `/sync-setup <gateway-url>` once,
+or answer the prompt, and delete `SYNC_MCP_URL` from your settings — it now does
+nothing, and leaving it there will suggest a machine is configured when it is
+not. The variable was a bootstrap paradox: unset, the first thing you saw was a
+failure naming a variable you had never heard of, from a plugin whose command for
+setting it you had no reason to know about yet.
 
 ## What it installs
 
@@ -140,17 +158,17 @@ plugin and no `claim`, check this variable before assuming nobody has signed in.
 |---|---|
 | `.mcp.json` | the gateway — coordination tools plus Plane's own surface |
 | `commands/` | `/sync-setup` and `/sync-status` |
-| `bin/sync-url` | writes the gateway address into `settings.json`, after checking it answers |
+| `bin/sync-url` | writes the gateway address into `settings.json`, after checking it answers; `--show` reads it back |
 | `bin/sync-connect` | connects a box that has no browser to sign in with |
 | `monitors/` | keeps your claim alive while you work, and tells you if it is taken away |
 | `hooks/` | harvest the lease credential, report on resume, hand work back on exit, fence `git push` and re-check after it |
 | `skills/` | the working rules |
 
-Two commands, and both exist for the same reason: **they work when the tools do
-not.** Everything else an agent needs is a tool call, so wrapping it in a command
-would only add a second way to do the same thing. But a machine with no gateway
-address has no tools at all, and no tool can fix that — which is exactly the state
-a new user is in, and the one failure that does not announce itself.
+Two of the three commands exist for the same reason: **they work when the tools
+do not.** Everything else an agent needs is a tool call, so wrapping it in a
+command would only add a second way to do the same thing. But a machine with a
+missing or wrong gateway address has no tools at all, and no tool can fix that —
+which is the one failure that does not announce itself.
 
 | | |
 |---|---|

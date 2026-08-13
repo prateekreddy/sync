@@ -125,12 +125,35 @@ case "$CMD" in
     # anything on this machine has ever reached the gateway.
     # One of the three causes can be known for certain rather than guessed at, so
     # it is said first and on its own. The plugin ships no gateway address; with
-    # SYNC_MCP_URL unset there is no server to sign in to, and the symptom is
+    # none configured there is no server to sign in to, and the symptom is
     # identical to nobody having signed in. Sending someone to /mcp in that state
     # is advice that cannot work, which is worse than no advice.
-    if [ -z "${SYNC_MCP_URL:-}" ] && [ ! -e "$STATE_DIR/connected" ]; then
-      echo "sync: SYNC_MCP_URL is not set, so there is no gateway to connect to and you will"
-      echo "have no sync tools. This is not a sign-in problem — signing in cannot fix it."
+    #
+    # The address is a plugin option now, not an environment variable, and Claude
+    # Code exports every option to hook processes as CLAUDE_PLUGIN_OPTION_<KEY>.
+    # That is the only reason this check can exist: shell-form hook commands are
+    # forbidden from substituting ${user_config.*} -- the value would reach a
+    # shell -- so reading it from the environment is the supported route, and it
+    # is what lets a misconfigured address be announced in words rather than
+    # showing up an hour later as an agent that had no tools.
+    GATEWAY="${CLAUDE_PLUGIN_OPTION_GATEWAY_URL:-}"
+
+    # The one mistake the address prompt cannot prevent, checked first because it
+    # is a definite fault rather than a suspicion. The server entry appends /mcp,
+    # so a value that already ends in it resolves to /mcp/mcp -- a 404 on every
+    # call, arriving as the same silent absence of tools. Said even on a machine
+    # that has connected before: one configured yesterday can be changed today.
+    case "$GATEWAY" in
+      */mcp|*/mcp/)
+        echo "sync: the gateway address ends in /mcp, and /mcp is added for you — so calls go to"
+        echo "${GATEWAY%/}/mcp and every one of them 404s. Re-run /sync-setup with just the host"
+        echo "(${GATEWAY%/mcp*}), then restart."
+        ;;
+    esac
+
+    if [ -z "$GATEWAY" ] && [ ! -e "$STATE_DIR/connected" ]; then
+      echo "sync: no gateway address is configured, so there is nothing to connect to and you"
+      echo "will have no sync tools. This is not a sign-in problem — signing in cannot fix it."
       echo "Run /sync-setup <gateway-url>, or $SYNC_BIN/sync-url <gateway-url>, then restart."
       echo "Until then, do not do tracked work: with no claim tool nothing will refuse you,"
       echo "and two agents can take the same item."

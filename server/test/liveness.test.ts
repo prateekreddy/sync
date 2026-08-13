@@ -232,14 +232,14 @@ describe('a box that has never reached the gateway', () => {
    * somebody to `/mcp` here is advice that cannot work, and advice that cannot
    * work is how a notice stops being read.
    */
-  it('names an unset SYNC_MCP_URL, instead of hedging about sign-in', () => {
+  it('names a missing gateway address, instead of hedging about sign-in', () => {
     const { stdout } = run(
       'sync-session',
       ['preflight'],
       {},
-      { CLAUDE_CODE_SESSION_ID: SESSION, SYNC_MCP_URL: '' },
+      { CLAUDE_CODE_SESSION_ID: SESSION, CLAUDE_PLUGIN_OPTION_GATEWAY_URL: '' },
     );
-    expect(stdout).toMatch(/SYNC_MCP_URL is not set/);
+    expect(stdout).toMatch(/no gateway address is configured/);
     expect(stdout).toMatch(/sync-setup/);
     // Says what will NOT fix it, because that is the wrong turn people take.
     expect(stdout).toMatch(/not a sign-in problem/i);
@@ -254,7 +254,7 @@ describe('a box that has never reached the gateway', () => {
       'sync-session',
       ['preflight'],
       {},
-      { CLAUDE_CODE_SESSION_ID: SESSION, SYNC_MCP_URL: 'https://gateway.example.dev/mcp' },
+      { CLAUDE_CODE_SESSION_ID: SESSION, CLAUDE_PLUGIN_OPTION_GATEWAY_URL: 'https://gateway.example.dev' },
     );
     expect(stdout).toMatch(/may not be connected/i);
     // Both routes, because each is useless on the other kind of box: /mcp needs
@@ -265,6 +265,30 @@ describe('a box that has never reached the gateway', () => {
     // note about tooling and carries on doing exactly the unclaimed work the
     // notice exists to stop.
     expect(stdout).toMatch(/do not do tracked work/i);
+  });
+
+  /**
+   * The one mistake the configuration dialog cannot prevent. Claude Code prompts
+   * for the address but cannot normalise the answer, and the server entry
+   * appends `/mcp` — so an address that already ends in it resolves to
+   * `/mcp/mcp`, 404s every call, and arrives as the same absence of tools as
+   * having configured nothing at all.
+   *
+   * Said even on a machine that has connected before: this is a fault rather
+   * than a suspicion, and one configured yesterday can be changed today.
+   */
+  it('catches an address that already carries the endpoint', () => {
+    const { stdout } = run(
+      'sync-session',
+      ['preflight'],
+      {},
+      { CLAUDE_CODE_SESSION_ID: SESSION, CLAUDE_PLUGIN_OPTION_GATEWAY_URL: 'https://gateway.example.dev/mcp' },
+    );
+    expect(stdout).toMatch(/ends in \/mcp/);
+    // The corrected value, not just the complaint — the fix is a re-run with one
+    // path segment removed, and stating it is cheaper than describing it.
+    expect(stdout).toMatch(/https:\/\/gateway\.example\.dev\)/);
+    expect(stdout).toMatch(/sync-setup/);
   });
 
   it('stops saying it once a claim has been harvested here', () => {

@@ -496,9 +496,69 @@ describe("the plugin's MCP server", () => {
    */
   it('hardcodes no gateway address, so it cannot ship one deployment to everyone', () => {
     const url: string = config().url;
-    expect(url).toMatch(/SYNC_MCP_URL/);
-    // Every https:// in this value would be a baked-in destination. The
-    // variable may carry a default only if that default has no host.
+    expect(url).toMatch(/\$\{user_config\.gateway_url\}/);
+    // Every https:// in this value would be a baked-in destination. A
+    // placeholder may carry a default only if that default has no host.
     expect(url).not.toMatch(/https?:\/\//);
+  });
+
+  /**
+   * The address is a plugin option, and an option is only prompted for if the
+   * manifest declares it. Declared in one file and referenced in the other, the
+   * two can drift apart without anything failing to parse: `${user_config.x}`
+   * for an option that does not exist expands to nothing, and the failure is the
+   * quietest one this project has — a server that cannot connect, so no tools,
+   * so nothing refuses, so an agent works with no lease.
+   *
+   * The reverse drift matters too. An option nobody references is a question
+   * asked of every user for no reason, which trains people to type anything.
+   */
+  it('declares the option it substitutes, so enabling the plugin asks for it', () => {
+    const manifest = JSON.parse(read('plugin/.claude-plugin/plugin.json'));
+    const declared: Record<string, { required?: boolean }> = manifest.userConfig ?? {};
+
+    const referenced = [...String(config().url).matchAll(/\$\{user_config\.([A-Za-z0-9_]+)\}/g)].map(
+      (m) => m[1]!,
+    );
+    expect(referenced).toContain('gateway_url');
+    for (const key of referenced) expect(Object.keys(declared)).toContain(key);
+    expect(Object.keys(declared)).toEqual(referenced);
+
+    // Without this the dialog accepts an empty answer, and an empty answer is
+    // indistinguishable from never having been asked.
+    expect(declared['gateway_url']!.required).toBe(true);
+  });
+
+  /**
+   * The server entry appends `/mcp`, so the stored value is a host. Somebody
+   * reading only the manifest would reasonably paste the full endpoint they were
+   * given, which resolves to `/mcp/mcp` and 404s every call — so the prompt has
+   * to say so, and the session-start check has to catch it when it is ignored.
+   */
+  it('tells the user the endpoint is appended, and catches it when they paste one anyway', () => {
+    const manifest = JSON.parse(read('plugin/.claude-plugin/plugin.json'));
+    expect(config().url).toMatch(/\}\/mcp$/);
+    expect(manifest.userConfig.gateway_url.description).toMatch(/\/mcp/);
+    expect(read('plugin/bin/sync-session')).toMatch(/CLAUDE_PLUGIN_OPTION_GATEWAY_URL/);
+  });
+
+  /**
+   * The variable this replaced. It was a bootstrap paradox: unset, Claude Code
+   * warned about a variable the user had never heard of, from a plugin whose
+   * command for setting it they had no reason to know existed yet. Anything
+   * still reading it would report a working machine as unconfigured, or the
+   * reverse.
+   */
+  it('has no reader of the environment variable it replaced', () => {
+    const live = [
+      'plugin/.mcp.json',
+      'plugin/bin/sync-url',
+      'plugin/bin/sync-session',
+      'plugin/bin/sync-connect',
+      'plugin/commands/sync-setup.md',
+      'plugin/commands/sync-status.md',
+      'plugin/skills/work-tracking/troubleshooting.md',
+    ];
+    for (const path of live) expect([path, read(path).includes('SYNC_MCP_URL')]).toEqual([path, false]);
   });
 });

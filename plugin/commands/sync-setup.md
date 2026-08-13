@@ -7,7 +7,10 @@ allowed-tools: ["Bash", "AskUserQuestion"]
 # Connect this machine to a sync gateway
 
 The plugin ships no gateway address on purpose, so each installation names its
-own. This sets `SYNC_MCP_URL`, which is where the plugin's server entry reads it.
+own. Claude Code normally asks for it when the plugin is enabled and stores it as
+a plugin option. This command sets the same option without the dialog — for
+changing the address later, for repairing a wrong one, and for a machine being
+provisioned by a script.
 
 ## Steps
 
@@ -28,15 +31,20 @@ tracker they do not own.
 "${CLAUDE_PLUGIN_ROOT}/bin/sync-url" <url>
 ```
 
-Add `--project` if they want it for this repository only rather than the whole
-machine. The script checks the address answers like a gateway before writing
-anything, and merges into `settings.json` rather than replacing it.
+The script checks the address answers like a gateway before writing anything, and
+merges into `settings.json` rather than replacing it. It stores the host and
+strips a trailing `/mcp`, because the server entry adds `/mcp` itself — so a
+pasted endpoint is normalised rather than turned into `/mcp/mcp`.
 
 If it reports the host answered "but not like a sync gateway", they have given
 you Plane's own address. The gateway is a separate hostname.
 
-If it says neither jq nor python3 is installed, it will have printed the two
-lines to add by hand — pass those on rather than editing the file yourself.
+If it says neither jq nor python3 is installed, it will have printed the line to
+add by hand — pass it on rather than editing the file yourself.
+
+There is no per-repository scope. Claude Code ignores plugin options set in a
+repository's settings, so writing one there would look like it worked and would
+not; the script refuses `--project` rather than doing that quietly.
 
 ### 3. Tell them to restart
 

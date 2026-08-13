@@ -26,16 +26,18 @@ monitor.
 ```
 /plugin marketplace add prateekreddy/sync
 /plugin install sync@sync
-/sync-setup https://<gateway-host>
 ```
 
-The plugin ships no gateway address — it would otherwise point every installation
-at whoever published it — so `/sync-setup` is required, not optional. It checks the
-host answers like a gateway before writing anything, which catches the usual
-mistake of giving it Plane's address instead. Then **restart**: MCP servers are read
-once at startup. `/sync-status` answers whether it worked.
+Claude Code asks for your gateway address as it enables the plugin — the plugin
+ships none, because a bundled URL would point every installation at whoever
+published it. Give it the host, `https://<gateway-host>`, and leave off the `/mcp`;
+that is added for you. Then **restart**: MCP servers are read once at startup.
+`/sync-status` answers whether it worked.
 
-Setting `SYNC_MCP_URL` in `~/.claude/settings.json` by hand does the same thing.
+To change the address later, or to set it from a provisioning script instead of a
+dialog, run `/sync-setup https://<gateway-host>`. That also checks the host answers
+like a gateway before writing anything, which catches the usual mistake of giving
+it Plane's address instead.
 
 Sign-in is a browser flow, offered on the first tool call. **Installing is not
 connecting**: until somebody signs in you have the rules and hooks from disk and no
@@ -265,7 +267,7 @@ documents all fourteen. The ones people meet first:
 | `already belongs to a different Plane user` | Someone else has that agent name. Pick another |
 | HTTP 429 from `/v1/agent-tokens` | Mint limit, by default 10/min per address. Wait a minute |
 | `UNAUTHENTICATED` from a tool call | The agent token is wrong or was replaced. Mint a new one and re-run `claude mcp add` |
-| **No sync tools at all, and nothing errored** | Installed but not connected — tools come from the gateway, rules and hooks from disk. Check `SYNC_MCP_URL` is set, then sign in with `/mcp`, or run `sync-connect` on a box with no browser. Restart either way. Nothing refuses in this state, so an agent will work with no lease unless it checks |
+| **No sync tools at all, and nothing errored** | Installed but not connected — tools come from the gateway, rules and hooks from disk. Check the gateway address with `/sync-status`, then sign in with `/mcp`, or run `sync-connect` on a box with no browser. Restart either way. Nothing refuses in this state, so an agent will work with no lease unless it checks |
 | `next` returns nothing | Call `why` on the item you expected. It reports the gate's own reasons — no description, blocked, leased, unfinished children, label, capability mismatch |
 
 Anything that looks like the deployment itself is wrong — 502s, sign-in opening the

@@ -23,10 +23,12 @@ nothing, because there is no tool to call — so an agent that does not check si
 lease, which is the state the gateway exists to abolish. The most dangerous-looking symptom is the
 quietest.
 
-**Check `SYNC_MCP_URL` first**, because it is the one cause that is not about signing in. The plugin
-ships no gateway address — sync is self-hosted, and a bundled URL would point every install at
-whoever published it — so with that variable unset there is no server to authenticate against and
-the symptom is identical to nobody having signed in. It is set in `settings.json` under `env`.
+**Check the gateway address first**, because it is the one cause that is not about signing in. The
+plugin ships none — sync is self-hosted, and a bundled URL would point every install at whoever
+published it — so until one is configured there is no server to authenticate against, and the
+symptom is identical to nobody having signed in. Read it with `${CLAUDE_PLUGIN_ROOT}/bin/sync-url
+--show`, which looks where it actually lives: a plugin option in `settings.json` under
+`pluginConfigs`, not an environment variable.
 
 Do not carry on unclaimed, and do not look for another way to record the work. Say plainly that sync
 is installed but not connected, and offer the ways out:
