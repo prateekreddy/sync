@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { accessSync, constants, readFileSync, readdirSync } from 'node:fs';
+import { accessSync, constants, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { NATIVE_TOOLS } from '../src/toolspec.js';
 import { RECOVERY } from '../src/errors.js';
@@ -113,6 +113,38 @@ describe('the skill covers the surface it claims to', () => {
  * nobody recomputes, and a missing row looks exactly like a complete list. So
  * both are checked against NATIVE_TOOLS rather than against a copy here.
  */
+/**
+ * The plugin's slash commands are instructions to a model, not code, so nothing
+ * fails when one names a script that was renamed or a tool that was removed —
+ * the model simply improvises, which is the failure mode that looks like it
+ * worked. These are the two references that can go stale silently.
+ */
+describe("the plugin's commands", () => {
+  const root = `${import.meta.dirname}/../../plugin`;
+  const commands = readdirSync(`${root}/commands`).filter((f) => f.endsWith('.md'));
+
+  it('ships the ones the READMEs promise', () => {
+    expect(commands.sort()).toEqual(['sync-setup.md', 'sync-status.md']);
+  });
+
+  it.each(commands)('%s runs scripts that exist', (file) => {
+    const body = readFileSync(`${root}/commands/${file}`, 'utf8');
+    const scripts = [...body.matchAll(/\$\{CLAUDE_PLUGIN_ROOT\}\/bin\/([\w-]+)/g)].map(
+      (m) => m[1]!,
+    );
+    const missing = scripts.filter((s) => !existsSync(`${root}/bin/${s}`));
+    expect(missing).toEqual([]);
+  });
+
+  it.each(commands)('%s only allows tools the gateway serves', (file) => {
+    const body = readFileSync(`${root}/commands/${file}`, 'utf8');
+    const allowed = /allowed-tools:\s*\[([^\]]*)\]/.exec(body)?.[1] ?? '';
+    const syncTools = [...allowed.matchAll(/mcp__[\w]*sync[\w]*__(\w+)/g)].map((m) => m[1]!);
+    const names = new Set(NATIVE_TOOLS.map((t) => t.name));
+    expect(syncTools.filter((t) => !names.has(t))).toEqual([]);
+  });
+});
+
 describe('the README describes the tools that exist', () => {
   const readme = () => read('README.md');
 

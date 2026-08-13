@@ -225,8 +225,37 @@ describe('the writer and the reader agree on a filename', () => {
  * is why it has to be announced from the outside.
  */
 describe('a box that has never reached the gateway', () => {
+  /**
+   * With no gateway address there is nothing to sign in to, and the symptom is
+   * identical to nobody having signed in. This is the one of the three causes
+   * that can be known rather than guessed, so it is said on its own — sending
+   * somebody to `/mcp` here is advice that cannot work, and advice that cannot
+   * work is how a notice stops being read.
+   */
+  it('names an unset SYNC_MCP_URL, instead of hedging about sign-in', () => {
+    const { stdout } = run(
+      'sync-session',
+      ['preflight'],
+      {},
+      { CLAUDE_CODE_SESSION_ID: SESSION, SYNC_MCP_URL: '' },
+    );
+    expect(stdout).toMatch(/SYNC_MCP_URL is not set/);
+    expect(stdout).toMatch(/sync-setup/);
+    // Says what will NOT fix it, because that is the wrong turn people take.
+    expect(stdout).toMatch(/not a sign-in problem/i);
+    expect(stdout).toMatch(/do not do tracked work/i);
+    // And must not also offer the sign-in advice, which is the thing it is
+    // correcting. Two notices that contradict each other are worse than one.
+    expect(stdout).not.toMatch(/may not be connected/i);
+  });
+
   it('says the tools may not be there, and names both ways out', () => {
-    const { stdout } = run('sync-session', ['preflight'], {}, { CLAUDE_CODE_SESSION_ID: SESSION });
+    const { stdout } = run(
+      'sync-session',
+      ['preflight'],
+      {},
+      { CLAUDE_CODE_SESSION_ID: SESSION, SYNC_MCP_URL: 'https://gateway.example.dev/mcp' },
+    );
     expect(stdout).toMatch(/may not be connected/i);
     // Both routes, because each is useless on the other kind of box: /mcp needs
     // somebody at a keyboard, and sync-connect is what a container has instead.

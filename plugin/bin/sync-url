@@ -1,0 +1,137 @@
+#!/usr/bin/env sh
+#
+# Point this machine at a sync gateway.
+#
+#   sync-url https://mcp.example.dev
+#   sync-url https://mcp.example.dev --project    # this repo only
+#
+# The plugin ships no gateway address, because a public marketplace plugin with
+# one baked in points every install at whoever published it. The address is read
+# from SYNC_MCP_URL where the plugin's .mcp.json declares the server, so setting
+# it is the one piece of configuration a user has. This writes it for them.
+#
+# Two properties are the whole point of the script existing rather than a README
+# paragraph saying "edit settings.json":
+#
+#   It fails at a shell prompt. A wrong URL set by hand does not announce itself
+#   -- the MCP server simply fails to connect, and the symptom is an agent with
+#   no tools and nothing to read, which is the one sync failure that does not
+#   refuse. So the address is checked against /healthz BEFORE it is written, and
+#   a value that is not a gateway is rejected here where somebody is watching.
+#
+#   It merges rather than rewrites. settings.json holds everything else a person
+#   has configured; rewriting it with sed is the quiet-wrong-answer failure this
+#   project keeps finding, and losing someone's config is worse than printing two
+#   lines for them to paste.
+set -u
+
+usage() {
+  cat <<'USAGE'
+sync-url — point this machine at a sync gateway
+
+  sync-url <gateway-url> [--project] [--no-verify]
+
+  <gateway-url>   e.g. https://mcp.example.dev — /mcp is added if you omit it
+  --project       write .claude/settings.json here instead of ~/.claude
+  --no-verify     skip the /healthz check (offline, or a gateway not up yet)
+
+Restart Claude Code afterwards: MCP servers are read once at startup.
+USAGE
+}
+
+URL=""
+SCOPE=user
+VERIFY=1
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --project) SCOPE=project; shift ;;
+    --no-verify) VERIFY=0; shift ;;
+    -*) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+    *) URL="$1"; shift ;;
+  esac
+done
+
+die() { echo "$*" >&2; exit 1; }
+
+[ -n "$URL" ] || { usage >&2; exit 2; }
+
+# Accept what people actually paste: a bare host, a trailing slash, or the full
+# /mcp endpoint. The stored value must be the endpoint, because that is what the
+# server entry uses verbatim.
+case "$URL" in
+  http://*|https://*) ;;
+  *) URL="https://$URL" ;;
+esac
+URL="${URL%/}"
+BASE="${URL%/mcp}"
+URL="${BASE}/mcp"
+
+if [ "$VERIFY" -eq 1 ]; then
+  command -v curl >/dev/null 2>&1 || die "curl is needed to check the gateway; pass --no-verify to skip"
+  body=$(curl -fsS -m 20 "${BASE}/healthz" 2>&1) ||
+    die "could not reach ${BASE}/healthz — $body
+
+Nothing has been written. If the gateway is not up yet, or you are offline,
+re-run with --no-verify."
+  # A Plane host answers /healthz too, with HTML. Distinguishing them here is the
+  # difference between a clear message now and "no tools" an hour later, which is
+  # the single most reported way to get this wrong.
+  case "$body" in
+    *'"ok"'*) ;;
+    *) die "${BASE} answered, but not like a sync gateway.
+
+Got: $(printf '%s' "$body" | head -c 120)
+
+That is usually Plane's own host. The gateway is normally mcp.<your-plane-host>." ;;
+  esac
+fi
+
+if [ "$SCOPE" = project ]; then
+  DIR=".claude"
+else
+  DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+fi
+FILE="$DIR/settings.json"
+
+mkdir -p "$DIR" || die "could not create $DIR"
+
+if [ ! -e "$FILE" ]; then
+  printf '{\n  "env": {\n    "SYNC_MCP_URL": "%s"\n  }\n}\n' "$URL" > "$FILE" ||
+    die "could not write $FILE"
+  echo "wrote $FILE"
+elif command -v jq >/dev/null 2>&1; then
+  jq --arg u "$URL" '.env = (.env // {}) | .env.SYNC_MCP_URL = $u' "$FILE" > "$FILE.tmp" &&
+    mv "$FILE.tmp" "$FILE" || die "could not update $FILE"
+  echo "updated $FILE"
+elif command -v python3 >/dev/null 2>&1; then
+  URL="$URL" FILE="$FILE" python3 - <<'PY' || die "could not update $FILE"
+import json, os
+path = os.environ['FILE']
+with open(path) as f:
+    conf = json.load(f)
+conf.setdefault('env', {})['SYNC_MCP_URL'] = os.environ['URL']
+with open(path, 'w') as f:
+    json.dump(conf, f, indent=2)
+    f.write('\n')
+print(f'updated {path}')
+PY
+else
+  # Stated degradation rather than a bad edit. Same rule as sync-connect: writing
+  # a new file is safe in shell, merging into an existing one is not.
+  cat >&2 <<EOF
+$FILE already exists and neither jq nor python3 is installed, so it has
+been left alone. Add this to it, inside the top-level object:
+
+  "env": { "SYNC_MCP_URL": "$URL" }
+EOF
+  exit 1
+fi
+
+cat <<EOF
+
+Gateway: $URL
+
+Restart Claude Code — MCP servers are read once at startup, so the tools will not
+appear in this session. After restarting, sign in on the first tool call.
+EOF

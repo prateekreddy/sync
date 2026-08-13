@@ -123,7 +123,18 @@ case "$CMD" in
     # a connected machine never sees it twice. That is deliberately not "once per
     # install": the question is not whether this is a new session, it is whether
     # anything on this machine has ever reached the gateway.
-    if [ ! -e "$STATE_DIR/connected" ]; then
+    # One of the three causes can be known for certain rather than guessed at, so
+    # it is said first and on its own. The plugin ships no gateway address; with
+    # SYNC_MCP_URL unset there is no server to sign in to, and the symptom is
+    # identical to nobody having signed in. Sending someone to /mcp in that state
+    # is advice that cannot work, which is worse than no advice.
+    if [ -z "${SYNC_MCP_URL:-}" ] && [ ! -e "$STATE_DIR/connected" ]; then
+      echo "sync: SYNC_MCP_URL is not set, so there is no gateway to connect to and you will"
+      echo "have no sync tools. This is not a sign-in problem — signing in cannot fix it."
+      echo "Run /sync-setup <gateway-url>, or $SYNC_BIN/sync-url <gateway-url>, then restart."
+      echo "Until then, do not do tracked work: with no claim tool nothing will refuse you,"
+      echo "and two agents can take the same item."
+    elif [ ! -e "$STATE_DIR/connected" ]; then
       echo "sync: nothing on this machine has claimed anything yet, so this may not be connected."
       echo "If you can see the sync tools (capture, claim, complete), it is — carry on."
       echo "If you CANNOT see them, sync is installed but not signed in. Do not do tracked work"

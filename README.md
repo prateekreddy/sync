@@ -21,18 +21,21 @@ You will need two things from whoever runs it: the **gateway URL** (something li
 ## Install the plugin
 
 The plugin brings the tools, the working rules, the session hooks and the liveness
-monitor. Set the gateway address first — it ships with none, so that agents are never
-pointed at somebody else's deployment by default:
-
-```jsonc
-// ~/.claude/settings.json
-{ "env": { "SYNC_MCP_URL": "https://<gateway-host>/mcp" } }
-```
+monitor.
 
 ```
 /plugin marketplace add prateekreddy/sync
 /plugin install sync@sync
+/sync-setup https://<gateway-host>
 ```
+
+The plugin ships no gateway address — it would otherwise point every installation
+at whoever published it — so `/sync-setup` is required, not optional. It checks the
+host answers like a gateway before writing anything, which catches the usual
+mistake of giving it Plane's address instead. Then **restart**: MCP servers are read
+once at startup. `/sync-status` answers whether it worked.
+
+Setting `SYNC_MCP_URL` in `~/.claude/settings.json` by hand does the same thing.
 
 Sign-in is a browser flow, offered on the first tool call. **Installing is not
 connecting**: until somebody signs in you have the rules and hooks from disk and no

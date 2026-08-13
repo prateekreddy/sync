@@ -2,14 +2,23 @@
 
 Track work in Plane with an atomic claim, so two agents never take the same task.
 
-```jsonc
-// ~/.claude/settings.json — your gateway, before you install
-{ "env": { "SYNC_MCP_URL": "https://sync.your-company.internal/mcp" } }
-```
-
 ```
 /plugin marketplace add prateekreddy/sync
 /plugin install sync@sync
+/sync-setup https://<your-gateway-host>
+```
+
+The third line is the one people forget, and it is not optional: the plugin ships
+no gateway address, so until it runs there is no server to connect to. It checks
+the address answers like a gateway before writing anything, and merges into your
+`settings.json` rather than replacing it. **Restart afterwards** — MCP servers are
+read once at startup.
+
+Setting `SYNC_MCP_URL` by hand does the same thing:
+
+```jsonc
+// ~/.claude/settings.json
+{ "env": { "SYNC_MCP_URL": "https://sync.your-company.internal/mcp" } }
 ```
 
 `sync@sync` is `<plugin>@<marketplace>`; both are called sync because the repo is
@@ -130,10 +139,23 @@ plugin and no `claim`, check this variable before assuming nobody has signed in.
 | | |
 |---|---|
 | `.mcp.json` | the gateway — coordination tools plus Plane's own surface |
+| `commands/` | `/sync-setup` and `/sync-status` |
+| `bin/sync-url` | writes the gateway address into `settings.json`, after checking it answers |
 | `bin/sync-connect` | connects a box that has no browser to sign in with |
 | `monitors/` | keeps your claim alive while you work, and tells you if it is taken away |
 | `hooks/` | harvest the lease credential, report on resume, hand work back on exit, fence `git push` and re-check after it |
 | `skills/` | the working rules |
+
+Two commands, and both exist for the same reason: **they work when the tools do
+not.** Everything else an agent needs is a tool call, so wrapping it in a command
+would only add a second way to do the same thing. But a machine with no gateway
+address has no tools at all, and no tool can fix that — which is exactly the state
+a new user is in, and the one failure that does not announce itself.
+
+| | |
+|---|---|
+| `/sync-setup <url>` | point this machine at a gateway; checks it before writing |
+| `/sync-status` | connected? which gateway, which build, what am I holding? |
 
 ## Why a monitor rather than a heartbeat
 
