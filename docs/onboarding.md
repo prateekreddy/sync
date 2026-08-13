@@ -259,7 +259,8 @@ Work lives in Plane, reached through the `sync` MCP server. Three rules:
    doing it both believe they own the item. Only `claim` is atomic.
 3. **Finish explicitly.** End with `complete` (include evidence — a PR link, a
    commit, what you verified) or `release`. Going silent means the lease expires
-   and someone redoes your work. `heartbeat` on long tasks.
+   and someone redoes your work. An item stays yours while you work, however
+   long that takes — there is nothing to call to keep it.
 
 After a restart, call `held` first to see what you were in the middle of.
 Never edit assignees or state in Plane directly to take work.

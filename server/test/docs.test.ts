@@ -103,6 +103,44 @@ describe('the skill covers the surface it claims to', () => {
  * Record<ErrorCode, string>, so it has every code by construction and a new one
  * cannot be added without this failing.
  */
+/**
+ * The README's tool list is the first thing a reader of this project sees, and it
+ * had drifted in both directions at once: it claimed 62 tools where the server
+ * lists 27, and omitted `gather` entirely — a tool nobody reading the README
+ * would know to ask for.
+ *
+ * Neither drift is visible by reading. A count is only wrong against a number
+ * nobody recomputes, and a missing row looks exactly like a complete list. So
+ * both are checked against NATIVE_TOOLS rather than against a copy here.
+ */
+describe('the README describes the tools that exist', () => {
+  const readme = () => read('README.md');
+
+  it('lists every coordination tool', () => {
+    // Matched in the arrow-list block, where each line is `name → what it does`.
+    const listed = new Set(
+      [...readme().matchAll(/^(\w+)\s+→/gm)].map((m) => m[1]!),
+    );
+    const missing = NATIVE_TOOLS.map((t) => t.name).filter((n) => !listed.has(n));
+    expect(missing).toEqual([]);
+  });
+
+  it('does not list tools the gateway does not serve', () => {
+    const names = new Set(NATIVE_TOOLS.map((t) => t.name));
+    const listed = [...readme().matchAll(/^(\w+)\s+→/gm)].map((m) => m[1]!);
+    expect(listed.filter((n) => !names.has(n))).toEqual([]);
+  });
+
+  it('states a tool count that matches the surface', () => {
+    // 17 of ours plus Plane's re-exported groups. Read from the prose that names
+    // the grouped count, so the two numbers cannot drift apart independently.
+    const total = Number(/One MCP server, (\d+) tools/.exec(readme())?.[1]);
+    const grouped = Number(/re-exports its \d+ tools as \*\*(\d+)\*\*/.exec(readme())?.[1]);
+    expect(grouped).toBeGreaterThan(0);
+    expect(total).toBe(NATIVE_TOOLS.length + grouped);
+  });
+});
+
 describe('every error code an agent can meet is documented', () => {
   it('gives each one a row in the troubleshooting table', () => {
     const table = read('skills/work-tracking/troubleshooting.md');

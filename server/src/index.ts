@@ -10,6 +10,7 @@ import { PlaneMcp } from './planemcp.js';
 import type { EvidencePolicy } from './evidence.js';
 import { configFromEnv } from './ghcheck.js';
 import { registerRoutes } from './routes.js';
+import { trustProxyFromEnv } from './trustproxy.js';
 import { DEFAULT_THRESHOLDS, reviewAll } from './review.js';
 import { reconcileAll } from './reconcile.js';
 
@@ -57,6 +58,10 @@ const app = Fastify({
   logger: { level: process.env.LOG_LEVEL ?? 'info' },
   // Agents retry; a request that hangs is worse than one that fails fast.
   requestTimeout: 30_000,
+  // Who to believe about the client's address. Off unless configured, because
+  // the mint limiter counts on req.ip and getting this wrong in either
+  // direction breaks it silently — see trustproxy.ts.
+  trustProxy: trustProxyFromEnv(process.env),
 });
 
 // Background work (the Plane mirror) reports through this rather than vanishing.

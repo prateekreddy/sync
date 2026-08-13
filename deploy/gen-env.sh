@@ -103,10 +103,17 @@ if [ "$BEHIND_PROXY" -eq 1 ]; then
   GATEWAY_URL="https://${GATEWAY_DOMAIN}"
   # No port: the public address is 443 via the front end.
   HOST_PORT="${DOMAIN}"
+  # One hop, because --behind-proxy means exactly one proxy in front. This is
+  # what makes the mint rate limit per client rather than one bucket shared by
+  # the internet; add hops only if you actually run more.
+  TRUST_PROXY=1
 else
   BIND=0.0.0.0
   GATEWAY_PORT=8787
   GATEWAY_URL=""
+  # The gateway is the edge, so the socket peer IS the client and a forwarded
+  # header is a client's own claim about itself.
+  TRUST_PROXY=
   if [ "$PORT" = "80" ]; then
     WEB_URL="http://${DOMAIN}"
     HOST_PORT="${DOMAIN}"
@@ -216,6 +223,11 @@ GATEWAY_LISTEN_PORT=8787
 # port, and anything derived from it would advertise an address no client can
 # reach. Empty is correct only when the gateway is itself the edge.
 GATEWAY_PUBLIC_URL=${GATEWAY_URL}
+# How many proxies stand between the internet and the gateway. The mint rate
+# limit counts per client address, and behind a proxy every request arrives from
+# the proxy — so unset here, one client can exhaust the limit for everybody and
+# lock the rest out of sign-in. Empty means the gateway is the edge.
+TRUST_PROXY=${TRUST_PROXY}
 
 # ── Plane ────────────────────────────────────────────────────────────────────
 APP_RELEASE=v1.3.1

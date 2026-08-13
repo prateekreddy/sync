@@ -1,7 +1,7 @@
 {
   "name": "sync",
   "description": "Track work in Plane with an atomic claim, so two agents never take the same task. Ships the coordination tools, the working rules, and the liveness monitor that keeps a lease alive while you work.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": {
     "name": "Prateek"
   }

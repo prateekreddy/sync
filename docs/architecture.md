@@ -259,7 +259,7 @@ still in force and that `unlink` is what removes it.
 | `search` | Titles across every project the caller can see. The only tool that crosses project boundaries, so "is this already written down?" has an answer before a duplicate capture. |
 | `board` | Per-module progress plus live leases, and `structure`: filed, parented, containers, depth, unplaced. Answers "does this board have any shape" — the question a flat inbox never prompts anyone to ask. |
 | `claim` | Atomic. Takes a filter *or* an id — `next`-then-`claim` is a TOCTOU race, so claim-by-filter must be one call. |
-| `heartbeat` | Extends TTL. Requires epoch. |
+| `heartbeat` | **Not a tool.** Extends TTL, requires epoch, and is reachable only as `POST /v1/heartbeat`. The plugin's monitor calls it from outside the session, so an agent never has to; it stays on the HTTP surface for clients running without the plugin. Listing it as a tool taught agents to call something that is not there. |
 | `release` | Back to the pool, with a reason. Requires epoch. |
 | `complete` | Terminal, with outcome + refs. Requires epoch. |
 | `link` | Typed edge over Plane's own vocabulary — `blocking`, `blocked_by`, `duplicate`, `relates_to`. Plane accepts anything else and silently ignores it, so the set is fixed here rather than passed through. |
@@ -549,7 +549,7 @@ when the rule applies:
 | write it down first | `capture` |
 | claim before you work | `claim` |
 | the lease expires; keep it alive | `claim`, `release` |
-| finish explicitly | `heartbeat`, `complete` |
+| finish explicitly | `complete`, `release` |
 | resume before you re-claim | `held` |
 | you cannot take work by writing `assignees` | the `NOT_HOLDER` refusal, which names `claim` as the fix |
 

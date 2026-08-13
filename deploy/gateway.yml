@@ -132,6 +132,13 @@ services:
       # Plane twice per request, so an unthrottled one lets a stranger burn the
       # workspace's rate-limit budget and take every agent down with it.
       MINT_RATE_LIMIT: ${MINT_RATE_LIMIT:-10}
+      # Which is only "per source" if the gateway can see the source. Behind a
+      # proxy the socket peer is the proxy, so every request shares one bucket
+      # and one client can lock everyone out of sign-in. Set to the number of
+      # proxies in front — 1 for a single reverse proxy — or to their subnet.
+      # `gen-env.sh --behind-proxy` writes 1. Left empty the gateway trusts
+      # nothing, which is correct only when it is itself the edge.
+      TRUST_PROXY: ${TRUST_PROXY:-}
       # How agents reach this gateway from outside, e.g. https://mcp.example.dev.
       # Required behind a reverse proxy that does not send X-Forwarded-Proto and
       # X-Forwarded-Host: the OAuth issuer and every advertised endpoint are built
