@@ -156,6 +156,15 @@ a new user is in, and the one failure that does not announce itself.
 |---|---|
 | `/sync-setup <url>` | point this machine at a gateway; checks it before writing |
 | `/sync-status` | connected? which gateway, which build, what am I holding? |
+| `/sync-standup` | what is in flight, what landed, what is stuck |
+
+`/sync-standup` is the exception to the rule above, and deliberately: an agent can
+already assemble it from `find` and `board`. It exists so the answer comes out the
+same shape every morning — a difference between two days then means the work
+changed rather than the summary did.
+
+The names are flat rather than nested because Claude Code has no subcommands.
+Typing `/sync` filters to all of them, which is the same menu by other means.
 
 ## Why a monitor rather than a heartbeat
 

@@ -1,5 +1,6 @@
 ---
 description: Point this machine at a sync gateway and check it answers
+argument-hint: "<gateway-url>"
 allowed-tools: ["Bash", "AskUserQuestion"]
 ---
 

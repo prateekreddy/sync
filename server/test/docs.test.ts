@@ -124,7 +124,14 @@ describe("the plugin's commands", () => {
   const commands = readdirSync(`${root}/commands`).filter((f) => f.endsWith('.md'));
 
   it('ships the ones the READMEs promise', () => {
-    expect(commands.sort()).toEqual(['sync-setup.md', 'sync-status.md']);
+    expect(commands.sort()).toEqual(['sync-setup.md', 'sync-standup.md', 'sync-status.md']);
+  });
+
+  it.each(commands)('%s describes itself, so the /sync menu is readable', (file) => {
+    // Typing `/sync` filters to these, and the description is the only thing
+    // distinguishing them there. A command with none is one nobody picks.
+    const body = readFileSync(`${root}/commands/${file}`, 'utf8');
+    expect(/^description:\s*\S/m.test(body)).toBe(true);
   });
 
   it.each(commands)('%s runs scripts that exist', (file) => {
