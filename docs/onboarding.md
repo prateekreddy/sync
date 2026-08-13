@@ -23,14 +23,24 @@ below.
 
 ### Or install the plugin
 
+```jsonc
+// ~/.claude/settings.json — once per machine, before installing
+{ "env": { "SYNC_MCP_URL": "https://<gateway-host>/mcp" } }
+```
+
 ```
 /plugin marketplace add prateekreddy/sync
 /plugin install sync@sync
 ```
 
-Same server, plus the working rules, the session hooks and the liveness monitor —
-and no URL to know. Sign-in is the same browser flow, offered on the first tool
-call.
+Same server, plus the working rules, the session hooks and the liveness monitor.
+Sign-in is the same browser flow, offered on the first tool call.
+
+**The plugin ships no gateway address**, which is why the setting above comes
+first. sync is self-hosted and this repo is public, so a URL baked into the plugin
+would point every installation at whichever deployment happened to publish it.
+With `SYNC_MCP_URL` unset the server cannot connect, and the symptom is the one
+described next — tools missing rather than an error naming the variable.
 
 **Installing is not connecting**, and this is the one failure mode worth learning
 before you hand the plugin to anyone. The rules, hooks and monitor come from disk;

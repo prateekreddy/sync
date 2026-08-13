@@ -2,6 +2,11 @@
 
 Track work in Plane with an atomic claim, so two agents never take the same task.
 
+```jsonc
+// ~/.claude/settings.json — your gateway, before you install
+{ "env": { "SYNC_MCP_URL": "https://sync.your-company.internal/mcp" } }
+```
+
 ```
 /plugin marketplace add prateekreddy/sync
 /plugin install sync@sync
@@ -97,8 +102,8 @@ it is missing, rather than rewriting a committed file with `sed`.
 
 ## Pointing it at your own gateway
 
-sync is self-hosted, so the bundled URL is a default rather than an address you
-are stuck with. Set `SYNC_MCP_URL`:
+sync is self-hosted and there is no bundled URL, so this is required rather than
+an override. Set `SYNC_MCP_URL`:
 
 ```jsonc
 // ~/.claude/settings.json — or .claude/settings.json to scope it to one repo
@@ -109,6 +114,16 @@ That is enough on its own; the variable is read where the plugin's `.mcp.json`
 declares the server, so there is nothing to edit inside the plugin and nothing to
 re-do when it updates. Exporting it in your shell works too, but only for windows
 launched from that shell, which is a confusing way to lose half your sessions.
+
+**There is deliberately no default.** A URL baked in here would ship to everyone
+who installs from a public marketplace and point their agents at whichever
+deployment published the plugin — reachable, authenticating, and rate-limited on
+behalf of strangers. Requiring the address costs one line per machine and cannot
+send anyone's work to somebody else's tracker by accident.
+
+Unset, the server cannot connect and you get the **Installing is not connecting**
+symptom above: rules and hooks present, no tools, nothing named. If a box has the
+plugin and no `claim`, check this variable before assuming nobody has signed in.
 
 ## What it installs
 

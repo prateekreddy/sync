@@ -15,7 +15,7 @@ const actor = (over: Partial<Actor> = {}): Actor => ({
   capabilities: [],
   planeUserId: 'plane-user-1',
   defaultProjectId: null,
-  principal: 'human:y.pra.reddy@gmail.com',
+  principal: 'human:me@example.com',
   planeToken: 'plane_api_x',
   ...over,
 });
@@ -41,7 +41,7 @@ describe('mirrored comment provenance', () => {
   it('says nothing extra when Plane will show the principal as the author', async () => {
     // The self-service case: the agent writes with its owner's own Plane token,
     // so "for human:x" names the same person as the byline.
-    const note = await actorNote(planeAs('y.pra.reddy@gmail.com'), actor(), 'Claimed.');
+    const note = await actorNote(planeAs('me@example.com'), actor(), 'Claimed.');
     expect(note).toBe('<p>Claimed.</p>');
   });
 
@@ -61,7 +61,7 @@ describe('mirrored comment provenance', () => {
     // human, so dropping either would lose the only record there is.
     const note = await actorNote(planeAs('svc@example.com'), actor({ planeToken: null }), 'Done.');
     expect(note).toContain('by agent:y.pra.reddy/sync-master');
-    expect(note).toContain('for human:y.pra.reddy@gmail.com');
+    expect(note).toContain('for human:me@example.com');
   });
 
   it('keeps printing provenance when Plane cannot be asked', async () => {
@@ -73,7 +73,7 @@ describe('mirrored comment provenance', () => {
       actor({ planeUserId: 'plane-user-unreachable' }),
       'Claimed.',
     );
-    expect(note).toContain('for human:y.pra.reddy@gmail.com');
+    expect(note).toContain('for human:me@example.com');
   });
 
   it('keeps printing when the principal is a bare name, not an account', async () => {

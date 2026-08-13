@@ -17,7 +17,7 @@
 --
 -- This is sharper than it sounds here, because agents minted from a personal
 -- token authenticate AS that human -- measured 2026-08-04: `get_user` through
--- sync-master's token returns the owner's account, and items it captures record
+-- such an agent's token returns the owner's account, and items it captures record
 -- that human as `created_by`. So for the agent in daily use, "assigned to me" and
 -- "assigned to my human" are the same row in Plane, and this table is the only
 -- thing that can say which of them put it there.

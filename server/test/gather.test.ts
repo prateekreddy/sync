@@ -50,7 +50,7 @@ const actor: Actor = {
   capabilities: [],
   planeUserId: null,
   defaultProjectId: null,
-  principal: 'human:y.pra.reddy@gmail.com',
+  principal: 'human:me@example.com',
   planeToken: null,
 };
 
@@ -88,7 +88,7 @@ const fakePlane = (items: WorkItem[], seen: Seen, fail?: string): PlaneClient =>
 
 const seen = (): Seen => ({ patched: [], created: [], comments: [] });
 
-const APPROVED = 'human:y.pra.reddy@gmail.com';
+const APPROVED = 'human:me@example.com';
 
 describe('asking before anything moves', () => {
   it('refuses without an approval, and names what it would have done', async () => {

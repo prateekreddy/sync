@@ -34,10 +34,6 @@ mkdir -p ~/.claude/skills                                 # or <project>/.claude
 cp -r skills/work-tracking ~/.claude/skills/
 ```
 
-On a skein box `.claude` is a symlink into the shared store, so copy to the store path
-that symlink resolves to rather than through the link, and expect the copy to be visible
-to every agent on that repo.
-
 Codex has no skill mechanism. Point it at the file directly, or paste the sections you
 need — it is plain Markdown and nothing in it depends on being loaded as a skill.
 

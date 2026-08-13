@@ -113,9 +113,19 @@ describe('every error code an agent can meet is documented', () => {
   it('does not invent codes the gateway cannot return', () => {
     // The other direction: a row for a code that no longer exists teaches an agent
     // to watch for something it will never see, and reads as coverage.
-    const table = read('skills/work-tracking/troubleshooting.md');
-    const cited = [...table.matchAll(/`([A-Z][A-Z_]{3,})`/g)].map((m) => m[1]!);
+    //
+    // Scanned over the table's rows rather than the whole file, because prose
+    // elsewhere legitimately backticks SHOUTING_CASE that is not an error code —
+    // env vars like SYNC_MCP_URL. Reading those as codes failed this test for
+    // documentation that was correct, which is the kind of false alarm that gets
+    // a guard deleted rather than fixed.
+    const rows = read('skills/work-tracking/troubleshooting.md')
+      .split('\n')
+      .filter((l) => l.startsWith('| `'));
+    const cited = rows.flatMap((l) => [...l.matchAll(/`([A-Z][A-Z_]{3,})`/g)].map((m) => m[1]!));
     expect([...new Set(cited)].filter((c) => !(c in RECOVERY))).toEqual([]);
+    // The scoping must not silently empty the check.
+    expect(cited.length).toBeGreaterThanOrEqual(Object.keys(RECOVERY).length);
   });
 
   it('tells REVOKED and LEASE_EXPIRED apart where they are read', () => {
@@ -392,5 +402,26 @@ describe("the plugin's MCP server", () => {
     // dropping headers altogether. Session identity is what every protection
     // built on sessions rests on.
     expect(config().headers['X-Sync-Session']).toMatch(/CLAUDE_CODE_SESSION_ID/);
+  });
+
+  /**
+   * The repo is public and the plugin installs from it, so a URL written here
+   * is not a convenience default — it is the address every stranger's agents
+   * take. It points them at a live gateway that will authenticate them, rate
+   * limit on their behalf, and receive whatever they capture.
+   *
+   * Caught before the repo went public: the entry carried the maintainer's own
+   * gateway as the `:-` fallback, and the onboarding doc advertised "no URL to
+   * know" as a feature of installing the plugin.
+   *
+   * Asserted as "no host at all" rather than "not that one host", because the
+   * next person to add a default will pick a different hostname.
+   */
+  it('hardcodes no gateway address, so it cannot ship one deployment to everyone', () => {
+    const url: string = config().url;
+    expect(url).toMatch(/SYNC_MCP_URL/);
+    // Every https:// in this value would be a baked-in destination. The
+    // variable may carry a default only if that default has no host.
+    expect(url).not.toMatch(/https?:\/\//);
   });
 });
