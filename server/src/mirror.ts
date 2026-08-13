@@ -147,7 +147,7 @@ async function writerIsPrincipal(plane: PlaneClient, actor: Actor): Promise<bool
   const principal = actor.principal.startsWith('human:')
     ? actor.principal.slice('human:'.length).trim().toLowerCase()
     : '';
-  // A principal recorded as a bare name ('human:prateek') is not something we can
+  // A principal recorded as a bare name ('human:alice') is not something we can
   // match against a Plane account, so it stays printed.
   if (!principal.includes('@')) return false;
 

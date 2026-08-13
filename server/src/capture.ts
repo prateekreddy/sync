@@ -44,7 +44,7 @@ export interface CaptureInput {
    * this" — and constrains nothing. `parentId` is a claim about structure: the
    * parent is not done until its children are, so a parent with open children
    * stops being claimable work and becomes a container. Using the wrong one
-   * silently changes what the fleet is allowed to pick up.
+   * silently changes what other agents are allowed to pick up.
    */
   parentId?: string | undefined;
   /**
@@ -262,7 +262,7 @@ async function inheritModule(
  *   new item is done, so an agent recording a tangential discovery would block
  *   its own completion. Structure is not worth that.
  * - A child would also convert a claimable leaf into a container, changing what
- *   the fleet may pick up as a side effect of someone writing a note.
+ *   other agents may pick up as a side effect of someone writing a note.
  *
  * A sibling does neither, and matches what "I noticed this while doing X" usually
  * means: same workstream as X, not X is incomplete without it. When the source

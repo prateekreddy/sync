@@ -10,8 +10,8 @@ import type { Actor } from '../src/auth.js';
  * named directly above it.
  */
 const actor = (over: Partial<Actor> = {}): Actor => ({
-  name: 'y.pra.reddy/sync-master',
-  holder: 'agent:y.pra.reddy/sync-master',
+  name: 'me/worker-1',
+  holder: 'agent:me/worker-1',
   capabilities: [],
   planeUserId: 'plane-user-1',
   defaultProjectId: null,
@@ -50,17 +50,17 @@ describe('mirrored comment provenance', () => {
     // knows who that is acting for.
     const note = await actorNote(
       planeAs('sync-worker-3@agents.local'),
-      actor({ planeUserId: 'plane-user-2', principal: 'human:prateek@example.com' }),
+      actor({ planeUserId: 'plane-user-2', principal: 'human:alice@example.com' }),
       'Claimed.',
     );
-    expect(note).toContain('for human:prateek@example.com');
+    expect(note).toContain('for human:alice@example.com');
   });
 
   it('names both when the write lands as the shared service account', async () => {
     // No token of its own: Plane's byline identifies neither the agent nor the
     // human, so dropping either would lose the only record there is.
     const note = await actorNote(planeAs('svc@example.com'), actor({ planeToken: null }), 'Done.');
-    expect(note).toContain('by agent:y.pra.reddy/sync-master');
+    expect(note).toContain('by agent:me/worker-1');
     expect(note).toContain('for human:me@example.com');
   });
 
@@ -77,14 +77,14 @@ describe('mirrored comment provenance', () => {
   });
 
   it('keeps printing when the principal is a bare name, not an account', async () => {
-    // 'human:prateek' from the CLI cannot be matched against a Plane account, so
+    // 'human:alice' from the CLI cannot be matched against a Plane account, so
     // it must not be silently assumed to be the author.
     const note = await actorNote(
-      planeAs('prateek@example.com'),
-      actor({ planeUserId: 'plane-user-3', principal: 'human:prateek' }),
+      planeAs('alice@example.com'),
+      actor({ planeUserId: 'plane-user-3', principal: 'human:alice' }),
       'Claimed.',
     );
-    expect(note).toContain('for human:prateek');
+    expect(note).toContain('for human:alice');
   });
 
   it('asks Plane once per agent, not once per comment', async () => {

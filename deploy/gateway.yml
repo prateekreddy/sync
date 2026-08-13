@@ -130,7 +130,7 @@ services:
       MINT_TOKENS: ${MINT_TOKENS:-on}
       # Per source address. This endpoint takes no gateway credential and calls
       # Plane twice per request, so an unthrottled one lets a stranger burn the
-      # workspace's rate-limit budget and take the whole fleet down with it.
+      # workspace's rate-limit budget and take every agent down with it.
       MINT_RATE_LIMIT: ${MINT_RATE_LIMIT:-10}
       # How agents reach this gateway from outside, e.g. https://mcp.example.dev.
       # Required behind a reverse proxy that does not send X-Forwarded-Proto and

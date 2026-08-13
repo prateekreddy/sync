@@ -398,7 +398,7 @@ attention — a task that keeps killing its agent is usually underspecified.
 clicking around. One claim costs four API calls, so that caps an agent at roughly a
 dozen claims a minute and returns 429 under any burst. `gen-env.sh` sets
 `API_KEY_RATE_LIMIT=300/minute`. Each agent writes with its own Plane token, so the
-budget scales with fleet size.
+budget scales with the number of agents.
 
 **Plane lags by a second or so.** `complete` ends the lease immediately and writes
 Plane in the background, so an agent never fails because Plane was slow. A dependent

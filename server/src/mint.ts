@@ -146,7 +146,7 @@ export function agentName(identity: PlaneIdentity, label: string): string {
  *
  * It is reachable without any gateway credential and calls Plane twice per
  * request, so an unthrottled one lets a stranger burn the workspace's rate-limit
- * budget — which would take the whole fleet down, not just this endpoint.
+ * budget — which would take every agent down, not just this endpoint.
  *
  * It was an in-memory Map, and that was the last thing in the gateway assuming a
  * single process once mirror ordering stopped (SYNC-6, SYNC-122). It failed in
@@ -160,7 +160,7 @@ export function agentName(identity: PlaneIdentity, label: string): string {
  *
  * The three parts, in the order they matter:
  *
- *   delete   everything past the window, fleet-wide, on every call. That is what
+ *   delete   everything past the window, across every agent, on every call. That is what
  *            keeps the table to at most one minute of mints with no sweeper to
  *            own; a full-table delete over a few hundred rows costs far less
  *            than the Plane request this call is about to make.

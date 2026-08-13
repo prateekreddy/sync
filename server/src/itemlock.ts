@@ -8,7 +8,7 @@ import type { Pool } from './db.js';
  * preceded it and leave a finished item displaying as "In Progress" (SYNC-6).
  * The lease itself stayed correct — this is display, not coordination — but the
  * consequence was that the gateway could not be run redundantly at all, which
- * made it the single point of failure for the whole fleet.
+ * made it the single point of failure for every agent.
  *
  * A Postgres advisory lock rather than a version column, for two reasons. It
  * covers writers that have no row of their own to version — the drain replaying

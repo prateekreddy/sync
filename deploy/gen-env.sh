@@ -220,7 +220,7 @@ GATEWAY_PUBLIC_URL=${GATEWAY_URL}
 # ── Plane ────────────────────────────────────────────────────────────────────
 APP_RELEASE=v1.3.1
 # Per API token. Plane defaults to 60/minute, which is sized for a human in a
-# browser rather than a fleet of agents making several calls per claim.
+# browser rather than many agents making several calls per claim.
 API_KEY_RATE_LIMIT=300/minute
 SECRET_KEY=$(randb64 64 50)
 LIVE_SERVER_SECRET_KEY=$(randb64 48 32)

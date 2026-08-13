@@ -123,7 +123,7 @@ describe('find', () => {
     expect(got.items.map((i) => i.title)).toEqual(['kid']);
   });
 
-  it('answers what the fleet is holding — which no Plane view can', async () => {
+  it('answers what other agents are holding — which no Plane view can', async () => {
     await lease.claim(pool, {
       workItemId: id('doing'),
       projectId: PROJECT,

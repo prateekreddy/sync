@@ -59,7 +59,7 @@ const RESIDUE = randomUUID();
 const STATES: State[] = [{ id: 'backlog', name: 'Backlog', group: 'backlog', default: true }];
 
 const MEMBERS: Member[] = [
-  { id: ME, name: 'Prateek', email: 'me@example.com' },
+  { id: ME, name: 'Alice', email: 'me@example.com' },
   { id: DANA, name: 'Dana', email: 'dana@example.com' },
 ];
 
@@ -557,7 +557,7 @@ describe('who the item ends up with', () => {
   });
 
   it('gives up on a principal that is not an email rather than guessing', () => {
-    const actor = { principal: 'human:prateek' } as Actor;
+    const actor = { principal: 'human:alice' } as Actor;
     expect(principalPlaneUser(actor, MEMBERS)).toBeNull();
   });
 

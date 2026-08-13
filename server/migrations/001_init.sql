@@ -145,7 +145,7 @@ create index if not exists agent_token_lookup_idx on agent_token (token_sha256) 
 comment on column lease.epoch is
   'Fencing token. Monotonic, never reused. Rejects a late-waking agent whose lease was stolen.';
 comment on column lease.holder_chain is
-  'Attribution chain back to a human, e.g. {human:prateek, agent:lead, agent:worker-3}.';
+  'Attribution chain back to a human, e.g. {human:alice, agent:lead, agent:worker-3}.';
 comment on column lease.expiry_count is
   'Times this item expired out from under an agent. >=3 is flagged for human attention.';
 comment on column agent_token.token_sha256 is

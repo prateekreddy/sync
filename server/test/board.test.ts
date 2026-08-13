@@ -114,7 +114,7 @@ describe('board', () => {
     expect(after.project.total).toBe(before.project.total);
   });
 
-  it('reports what the fleet is holding, oldest lease first', async () => {
+  it('reports what other agents are holding, oldest lease first', async () => {
     await lease.claim(pool, {
       workItemId: id('leased'),
       projectId: PROJECT,
@@ -122,8 +122,8 @@ describe('board', () => {
       ttlSeconds: 600,
     });
     const got = await board(fakePlane(), pool, { projectId: PROJECT });
-    expect(got.fleet).toHaveLength(1);
-    expect(got.fleet[0]).toMatchObject({ holder: 'agent:w1', title: 'leased' });
+    expect(got.active).toHaveLength(1);
+    expect(got.active[0]).toMatchObject({ holder: 'agent:w1', title: 'leased' });
   });
 
   it('counts work the epic layer does not account for', async () => {

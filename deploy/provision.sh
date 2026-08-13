@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Turn a running-but-empty Plane into a working agent fleet.
+# Turn a running-but-empty Plane into a tracker your agents can use.
 #
 #   ./provision.sh [--agents worker-1,worker-2,worker-3] [--project "Sync Platform"]
 #

@@ -11,7 +11,7 @@ import { tryItemLock, withItemLock } from '../src/itemlock.js';
  * preceded it — leaving a finished item displaying "In Progress" forever, since
  * nothing recomputes it. The lease stayed correct throughout; the cost was that
  * the gateway could not be run redundantly, making it the single point of
- * failure for the whole fleet.
+ * failure for every agent.
  *
  * TWO POOLS, deliberately. A Postgres advisory lock is session-scoped, so a
  * single pool would prove nothing about the case that matters: one pool would

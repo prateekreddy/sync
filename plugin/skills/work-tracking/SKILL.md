@@ -173,7 +173,7 @@ work looks empty:
 - **`find`** — filter *this* project by label, priority, state group, module, parent, or holder, and
   combine them. Plane's own list tools cannot filter at all, so use this instead of listing
   everything and sifting it yourself. `holder` is the one Plane could never offer, because it comes
-  from the lease table: `any` shows what the fleet is working on, `none` shows what is free.
+  from the lease table: `any` shows what other agents are working on, `none` shows what is free.
   `ready: true` applies the same gate `claim` uses. The reply carries `matched` — the number of hits
   *before* `limit` — so you can tell a complete answer from a first page.
 - **`search`** — text, across **titles and descriptions**, in your own project by default. That
@@ -252,7 +252,7 @@ stale in their context and they will not re-read it.
 and an existing item was handed back, so if your body carried something the original lacks, add it
 as a comment. `replayed: true` means the same `idempotencyKey` returned a stored answer. A
 `parentId` that is not the one you passed means the item you deduped into already lived under a
-different parent, and was **not** re-parented — the fleet is not rearranged behind your back, so
+different parent, and was **not** re-parented — your work is not rearranged behind your back, so
 your decomposition is one child short and you have to notice.
 
 **Check `priority` and `labels` in the reply against what you sent.** They are echoed for exactly
@@ -328,7 +328,7 @@ being wrong about where a note came from costs nothing, while a wrong `parentId`
 heading nobody drilling down will look at.
 
 **Deliberately unclaimable is a feature.** Label a capture `needs-human` when it needs a decision
-you should not make alone — that is how you ask a question the fleet will not accidentally answer.
+you should not make alone — that is how you ask a question another agent will not accidentally answer.
 
 **Capture before you fix, however small — and whoever found it.** The rule is easiest to skip on
 a bug a human just pointed at, because it feels already tracked: you both saw it, you are both

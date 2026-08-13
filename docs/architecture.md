@@ -90,7 +90,7 @@ create schema agent;
 create table agent.lease (
   work_item_id uuid primary key,     -- Plane work item id; no FK, we don't couple to their schema
   holder       text        not null, -- 'agent:sync-worker-3'
-  holder_chain text[]      not null, -- ['human:prateek','agent:lead','agent:worker-3']
+  holder_chain text[]      not null, -- ['human:alice','agent:lead','agent:worker-3']
   epoch        bigint      not null, -- fencing token, monotonic, never reused
   expires_at   timestamptz not null,
   claimed_at   timestamptz not null default now(),
@@ -332,9 +332,9 @@ bypass remains impossible.
 ### A side benefit
 
 Plane's rate limit is **per token** (`APIToken.allowed_rate_limit`). Under a single
-service account the whole fleet shared one budget — the main operational risk in
+service account every agent shared one budget — the main operational risk in
 this design. With pass-through, each agent carries its own, so budget scales with
-fleet size.
+the number of agents.
 
 ### The cost, stated plainly
 
@@ -419,7 +419,7 @@ prior `SELECT`, so two concurrent mints cannot both pass and then race.
 **Rate limiting.** The endpoint takes no gateway credential and calls Plane twice
 per request, so it is limited per source address (`MINT_RATE_LIMIT`, default
 10/min): unthrottled, a stranger could burn the workspace's rate-limit budget and
-take the whole fleet down. The limiter counts in Postgres, on a
+take every agent down. The limiter counts in Postgres, on a
 sliding window, so the limit means the same thing at one replica and at three.
 It was in-memory and therefore per-process, which failed in the worst direction:
 adding replicas for resilience multiplied the exact exposure the limit exists to
@@ -521,7 +521,7 @@ set, from `tools/list`, and a model cannot call a tool without having been told
 it exists — so every description is in context before any choice is made. The
 evidence is in this repo's own history. `capture`'s description told agents to
 break work up one child at a time long after `decompose` existed, and that is
-the form agents used. A channel that can push the fleet toward the wrong
+the form agents used. A channel that can push agents toward the wrong
 behaviour is not one that arrives too late to push it toward the right one.
 
 ### What survives 2026-07-28
@@ -862,7 +862,7 @@ other, so the effective policy was whichever tool a caller reached for.
 Scoped wins because minting *derives* an agent token from a human's Plane token and
 only ever reduces privilege. Reads bypassing that made the reduction cosmetic: a
 token minted from a limited member could read everything the service account could.
-It also costs the current fleet nothing — measured before deciding, all active
+It also costs existing agents nothing — measured before deciding, all active
 tokens carry a Plane identity, and a token minted from an owner's Plane user still
 sees everything that owner sees.
 

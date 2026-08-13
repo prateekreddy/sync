@@ -254,7 +254,7 @@ export async function authenticate(pool: Pool, bearer: string | undefined): Prom
 }
 
 /**
- * Attribution is a chain, not a field: 'human:prateek' <- 'agent:worker-3'.
+ * Attribution is a chain, not a field: 'human:alice' <- 'agent:worker-3'.
  * When most writes are machine-generated, "who decided this?" still has to
  * resolve back to a person.
  */

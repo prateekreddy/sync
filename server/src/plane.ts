@@ -189,7 +189,7 @@ export class PlaneClient {
       }
 
       // Any other 4xx is our bug, not a transient fault. Retrying would only burn
-      // the rate-limit budget the rest of the fleet is sharing.
+      // the rate-limit budget every other agent is sharing.
       const text = await res.text().catch(() => '');
       throw new GatewayError(
         res.status === 404 ? 'NOT_FOUND' : 'INVALID',
@@ -502,7 +502,7 @@ export class PlaneClient {
    *
    * Cached like everything else here, and shared across `as()` clients — an
    * item's number is not per-user data, and rebuilding it per agent would
-   * multiply the same listing by the size of the fleet.
+   * multiply the same listing by the number of agents.
    */
   async itemSequences(projectId: string, ttlMs = 60_000): Promise<Map<string, number>> {
     const hit = this.itemCache.get(projectId);

@@ -31,7 +31,7 @@ import { readableId } from './view.js';
  *
  * Still deliberately conservative about writing. One open item per project, never
  * a second while the first is open, labelled `needs-human`, and it proposes
- * `gather` calls rather than making them: a fleet that reorganised its own
+ * `gather` calls rather than making them: agents that reorganised their own
  * backlog unprompted would be worse than a flat one.
  */
 
@@ -322,7 +322,7 @@ function body(a: Assessment, groups: Grouping[], identifier: string | undefined,
     capped,
     `<p>This is not a request to parent all of them. Anything that genuinely stands alone belongs at ` +
       `the root — that is what a root is. Nothing here has been moved: <code>gather</code> asks a ` +
-      `person before it files anything, and deciding what belongs under what is a judgement a fleet ` +
+      `person before it files anything, and deciding what belongs under what is a judgement agents ` +
       `should not be making on its own.</p>`,
     `<p>Raised automatically by the gateway's periodic structural review and labelled needs-human. ` +
       `Close it when the top level reads like a plan again; it will be raised afresh if it drifts back.</p>`,
@@ -410,7 +410,7 @@ export async function reviewProject(
  *
  * Sequential on purpose. This runs on a timer against someone's live tracker
  * with nobody watching; finishing a few seconds sooner is worth nothing, and a
- * burst of concurrent list calls against Plane's rate limit could cost the fleet
+ * burst of concurrent list calls against Plane's rate limit could cost every agent
  * its own budget.
  */
 export async function reviewAll(

@@ -23,7 +23,7 @@ import { readableId } from './view.js';
  * Deliberately built from targeted reads rather than a project listing. The
  * obvious implementation reuses `listWorkItems`, which is not cached and pages
  * the whole project — and `verifyClaimable` has already paged it once by the time
- * we get here, so it would double the cost of every claim in the fleet. Fetching
+ * we get here, so it would double the cost of every claim. Fetching
  * the item, its relations and the handful of items they name is a few small
  * requests that do not grow with the size of the board.
  */

@@ -91,7 +91,7 @@ x-app-env: &app-env
   SECRET_KEY: ${SECRET_KEY:?run ./gen-env.sh first}
   AMQP_URL: amqp://${RABBITMQ_USER:-plane}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST:-plane-mq}:${RABBITMQ_PORT:-5672}/${RABBITMQ_VHOST:-plane}
   # Plane's default is 60/minute, which is sized for a human clicking around. An
-  # agent fleet is API-driven by definition: a single claim costs a work item
+  # agent is API-driven by definition: a single claim costs a work item
   # list, a relations read, a state write and a comment, so 60/minute caps an
   # agent at roughly a dozen claims a minute and starts returning 429 under any
   # burst. The limit is per token and this is your own instance, so raise it.

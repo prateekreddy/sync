@@ -28,7 +28,7 @@ import { withItemLock } from './itemlock.js';
  * two replicas could land a completion before the claim that preceded it, so a
  * finished item displayed as "In Progress" forever. The lease stayed correct —
  * this is display, not coordination — but it meant the gateway could not be run
- * redundantly, which made it the single point of failure for the whole fleet.
+ * redundantly, which made it the single point of failure for every agent.
  *
  * Pass a pool and the chain extends across processes as well, through a Postgres
  * advisory lock on the work item (see itemlock.ts). Deliberately one seam rather

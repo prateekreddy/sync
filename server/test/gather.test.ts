@@ -45,8 +45,8 @@ const wi = (key: string, over: Partial<WorkItem> = {}): WorkItem =>
   }) as WorkItem;
 
 const actor: Actor = {
-  name: 'y.pra.reddy/sync-master',
-  holder: 'agent:y.pra.reddy/sync-master',
+  name: 'me/worker-1',
+  holder: 'agent:me/worker-1',
   capabilities: [],
   planeUserId: null,
   defaultProjectId: null,

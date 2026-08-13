@@ -73,7 +73,7 @@ at once is the mistake — that is what labels are for.
   never does. Aim for a top level of roughly five to nine containers — that is a screen a person
   can hold in their head — and prefer a group whose members are only finished together.
 - **`discoveredFrom`** is provenance, not structure — usually derived from your lease rather than
-  passed. If you pass it where you meant `parentId`, the fleet will happily claim the parent as
+  passed. If you pass it where you meant `parentId`, another agent will happily claim the parent as
   well as the child. Giving `parentId` suppresses the provenance edge, because a parent already
   places the item and says something stronger.
 - **`link`** records `blocking`, `blocked_by`, `duplicate`, `relates_to`. Plane's vocabulary is

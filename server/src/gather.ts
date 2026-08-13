@@ -18,7 +18,7 @@ import { readableId } from './view.js';
  * grouping cheap once they are obvious.
  *
  * The authority question is the whole design. Deciding what belongs under what is
- * a judgement about somebody's work, and a fleet that reorganised its own backlog
+ * a judgement about somebody's work, and agents that reorganised their own backlog
  * unprompted would be worse than a flat one. So the agent PROPOSES and a human
  * DISPOSES: the call is refused with the proposal attached until it carries the
  * name of a person who agreed, and the layer that can actually reach a person —

@@ -6,7 +6,7 @@ import { readableId } from './view.js';
 import { classify, leasesOf, REPAIRABLE, REPAIR_CEILING, type DriftKind } from './reconcile.js';
 
 /**
- * Where a project stands: progress per module, and what the fleet is holding.
+ * Where a project stands: progress per module, and what other agents are holding.
  *
  * Plane reports its own per-module counts, and they are not the interesting ones.
  * Plane can say how many items are done; it cannot say how many are **ready** —
@@ -105,8 +105,8 @@ export interface Board {
    * means every bucket was decided.
    */
   blockersUnchecked?: number;
-  /** Live leases, so "what is the fleet doing" is answered in the same call. */
-  fleet: Array<{
+  /** Live leases, so "what is everyone doing" is answered in the same call. */
+  active: Array<{
     holder: string;
     workItemId: string;
     readableId: string;
@@ -342,7 +342,7 @@ export async function board(
             'once is more often a broken rule than a broken board — look before clearing it.',
         }
       : {}),
-    fleet: [...ctx.leases.entries()]
+    active: [...ctx.leases.entries()]
       .map(([id, l]) => {
         const item = byId.get(id);
         return item

@@ -35,8 +35,8 @@ afterAll(async () => {
 
 const identity = (over: Partial<{ id: string; email: string; displayName: string }> = {}) => ({
   id: randomUUID(),
-  email: 'prateek@example.com',
-  displayName: 'prateek',
+  email: 'alice@example.com',
+  displayName: 'alice',
   ...over,
 });
 
@@ -277,7 +277,7 @@ describe('mint rate limiter', () => {
   });
 
   it('keeps the table bounded without a sweeper', async () => {
-    // Every call deletes past the window fleet-wide, which is what makes it safe
+    // Every call deletes past the window across every agent, which is what makes it safe
     // to have no owner for this table. Left to grow it would be an unbounded
     // write log on an unauthenticated endpoint.
     const allow = createRateLimiter(pool, 100);

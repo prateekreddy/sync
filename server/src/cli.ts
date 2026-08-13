@@ -2,7 +2,7 @@
  * Operator CLI. Issuing an agent token is the one routine admin task, so it gets
  * a first-class command rather than a paragraph of SQL in a runbook.
  *
- *   node dist/cli.js issue-token --name sync-worker-3 --principal human:prateek \
+ *   node dist/cli.js issue-token --name sync-worker-3 --principal human:alice \
  *                               [--capabilities backend,tests] [--plane-user <uuid>]
  *   node dist/cli.js revoke-token --name sync-worker-3
  *   node dist/cli.js list-tokens

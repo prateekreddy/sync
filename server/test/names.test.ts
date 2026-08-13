@@ -30,7 +30,7 @@ const IN_PROGRESS = uuid(10);
 const DONE = uuid(11);
 const BACKEND = uuid(20);
 const REFINEMENT = uuid(21);
-const PRATEEK = uuid(30);
+const ALICE = uuid(30);
 const SAM_ONE = uuid(31);
 const SAM_TWO = uuid(32);
 const ITEM_42 = uuid(40);
@@ -70,7 +70,7 @@ function fakePlane(over: Fake = {}): PlaneClient {
     members: async () => {
       fetched.push('members');
       return [
-        { id: PRATEEK, name: 'Prateek', email: 'prateek@example.com' },
+        { id: ALICE, name: 'Alice', email: 'alice@example.com' },
         // Two people who display the same. The reason ambiguity is refused.
         { id: SAM_ONE, name: 'Sam', email: 'sam@example.com' },
         { id: SAM_TWO, name: 'Sam', email: 'sam.other@example.com' },
@@ -97,7 +97,7 @@ const ITEM = {
   name: 'Fix the retry loop',
   project_id: PROJECT,
   state: IN_PROGRESS,
-  assignees: [PRATEEK],
+  assignees: [ALICE],
   labels: [BACKEND, REFINEMENT],
   parent: ITEM_12,
 };
@@ -108,7 +108,7 @@ describe('a response an agent can read', () => {
 
     expect(out['state']).toBe('In Progress');
     expect(out['labels']).toEqual(['backend', 'needs-refinement']);
-    expect(out['assignees']).toEqual(['Prateek']);
+    expect(out['assignees']).toEqual(['Alice']);
     expect(out['parent']).toBe('SYNC-12');
   });
 
@@ -220,10 +220,10 @@ describe('and write back what it read', () => {
   });
 
   it('takes a person by display name or by email', async () => {
-    const byName = await resolveIds(book(), { assignees: ['Prateek'] }, PROJECT);
-    const byEmail = await resolveIds(book(), { assignees: ['prateek@example.com'] }, PROJECT);
-    expect(byName['assignees']).toEqual([PRATEEK]);
-    expect(byEmail['assignees']).toEqual([PRATEEK]);
+    const byName = await resolveIds(book(), { assignees: ['Alice'] }, PROJECT);
+    const byEmail = await resolveIds(book(), { assignees: ['alice@example.com'] }, PROJECT);
+    expect(byName['assignees']).toEqual([ALICE]);
+    expect(byEmail['assignees']).toEqual([ALICE]);
   });
 
   it('takes a parent as SYNC-12, #12 or 12', async () => {
@@ -281,7 +281,7 @@ describe('and write back what it read', () => {
     // such person" and "we could not check" arrive here identically. Saying the
     // first sends an agent off to fix a name that was right.
     const blind = book({ members: async () => [] });
-    const err = await resolveIds(blind, { assignees: ['Prateek'] }, PROJECT).catch(
+    const err = await resolveIds(blind, { assignees: ['Alice'] }, PROJECT).catch(
       (e: unknown) => e,
     );
     expect((err as GatewayError).message).toContain('Could not read');

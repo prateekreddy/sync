@@ -45,7 +45,7 @@ print("\n1. capture — the write-first primitive")
 st, a = call(TOKENS[0], "POST", "/v1/capture", {
     "projectId": PROJECT,
     "title": TITLE,
-    "body": "Cap total retries per request so a rate-limit storm cannot stall the fleet.",
+    "body": "Cap total retries per request so a rate-limit storm cannot stall every agent.",
     "priority": "high",
     "idempotencyKey": KEY,
 })
@@ -54,7 +54,7 @@ check("capture creates a work item", st == 200 and not a.get("deduped"), a.get("
 st, replay = call(TOKENS[0], "POST", "/v1/capture", {
     "projectId": PROJECT,
     "title": TITLE,
-    "body": "Cap total retries per request so a rate-limit storm cannot stall the fleet.",
+    "body": "Cap total retries per request so a rate-limit storm cannot stall every agent.",
     "priority": "high",
     "idempotencyKey": KEY,
 })

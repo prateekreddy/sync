@@ -31,7 +31,7 @@ const fields = z
 /**
  * One title rule, applied wherever a title is written.
  *
- * Left to itself a fleet titles work after the code it will touch —
+ * Left to themselves agents title work after the code it will touch —
  * `why(workItemId): return screen()'s reasons` — because that is what is in mind
  * at the moment of writing. It reads fine on the day and is unreadable a month
  * later: it names a function that may not survive, says nothing about what anyone
@@ -534,7 +534,7 @@ export const NATIVE_TOOLS: NativeTool[] = [
       'and the lease table; `blocked` holds everything the gate withholds — no description, ' +
       'drafts, unfinished sub-items, human flags, and items waiting on an unfinished blocked_by. ' +
       'Use it to decide whether to finish something nearly done rather ' +
-      'than start something new, and to see what the rest of the fleet is holding. ' +
+      'than start something new, and to see what every other agent is holding. ' +
       '`structure` says whether the board has any shape at all: how many items are filed in a ' +
       'module, have a parent, or are containers, how deep the hierarchy goes, and how many are ' +
       'unplaced. Read `rootlessOpen` rather than `unplacedOpen` to judge the tree: `unplaced` ' +
@@ -571,7 +571,7 @@ export const NATIVE_TOOLS: NativeTool[] = [
       'holding it — and combine them. Returns compact rows plus `matched`, the number of hits ' +
       'before `limit`. Plane\'s own list tools cannot filter at all, so use this rather than ' +
       'listing the project and sifting it yourself. `holder` is unique to this tool: it comes ' +
-      'from the lease table, so \'any\' shows what the fleet is working on and \'none\' shows ' +
+      'from the lease table, so \'any\' shows what other agents are working on and \'none\' shows ' +
       'what is free. `ready: true` applies the same gate claim uses — including unfinished ' +
       'blocked_by, so an item listed ready will not then be refused.',
     schema: FindQuerySchema,

@@ -37,7 +37,7 @@ const DONE = new Set<State['group']>(['completed', 'cancelled']);
  */
 export const BROWSE_BUDGET = 100;
 
-/** Plane's rate limit is shared by the whole fleet, so these do not go out at once. */
+/** Plane's rate limit is shared by every agent, so these do not go out at once. */
 const CONCURRENCY = 6;
 
 async function pooled<T, R>(items: T[], n: number, fn: (t: T) => Promise<R>): Promise<R[]> {

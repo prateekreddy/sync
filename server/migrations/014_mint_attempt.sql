@@ -14,7 +14,7 @@
 --
 -- The table stays tiny without a sweeper. Every call deletes everything older
 -- than the window before counting, so it holds at most one minute of mints
--- across the whole fleet — a full-table delete on a few hundred rows, which is
+-- across every agent — a full-table delete on a few hundred rows, which is
 -- cheaper than the Plane request this endpoint is already about to make.
 create table if not exists mint_attempt (
   -- The source address, as the route sees it. Not indexed separately: the table

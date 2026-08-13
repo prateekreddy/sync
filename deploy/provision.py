@@ -110,7 +110,7 @@ admin_token, _ = ensure_token(admin, workspace, "gateway-service")
 
 # One Plane user per agent. This is what makes attribution real: the gateway
 # writes with the agent's own token, so Plane's activity log says "agent-2 moved
-# this to In Progress" rather than attributing the whole fleet to one robot.
+# this to In Progress" rather than attributing everyone's work to one robot.
 #
 # They are Members, not Guests, because Guests cannot write. The obvious hazard —
 # a Member token can set `assignees` directly and so bypass the lease — is why
