@@ -137,7 +137,10 @@ export const PLANE_GROUPS: PlaneGroup[] = [
       'both do more than these and neither can be replaced by them.\n\n' +
       'state, labels, assignees and parent are read and written as names — "In Progress", ' +
       '"backend", a person\'s name or email, "SYNC-12". Ids still work everywhere they used to, ' +
-      'so there is no need to look one up first.',
+      'so there is no need to look one up first.\n\n' +
+      'update is a patch: it changes the fields you name in issue_data and leaves every other ' +
+      'field exactly as it was. Send description_html only when you mean to replace the whole ' +
+      'body — a placeholder there overwrites the real one and nothing will warn you.',
     actions: {
       list: 'list_project_issues',
       get_by_identifier: 'get_issue_using_readable_identifier',
@@ -237,6 +240,8 @@ export function groupSchema(group: PlaneGroup, upstream: Map<string, unknown>): 
   // already looking when it fills the field in.
   const usedBy = new Map<string, string[]>();
   const requiredBy = new Map<string, string[]>();
+  /** Every action's version of a property, for merging nested requirements. */
+  const variants = new Map<string, Array<{ action: string; schema: Schema }>>();
 
   for (const [action, toolName] of Object.entries(group.actions)) {
     const schema = asSchema(upstream.get(toolName));
@@ -247,7 +252,70 @@ export function groupSchema(group: PlaneGroup, upstream: Map<string, unknown>): 
       if (!(key in properties)) properties[key] = value;
       usedBy.set(key, [...(usedBy.get(key) ?? []), action]);
       if (required.has(key)) requiredBy.set(key, [...(requiredBy.get(key) ?? []), action]);
+      variants.set(key, [...(variants.get(key) ?? []), { action, schema: asSchema(value) }]);
     }
+  }
+
+  // The same union rule, one level down — where forgetting it destroyed data.
+  //
+  // Every `*_data` argument in Plane's API is an object whose requirements differ
+  // per action: `create_issue` takes `IssueSchema.partial().required({name,
+  // description_html})` while `update_issue` takes a bare `.partial()` and sends
+  // a PATCH. First-definition-wins handed `update` the CREATE object, so the
+  // schema an agent reads says it must supply `name` and `description_html` to
+  // change anything at all — a priority, a label, an assignee.
+  //
+  // A model that believes that supplies them, and having nothing meaningful to
+  // say puts a placeholder in `description_html`. The PATCH lands and the item's
+  // body is gone. That happened to SLATE-948 on 2026-08-13: ten lines of
+  // implementation scope became the single word "keep", nothing refused the call,
+  // and it was recoverable only because the original text was still in the
+  // caller's context.
+  //
+  // So a nested field is required here only if EVERY action that takes this
+  // property requires it — which is the rule already applied at the top level and
+  // for the same reason: a union schema cannot say "required when action=create",
+  // and claiming it unconditionally is wrong for every other action.
+  for (const [key, seen] of variants) {
+    if (seen.length < 2) continue;
+    const base = asSchema(properties[key]);
+    if (base['type'] !== 'object') continue;
+
+    const nested: Record<string, unknown> = {};
+    const nestedRequiredBy = new Map<string, string[]>();
+    for (const { action, schema } of seen) {
+      for (const [k, v] of Object.entries(schema.properties ?? {})) {
+        if (!(k in nested)) nested[k] = v;
+      }
+      for (const k of schema.required ?? []) {
+        nestedRequiredBy.set(k, [...(nestedRequiredBy.get(k) ?? []), action]);
+      }
+    }
+
+    // Required by all of them, so it survives the union. Anything else moves to
+    // the description, which is where a per-action rule can be stated truthfully.
+    const alwaysRequired = [...nestedRequiredBy]
+      .filter(([, actions]) => actions.length === seen.length)
+      .map(([k]) => k);
+
+    for (const [k, actions] of nestedRequiredBy) {
+      if (actions.length === seen.length) continue;
+      const field = asSchema(nested[k]);
+      const note = `Required by ${actions.join(', ')}; omit it to leave it unchanged.`;
+      nested[k] = {
+        ...field,
+        description: field.description ? `${String(field.description)} ${note}` : note,
+      };
+    }
+
+    const { required: _drop, ...withoutRequired } = base;
+    properties[key] = {
+      ...withoutRequired,
+      properties: nested,
+      // Omitted entirely rather than set to `[]`, so the merged schema says
+      // nothing about requirements rather than asserting there are none.
+      ...(alwaysRequired.length ? { required: alwaysRequired } : {}),
+    };
   }
 
   const total = Object.keys(group.actions).length;

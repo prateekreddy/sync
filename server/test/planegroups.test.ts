@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { callTool, listTools } from '../src/tools.js';
 import type { ToolDeps } from '../src/tools.js';
 import type { Actor } from '../src/auth.js';
-import { GROUPED_UPSTREAM, PLANE_GROUPS, resolveGroup } from '../src/planegroups.js';
+import { GROUPED_UPSTREAM, PLANE_GROUPS, groupSchema, resolveGroup } from '../src/planegroups.js';
 import { NATIVE_TOOLS } from '../src/toolspec.js';
 
 /**
@@ -316,6 +316,107 @@ describe('what the model is told about a group', () => {
     // Belongs to one action only, and the field says which.
     expect(schema.properties['cycle_id']!.description).toMatch(/delete/);
     expect(schema.properties['cycle_id']!.description).not.toMatch(/every action/);
+  });
+
+  it('does not make update require the fields only create needs', async () => {
+    // The bug this replaces destroyed data. Every `*_data` argument in Plane's
+    // API is an object whose requirements differ per action: `create_issue` is
+    // `IssueSchema.partial().required({name, description_html})` while
+    // `update_issue` is a bare `.partial()` that sends a PATCH. Merging the union
+    // first-definition-wins handed `update` the CREATE object, so the schema said
+    // an agent must supply `name` and `description_html` to change a priority.
+    //
+    // A model that believes that supplies them, and having nothing to say puts a
+    // placeholder in `description_html`. SLATE-948 lost ten lines of scope to the
+    // word "keep" on 2026-08-13. Nothing refused the call.
+    const upstream = new Map<string, unknown>([
+      [
+        'create_issue',
+        {
+          type: 'object',
+          properties: {
+            project_id: { type: 'string' },
+            issue_data: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                description_html: { type: 'string' },
+                priority: {},
+              },
+              required: ['description_html', 'name'],
+            },
+          },
+          required: ['project_id', 'issue_data'],
+        },
+      ],
+      [
+        'update_issue',
+        {
+          type: 'object',
+          properties: {
+            project_id: { type: 'string' },
+            issue_id: { type: 'string' },
+            issue_data: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                description_html: { type: 'string' },
+                state: { type: 'string' },
+              },
+            },
+          },
+          required: ['project_id', 'issue_id', 'issue_data'],
+        },
+      ],
+    ]);
+
+    const group = PLANE_GROUPS.find((g) => g.name === 'plane_issues')!;
+    const schema = groupSchema({ ...group, actions: { create: 'create_issue', update: 'update_issue' } }, upstream) as {
+      properties: Record<string, { required?: string[]; properties?: Record<string, { description?: string }> }>;
+    };
+    const data = schema.properties['issue_data']!;
+
+    expect(data.required ?? []).toEqual([]);
+    // Still says who needs it, on the field itself — the requirement is real for
+    // create, it just cannot be stated as a requirement of the union.
+    expect(data.properties!['description_html']!.description).toMatch(/required by create/i);
+    expect(data.properties!['description_html']!.description).toMatch(/unchanged/i);
+    // And the union is still a union: a field only `update` takes survives.
+    expect(data.properties).toHaveProperty('state');
+  });
+
+  it('keeps a nested field required when every action requires it', () => {
+    // The other direction. Dropping `required` unconditionally would be just as
+    // wrong, and would make the check above pass for a merge that says nothing.
+    const both = {
+      type: 'object',
+      properties: {
+        thing_data: {
+          type: 'object',
+          properties: { name: { type: 'string' } },
+          required: ['name'],
+        },
+      },
+      required: ['thing_data'],
+    };
+    const schema = groupSchema(
+      { name: 'x', summary: 's', actions: { create: 'a', update: 'b' } },
+      new Map<string, unknown>([
+        ['a', both],
+        ['b', both],
+      ]),
+    ) as { properties: Record<string, { required?: string[] }> };
+
+    expect(schema.properties['thing_data']!.required).toEqual(['name']);
+  });
+
+  it('warns in plain words that update is a patch', async () => {
+    // The schema fix removes the reason a model sends a description it did not
+    // mean to. This is the part that covers a model deciding to anyway.
+    const tools = await listTools(deps());
+    const issues = tools.find((t) => t.name === 'plane_issues')!;
+    expect(issues.description).toMatch(/update is a patch/i);
+    expect(issues.description).toMatch(/description_html/);
   });
 
   it('marks Plane\'s half with a prefix, because the two halves are not alike', async () => {
