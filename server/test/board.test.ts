@@ -126,6 +126,33 @@ describe('board', () => {
     expect(got.active[0]).toMatchObject({ holder: 'agent:w1', title: 'leased' });
   });
 
+  it('tells two windows of one agent apart, since holder cannot', async () => {
+    // Every window a person has open authenticates identically, so a fleet view
+    // listing `agent:dev2/worker-1` twice could not say whether that was one
+    // agent holding two items or two agents holding one each — and neither agent
+    // could pick out its own (PLANE-5).
+    for (const [item, session] of [
+      ['leased', 'window-a'],
+      ['ready-1', 'window-b'],
+    ] as const) {
+      await lease.claim(pool, {
+        workItemId: id(item),
+        projectId: PROJECT,
+        holder: 'agent:w1',
+        ttlSeconds: 600,
+        sessionId: session,
+      });
+    }
+
+    const got = await board(fakePlane(), pool, { projectId: PROJECT });
+    expect(got.active).toHaveLength(2);
+    expect(new Set(got.active.map((a) => a.sessionId))).toEqual(
+      new Set(['window-a', 'window-b']),
+    );
+    // One holder, two sessions — which is the fact the old output could not carry.
+    expect(new Set(got.active.map((a) => a.holder))).toEqual(new Set(['agent:w1']));
+  });
+
   it('counts work the epic layer does not account for', async () => {
     // Unfiled is the honest measure of how much the module view is missing.
     const got = await board(fakePlane(), pool, { projectId: PROJECT });

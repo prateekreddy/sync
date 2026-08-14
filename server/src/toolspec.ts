@@ -696,7 +696,13 @@ export const NATIVE_TOOLS: NativeTool[] = [
     title: 'What am I holding?',
     description:
       'List the leases you currently hold. Call this after a restart to find out what you were ' +
-      'in the middle of before deciding to claim anything new.',
+      'in the middle of before deciding to claim anything new.\n\n' +
+      'These are the leases held by your agent identity, which is not always the same as by YOU: ' +
+      'every window a person has open authenticates as the same agent. `thisSession` is true for ' +
+      'work this conversation claimed, false for work a different session of the same agent is ' +
+      'holding right now, and null when it cannot be told — you before a restart, or a client ' +
+      'that reports no session. Do not resume a false one without checking; another agent is ' +
+      'probably working it.',
     schema: HeldQuery,
     method: 'GET',
     request: () => ({ path: '/v1/held' }),

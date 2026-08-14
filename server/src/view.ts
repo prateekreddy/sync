@@ -45,6 +45,15 @@ export interface WorkItemView {
 export interface Lease {
   holder: string;
   expiresAt: string;
+  /**
+   * Which window took it, or null for a client that reports none.
+   *
+   * Carried because `holder` is the same string for every session a person has
+   * open, so a fleet view listing two rows as `agent:dev2/worker-1` gave no way
+   * to tell whether that was one agent holding two items or two agents holding
+   * one each — and no way for either to recognise its own (PLANE-5).
+   */
+  sessionId: string | null;
 }
 
 /** Everything needed to turn work items into views, fetched once per request. */
@@ -88,7 +97,10 @@ export async function viewContext(
     labelNames,
     ...(identifier ? { identifier } : {}),
     leases: new Map(
-      [...leaseRows].map(([id, l]) => [id, { holder: l.holder, expiresAt: l.expiresAt.toISOString() }]),
+      [...leaseRows].map(([id, l]) => [
+        id,
+        { holder: l.holder, expiresAt: l.expiresAt.toISOString(), sessionId: l.sessionId },
+      ]),
     ),
     ...(fields?.length ? { fields: new Set(fields) } : {}),
   };

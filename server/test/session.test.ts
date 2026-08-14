@@ -103,7 +103,14 @@ async function harness() {
       body,
     });
 
-  return { app, claim };
+  const held = (headers: Record<string, string> = {}) =>
+    app.inject({
+      method: 'GET',
+      url: '/v1/held',
+      headers: { authorization: `Bearer ${token}`, ...headers },
+    });
+
+  return { app, claim, held };
 }
 
 const sessionInDb = async (workItemId: string): Promise<string | null> => {
@@ -207,6 +214,34 @@ describe('the session reaches the lease', () => {
 
     expect(mine.statusCode).toBe(200);
     expect(other.statusCode).toBe(HTTP_CONFLICT);
+    await app.close();
+  });
+
+  it('marks another window\'s work rather than reporting it as yours', async () => {
+    // `held` keys on holder, and holder is the same string for every window a
+    // person has open — so a second agent's live work read as your own to resume
+    // (PLANE-5). Marked and not filtered: after a restart the session is new, and
+    // filtering would empty the one call the rules tell you to make first.
+    const { app, claim, held } = await harness();
+    await claim({ projectId: PROJECT, workItemId: ITEM }, { 'x-sync-session': 'w-1' });
+
+    const mine = await held({ 'x-sync-session': 'w-1' });
+    expect(mine.json().leases[0].thisSession).toBe(true);
+
+    const theirs = await held({ 'x-sync-session': 'w-2' });
+    expect(theirs.json().leases).toHaveLength(1);
+    expect(theirs.json().leases[0].thisSession).toBe(false);
+    await app.close();
+  });
+
+  it('says it cannot tell, rather than false, when either side has no session', async () => {
+    // Null and false are different claims. "A different window holds this" is
+    // evidence; "I have no session to compare" is not, and asserting the first
+    // from the second would tell an agent to abandon its own work.
+    const { app, claim, held } = await harness();
+    await claim({ projectId: PROJECT, workItemId: ITEM });
+
+    expect((await held({ 'x-sync-session': 'w-1' })).json().leases[0].thisSession).toBeNull();
     await app.close();
   });
 

@@ -108,6 +108,15 @@ export interface Board {
   /** Live leases, so "what is everyone doing" is answered in the same call. */
   active: Array<{
     holder: string;
+    /**
+     * The window holding it, when the client reported one.
+     *
+     * Two rows with the same `holder` are two SESSIONS, not one agent with two
+     * items — every window a person has open authenticates identically. Without
+     * this the fleet view could not say which, and neither agent could pick out
+     * its own work (PLANE-5).
+     */
+    sessionId?: string | undefined;
     workItemId: string;
     readableId: string;
     title: string;
@@ -348,6 +357,7 @@ export async function board(
         return item
           ? {
               holder: l.holder,
+              ...(l.sessionId ? { sessionId: l.sessionId } : {}),
               workItemId: id,
               readableId: readableId(item.sequence_id, ctx.identifier),
               title: item.name,

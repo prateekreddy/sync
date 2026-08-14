@@ -1677,7 +1677,25 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
   // ── what am I holding? (agents restart) ──────────────────────────────────
   app.get('/v1/held', async (req) => {
     const actor = await actorOf(req);
-    return { leases: await lease.heldBy(pool, actor.holder) };
+    const session = sessionOf(req);
+    const leases = await lease.heldBy(pool, actor.holder);
+    return {
+      // Marked, not filtered. `holder` is the same string for every window a
+      // person has open, so this list is "what this IDENTITY holds" and used to
+      // read as "what you hold" — a second agent's live work looked like your own
+      // to resume (PLANE-5). Filtering would be worse: after a restart the
+      // session is new and your own leases would vanish from the one call the
+      // rules tell you to make first.
+      //
+      // Null when either side is unknown, which is not the same as false. A
+      // client that sends no session, and a lease claimed before sessions
+      // existed, are both "cannot tell" — and saying false there would assert
+      // somebody else's work with no evidence.
+      leases: leases.map((l) => ({
+        ...l,
+        thisSession: session && l.sessionId ? l.sessionId === session : null,
+      })),
+    };
   });
 
   // ── the MCP tool surface ─────────────────────────────────────────────────

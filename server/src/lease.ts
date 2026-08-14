@@ -486,17 +486,27 @@ export const complete = (
 export async function liveHolders(
   pool: Pool,
   workItemIds?: string[],
-): Promise<Map<string, { holder: string; expiresAt: Date }>> {
+): Promise<Map<string, { holder: string; expiresAt: Date; sessionId: string | null }>> {
   const scoped = workItemIds !== undefined;
   if (scoped && workItemIds.length === 0) return new Map();
 
-  const { rows } = await pool.query<{ work_item_id: string; holder: string; expires_at: Date }>(
-    `select work_item_id, holder, expires_at from lease
+  const { rows } = await pool.query<{
+    work_item_id: string;
+    holder: string;
+    expires_at: Date;
+    session_id: string | null;
+  }>(
+    `select work_item_id, holder, expires_at, session_id from lease
       where state = 'held' and expires_at > now()
       ${scoped ? 'and work_item_id = any($1::uuid[])' : ''}`,
     scoped ? [workItemIds] : [],
   );
-  return new Map(rows.map((r) => [r.work_item_id, { holder: r.holder, expiresAt: r.expires_at }]));
+  return new Map(
+    rows.map((r) => [
+      r.work_item_id,
+      { holder: r.holder, expiresAt: r.expires_at, sessionId: r.session_id },
+    ]),
+  );
 }
 
 /** What this agent currently holds — used when an agent restarts mid-task. */
