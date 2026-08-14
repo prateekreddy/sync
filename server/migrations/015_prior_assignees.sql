@@ -1,0 +1,27 @@
+-- What the item's assignees were before we claimed it.
+--
+-- `mirrorClaim` sets an assignee and `mirrorReturn` cleared it to `[]`, which
+-- discards state the gateway did not create: a name a human put there to say
+-- "this is in dev6's queue" survives no lease at all in Plane, and the natural
+-- hygiene sequence — claim, set fields, release the lease you are not using —
+-- ended with the item unassigned and nothing in the reply saying so. Reported
+-- against PRAGMA-17 on 2026-08-03; it took a step-by-step teardown to find,
+-- because the obvious conclusion is "the agent forgot".
+--
+-- Simply not clearing is not available. The readiness gate tells its own writes
+-- from a human's by asking the lease (rule 4 in server/src/assignment.ts): a
+-- lease that is held, unmirrored, or still owing a write is ours, and anything
+-- else is a person's intent. A released, mirrored lease is none of those — so a
+-- name left behind after a release reads as a human's and withholds the item
+-- from every other agent. Clearing was the safe direction and losing the
+-- assignment was its price.
+--
+-- Recording what was there before is the only thing that separates the two, and
+-- it makes release restore rather than erase: the item goes back exactly as it
+-- was found.
+--
+-- Nullable, and null means "we do not know" rather than "there were none" — a
+-- claim whose pre-read failed falls back to the old clearing behaviour instead
+-- of inventing an empty list, because guessing wrong in that direction freezes
+-- an item for everyone.
+alter table lease add column if not exists prior_assignees uuid[];

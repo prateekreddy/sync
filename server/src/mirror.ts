@@ -217,6 +217,29 @@ export async function mirrorClaim(
       ? (principalPlaneUser(args.actor, members) ?? args.actor.planeUserId)
       : args.actor.planeUserId;
 
+    // ── what we are about to overwrite ──────────────────────────────────────
+    // Read before the write below replaces it, so `mirrorReturn` can put the item
+    // back exactly as it was found rather than clearing it to nobody. A name in
+    // Plane can be a human's — assignment there needs no lease and predates this
+    // gateway — and erasing it on release discarded state we did not create.
+    //
+    // Best-effort, and outside the block that may fail the claim: not knowing the
+    // previous assignees is a reason to fall back to the old clearing behaviour,
+    // not to refuse work. Written on every claim including the failure case,
+    // because a value left over from an earlier claim of the same item would be
+    // restored later as if it were current.
+    let prior: string[] | null = null;
+    try {
+      prior = (await plane.getWorkItem(args.projectId, args.workItemId)).assignees ?? null;
+    } catch (err) {
+      log.warn({ err, workItemId: args.workItemId, op: 'claim' }, 'prior assignees unreadable');
+    }
+    await pool.query('update lease set prior_assignees = $2 where work_item_id = $1 and epoch = $3', [
+      args.workItemId,
+      prior,
+      args.epoch,
+    ]);
+
     // ── the visible fact ────────────────────────────────────────────────────
     // The only part allowed to fail the claim. If this does not land, the board
     // shows the item as free while an agent works it, which is precisely the
@@ -323,11 +346,14 @@ export async function mirrorComplete(
       //
       // Keyed on `done` rather than on `args.close` because those come apart: a
       // project with no completed state group leaves the item OPEN after a close,
-      // and clearing is right for exactly that case. `close: false` keeps
-      // clearing too — the item stays claimable and someone else may want it.
+      // and an open item must not keep a name it did not start with. An item that
+      // stays open goes back to the assignees it had before the claim, exactly as
+      // `mirrorReturn` does — same reason, same rule.
       const done = args.close ? await plane.stateByGroup(args.projectId, 'completed') : undefined;
       await plane.updateWorkItem(args.projectId, args.workItemId, {
-        ...(done ? { state: done.id } : { assignees: [] }),
+        ...(done
+          ? { state: done.id }
+          : { assignees: await priorAssignees(pool, args.workItemId) }),
       });
       await plane.comment(
         args.projectId,
@@ -373,6 +399,21 @@ export async function mirrorComplete(
 }
 
 /**
+ * The assignees this item had before the current lease claimed it.
+ *
+ * Empty when we never recorded any, which covers both "it was unassigned" and
+ * "the pre-read failed" — see the migration note in 015_prior_assignees.sql for
+ * why those collapse to the same safe answer rather than to "leave it alone".
+ */
+async function priorAssignees(pool: Pool, workItemId: string): Promise<string[]> {
+  const { rows } = await pool.query<{ prior_assignees: string[] | null }>(
+    'select prior_assignees from lease where work_item_id = $1',
+    [workItemId],
+  );
+  return rows[0]?.prior_assignees ?? [];
+}
+
+/**
  * Return an item to the pool in Plane's UI.
  *
  * Always comments — a lease that lapsed because an agent died is exactly the kind
@@ -405,7 +446,13 @@ export async function mirrorReturn(
       const todo = await plane.stateByGroup(args.projectId, 'unstarted');
       await plane.updateWorkItem(args.projectId, args.workItemId, {
         ...(todo ? { state: todo.id } : {}),
-        assignees: [],
+        // Put back, not wiped. The item returns to the pool in the state it was
+        // found in: a name a human had put there survives, and an item that was
+        // unassigned goes back to unassigned. `null` means the pre-read failed,
+        // and clearing is the safe fallback — a name we cannot account for reads
+        // as a person's intent under rule 4 and would withhold the item from
+        // everyone.
+        assignees: await priorAssignees(pool, args.workItemId),
       });
       const repeat =
         args.expiryCount && args.expiryCount >= 3

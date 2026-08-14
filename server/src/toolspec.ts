@@ -627,7 +627,9 @@ export const NATIVE_TOOLS: NativeTool[] = [
     title: 'Give work back',
     description:
       'Hand an item back to the pool without finishing it. Prefer this over going silent: it ' +
-      'returns the work immediately instead of after the lease expires, and records why.',
+      'returns the work immediately instead of after the lease expires, and records why. ' +
+      'The item goes back to the state and assignees it had before you claimed it, so a name ' +
+      'somebody had put on it survives your lease rather than being cleared by it.',
     schema: ReleaseBody,
     method: 'POST',
     request: (a) => ({ path: '/v1/release', body: a }),
