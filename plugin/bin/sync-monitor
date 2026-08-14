@@ -80,10 +80,25 @@ MAX_BACKOFF=900
 # the current hooks depend on, and the failure lands as "your work is no longer
 # yours" -- the one direction this must never fail in.
 #
-# So stop rather than carry on. That is only a safe trade because the gateway now
-# reports a monitor it has not heard from (SYNC-100): a session left with no
-# monitor is told so on its next claim, in words, rather than discovering it an
-# hour later. Silence would not have been safe before that landed.
+# So this process must stop running THIS code. It does not follow that the
+# session must go without a monitor, and for a while it did: the old one exited
+# and nothing replaced it, because Claude Code starts monitors at session start
+# and on plugin reload, and by then both have happened.
+#
+# Worse, the two racing made it likely rather than occasional. `/reload-plugins`
+# right after an update is the obvious thing to do, and at that moment the old
+# monitor is usually still mid-sleep: the reload finds a live process under this
+# monitor's name, dedupes against it, and starts nothing -- and then the old one
+# wakes, notices it is superseded, and exits. The reload that was supposed to fix
+# liveness is what guaranteed there was none.
+#
+# So hand over instead: exec the newly installed monitor in place. Same process,
+# same stdout, same session id, new code -- there is no window where nothing is
+# watching, and nothing to remember to run afterwards. Exec rather than spawn
+# because Claude Code is tracking this pid; a child would be an orphan it does
+# not know about, and would collide with the one a later reload does start.
+#
+# Stopping remains the fallback for when there is nothing to hand over to.
 INSTALLED_JSON="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json"
 MY_ROOT=$(cd "$SYNC_BIN/.." 2>/dev/null && pwd -P)
 
@@ -120,7 +135,10 @@ superseded() {
             [ "$(dirname "$p")" = "$(dirname "$MY_ROOT")" ] && printf '%s' "$p" && break
           done)
   [ -n "$newer" ] || return 1
-  printf '%s' "$(basename "$newer")"
+  # The whole path, not the basename: the caller needs somewhere to exec to, and
+  # rebuilding it from a version string is the kind of second source of truth
+  # that goes wrong exactly once.
+  printf '%s' "$newer"
 }
 
 while true; do
@@ -130,11 +148,32 @@ while true; do
     exit 0
   fi
   if now=$(superseded); then
-    # Said in full, because the person reading it has to act: nothing will start
-    # a replacement inside this session.
-    echo "sync: this session is running the $(basename "$MY_ROOT") plugin monitor, but $now is now installed."
+    # Bounded, because the exit condition is a file Claude Code owns and this
+    # process does not. If installed_plugins.json ever names a path that then
+    # names another, unbounded exec is a spin that looks like a healthy monitor
+    # in `ps` -- which is the shape of failure this whole block exists to end.
+    # Five is far more updates than a session sees and small enough to stop.
+    hops=$(( ${SYNC_MONITOR_HOPS:-0} + 1 ))
+    handover="$now/bin/sync-monitor"
+
+    if [ -r "$handover" ] && [ "$hops" -le 5 ]; then
+      # One line, and only because a silent process swap is impossible to
+      # account for later. Liveness is not interrupted, so this is news about
+      # the plugin rather than a warning about the lease.
+      echo "sync: the plugin updated to $(basename "$now"); this monitor is handing over to the new one. Your claims stay covered."
+      export SYNC_MONITOR_HOPS="$hops"
+      # Through bash explicitly rather than relying on the execute bit, which is
+      # a property of how the plugin was copied onto this machine and not
+      # something worth betting the handover on.
+      exec bash "$handover"
+    fi
+
+    # Nothing to hand over to: the new version has no monitor where the install
+    # record says it lives, or this has hopped too many times. Say it in full,
+    # because now the person reading it does have to act.
+    echo "sync: this session is running the $(basename "$MY_ROOT") plugin monitor, but $(basename "$now") is now installed."
     echo "sync: stopping it rather than letting an old monitor write the credential file the new hooks read."
-    echo "sync: your claims will NOT be kept alive in this session — start a new session to pick up $now."
+    echo "sync: your claims will NOT be kept alive in this session — run /reload-plugins, or start a new session."
     exit 0
   fi
 

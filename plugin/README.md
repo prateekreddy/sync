@@ -182,3 +182,11 @@ session suspends rather than ending — so the monitor suspends and resumes with
 and its first poll after a gap is what tells the gateway you are back. You get
 either *"lease restored"* or *"someone else took this, stop"* — before you do more
 work, rather than at the end of it.
+
+**Updating the plugin does not interrupt it.** A monitor is started once per
+session, with its path frozen, so an update would otherwise leave you running the
+old one for the life of that session — and it must not keep running, because the
+credential file is a protocol shared with the hooks and the hooks are already
+current. So it hands over instead: the old monitor execs the newly installed one
+in place, same process, no window where nothing is watching. You get one line
+saying so, and nothing to run afterwards.

@@ -799,7 +799,11 @@ describe('a monitor that has been superseded', () => {
     return { home, monitor: join(root, 'bin', 'sync-monitor') };
   };
 
-  const run = (c: { home: string; monitor: string }, seconds: number) =>
+  const run = (
+    c: { home: string; monitor: string },
+    seconds: number,
+    extraEnv: Record<string, string> = {},
+  ) =>
     spawnSync('timeout', [String(seconds), c.monitor], {
       encoding: 'utf8',
       env: {
@@ -809,14 +813,79 @@ describe('a monitor that has been superseded', () => {
         SYNC_STATE_DIR: join(c.home, 'state'),
         CLAUDE_CODE_SESSION_ID: 'a-session',
         SYNC_POLL_SECONDS: '1',
+        ...extraEnv,
       },
     });
 
-  it('stops, rather than writing a credential the new hooks will read', () => {
+  /**
+   * The same, but the installed version exists on disk too — which is the
+   * ordinary case after an update, and the only one where handing over is
+   * possible at all.
+   *
+   * The installed copy gets a marker line so the test can tell the two apart.
+   * Without it, "still running" is equally consistent with the exec having
+   * landed and with it having silently not happened, and those are the two
+   * outcomes the whole change is about.
+   */
+  const cacheBoth = (version: string, installed: string) => {
+    const c = cache(version, installed);
+    const root = join(c.home, 'cache', 'sync', 'sync', installed);
+    execFileSync('mkdir', ['-p', join(root, 'bin')]);
+    for (const f of readdirSync(join(plugin, 'bin'))) {
+      execFileSync('cp', [join(plugin, 'bin', f), join(root, 'bin', f)]);
+    }
+    execFileSync('sed', [
+      '-i',
+      `1a echo "MARKER the ${installed} monitor is the one running"`,
+      join(root, 'bin', 'sync-monitor'),
+    ]);
+    return c;
+  };
+
+  /**
+   * The ordinary case: an update landed and the new monitor is on disk.
+   *
+   * Stopping here used to be the whole behaviour, and it left the session with
+   * no liveness until somebody started a new one. Worse, the obvious repair
+   * raced with it: `/reload-plugins` finds this process still alive under the
+   * monitor's name, dedupes against it and starts nothing, and then this one
+   * wakes up and exits. The reload meant to fix liveness guaranteed there was
+   * none.
+   */
+  it('hands over to the new version rather than leaving the session unwatched', () => {
+    const r = run(cacheBoth('0.4.6', '0.9.9'), 6);
+    expect(r.stdout).toMatch(/handing over/i);
+    // The proof, and the reason the marker exists: execution actually moved
+    // into the installed copy. "Still running" alone cannot tell that apart
+    // from the exec having quietly not happened.
+    expect(r.stdout).toMatch(/MARKER the 0\.9\.9 monitor is the one running/);
+    // And it must not tell anyone their claims have stopped being kept alive,
+    // because they have not — that is the difference this makes.
+    expect(r.stdout).not.toMatch(/will NOT be kept alive/i);
+    // Killed by the timeout: the replacement is looping, not exited.
+    expect(r.status).not.toBe(0);
+  }, 30_000);
+
+  it('stops when there is nothing to hand over to', () => {
+    // The install record names a version whose monitor is not on disk. Handing
+    // over is impossible, so the old behaviour is still right — and the message
+    // has to name the action, because now somebody does have to take one.
     const r = run(cache('0.4.6', '0.9.9'), 10);
     expect(r.stdout).toMatch(/0\.9\.9 is now installed/);
     expect(r.stdout).toMatch(/will NOT be kept alive/i);
+    expect(r.stdout).toMatch(/reload-plugins/);
     // Stopped on purpose, not killed by the timeout.
+    expect(r.status).toBe(0);
+  }, 30_000);
+
+  it('stops rather than hopping for ever', () => {
+    // The exit condition is a file Claude Code owns and this process does not,
+    // so an install record that keeps naming somewhere else would spin — while
+    // looking like a perfectly healthy monitor in `ps`, which is the exact
+    // shape of failure this whole check exists to end.
+    const r = run(cacheBoth('0.4.6', '0.9.9'), 10, { SYNC_MONITOR_HOPS: '5' });
+    expect(r.stdout).not.toMatch(/handing over/i);
+    expect(r.stdout).toMatch(/will NOT be kept alive/i);
     expect(r.status).toBe(0);
   }, 30_000);
 
