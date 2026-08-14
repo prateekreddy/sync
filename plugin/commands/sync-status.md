@@ -11,21 +11,17 @@ each step is only meaningful if the one before it passed.
 ## 1. Is there an address at all?
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/sync-url" --show
+echo "SYNC_MCP_URL=${SYNC_MCP_URL:-<unset>}"
 ```
 
-The address is a plugin option, not an environment variable, so read it through
-this rather than echoing a variable — a check that looks in the wrong place
-reports "not configured" on a machine that is working.
-
-A non-zero exit is the whole answer — nothing else can work, and no tool call
-will explain it, because with no server there are no tools to refuse you. Say so
-and offer `/sync-setup`. Do not continue to step 2.
+Unset is the whole answer — nothing else can work, and no tool call will explain
+it, because with no server there are no tools to refuse you. Say so and offer
+`/sync-setup`. Do not continue to step 2.
 
 ## 2. Does that gateway answer?
 
 ```bash
-curl -sS -m 20 "$("${CLAUDE_PLUGIN_ROOT}/bin/sync-url" --show)/healthz"
+curl -sS -m 20 "${SYNC_MCP_URL%/mcp}/healthz"
 ```
 
 Report:

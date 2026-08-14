@@ -3,14 +3,14 @@
 # Point this machine at a sync gateway.
 #
 #   sync-url https://mcp.example.dev
+#   sync-url https://mcp.example.dev --project    # this repo only
 #
 # The plugin ships no gateway address, because a public marketplace plugin with
-# one baked in points every install at whoever published it. Claude Code asks for
-# the address when the plugin is enabled and stores it as a plugin option; this
-# writes the same option without the dialog, for changing it later and for a
-# machine being provisioned by a script.
+# one baked in points every install at whoever published it. The address is read
+# from SYNC_MCP_URL where the plugin's .mcp.json declares the server, so setting
+# it is the one piece of configuration a user has. This writes it for them.
 #
-# Three properties are the whole point of the script existing rather than a README
+# Two properties are the whole point of the script existing rather than a README
 # paragraph saying "edit settings.json":
 #
 #   It fails at a shell prompt. A wrong URL set by hand does not announce itself
@@ -18,11 +18,6 @@
 #   no tools and nothing to read, which is the one sync failure that does not
 #   refuse. So the address is checked against /healthz BEFORE it is written, and
 #   a value that is not a gateway is rejected here where somebody is watching.
-#
-#   It stores the host, not the endpoint. The server entry appends /mcp, so a
-#   pasted .../mcp would resolve to /mcp/mcp and 404 every call. Normalising is
-#   something a script can do and the configuration dialog cannot, which is a
-#   reason to keep this even though the dialog covers the common case.
 #
 #   It merges rather than rewrites. settings.json holds everything else a person
 #   has configured; rewriting it with sed is the quiet-wrong-answer failure this
@@ -34,35 +29,24 @@ usage() {
   cat <<'USAGE'
 sync-url — point this machine at a sync gateway
 
-  sync-url <gateway-url> [--no-verify]
-  sync-url --show
+  sync-url <gateway-url> [--project] [--no-verify]
 
-  <gateway-url>   e.g. https://mcp.example.dev — a trailing /mcp is removed
+  <gateway-url>   e.g. https://mcp.example.dev — /mcp is added if you omit it
+  --project       write .claude/settings.json here instead of ~/.claude
   --no-verify     skip the /healthz check (offline, or a gateway not up yet)
-  --show          print the configured address, or exit 1 if there is none
 
 Restart Claude Code afterwards: MCP servers are read once at startup.
 USAGE
 }
 
 URL=""
+SCOPE=user
 VERIFY=1
-SHOW=0
 while [ $# -gt 0 ]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
+    --project) SCOPE=project; shift ;;
     --no-verify) VERIFY=0; shift ;;
-    --show) SHOW=1; shift ;;
-    --project)
-      # Removed rather than quietly ignored. Claude Code reads plugin options
-      # from user settings, --settings and managed settings only: a cloned
-      # repository must not be able to point somebody's agents at a gateway it
-      # chose. Writing this to .claude/settings.json would parse, save, and do
-      # nothing -- the silent no-op this project keeps finding.
-      echo "sync-url: --project is gone. A gateway address in a repository's settings is" >&2
-      echo "ignored by Claude Code, so writing one there would look like it worked and" >&2
-      echo "would not. Set it for this machine instead: sync-url <gateway-url>" >&2
-      exit 2 ;;
     -*) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
     *) URL="$1"; shift ;;
   esac
@@ -70,59 +54,18 @@ done
 
 die() { echo "$*" >&2; exit 1; }
 
-DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-FILE="$DIR/settings.json"
-
-# Plugin options are keyed by the plugin's full id, and the marketplace half of
-# that id is whatever name the marketplace was added under -- not something this
-# script gets to assume. Read it off the install record, and fall back to the
-# name this plugin publishes under. Guessing wrong writes a key nothing reads,
-# which would be indistinguishable from doing nothing.
-ID=""
-INSTALLED="$DIR/plugins/installed_plugins.json"
-if [ -r "$INSTALLED" ]; then
-  ID=$(grep -o '"sync@[A-Za-z0-9_.-]*"' "$INSTALLED" 2>/dev/null | head -n 1 | tr -d '"')
-fi
-[ -n "$ID" ] || ID="sync@sync"
-
-# --show exists so that everything reporting on the address -- /sync-status, a
-# provisioning script, a person -- reads it from one place. The value moved from
-# an environment variable to a plugin option, and a second reader that still
-# looked at the old location would confidently report "not configured" on a
-# machine that was working.
-if [ "$SHOW" -eq 1 ]; then
-  [ -r "$FILE" ] || exit 1
-  if command -v jq >/dev/null 2>&1; then
-    got=$(jq -r --arg id "$ID" '.pluginConfigs[$id].options.gateway_url // empty' "$FILE" 2>/dev/null)
-  elif command -v python3 >/dev/null 2>&1; then
-    got=$(FILE="$FILE" ID="$ID" python3 -c '
-import json, os
-try:
-    conf = json.load(open(os.environ["FILE"]))
-except Exception:
-    raise SystemExit(1)
-print(conf.get("pluginConfigs", {}).get(os.environ["ID"], {}).get("options", {}).get("gateway_url", ""))
-' 2>/dev/null)
-  else
-    echo "sync-url: neither jq nor python3 is installed, so the configured address" >&2
-    echo "cannot be read. Look for pluginConfigs -> $ID -> options in $FILE." >&2
-    exit 2
-  fi
-  [ -n "$got" ] || exit 1
-  echo "$got"
-  exit 0
-fi
-
 [ -n "$URL" ] || { usage >&2; exit 2; }
 
 # Accept what people actually paste: a bare host, a trailing slash, or the full
-# /mcp endpoint. What is stored is the host, because the server entry adds /mcp.
+# /mcp endpoint. The stored value must be the endpoint, because that is what the
+# server entry uses verbatim.
 case "$URL" in
   http://*|https://*) ;;
   *) URL="https://$URL" ;;
 esac
 URL="${URL%/}"
 BASE="${URL%/mcp}"
+URL="${BASE}/mcp"
 
 if [ "$VERIFY" -eq 1 ]; then
   command -v curl >/dev/null 2>&1 || die "curl is needed to check the gateway; pass --no-verify to skip"
@@ -144,25 +87,30 @@ That is usually Plane's own host. The gateway is normally mcp.<your-plane-host>.
   esac
 fi
 
+if [ "$SCOPE" = project ]; then
+  DIR=".claude"
+else
+  DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+fi
+FILE="$DIR/settings.json"
+
 mkdir -p "$DIR" || die "could not create $DIR"
 
 if [ ! -e "$FILE" ]; then
-  printf '{\n  "pluginConfigs": {\n    "%s": {\n      "options": {\n        "gateway_url": "%s"\n      }\n    }\n  }\n}\n' \
-    "$ID" "$BASE" > "$FILE" || die "could not write $FILE"
+  printf '{\n  "env": {\n    "SYNC_MCP_URL": "%s"\n  }\n}\n' "$URL" > "$FILE" ||
+    die "could not write $FILE"
   echo "wrote $FILE"
 elif command -v jq >/dev/null 2>&1; then
-  jq --arg id "$ID" --arg u "$BASE" \
-    '.pluginConfigs[$id].options.gateway_url = $u' "$FILE" > "$FILE.tmp" &&
+  jq --arg u "$URL" '.env = (.env // {}) | .env.SYNC_MCP_URL = $u' "$FILE" > "$FILE.tmp" &&
     mv "$FILE.tmp" "$FILE" || die "could not update $FILE"
   echo "updated $FILE"
 elif command -v python3 >/dev/null 2>&1; then
-  BASE="$BASE" FILE="$FILE" ID="$ID" python3 - <<'PY' || die "could not update $FILE"
+  URL="$URL" FILE="$FILE" python3 - <<'PY' || die "could not update $FILE"
 import json, os
 path = os.environ['FILE']
 with open(path) as f:
     conf = json.load(f)
-entry = conf.setdefault('pluginConfigs', {}).setdefault(os.environ['ID'], {})
-entry.setdefault('options', {})['gateway_url'] = os.environ['BASE']
+conf.setdefault('env', {})['SYNC_MCP_URL'] = os.environ['URL']
 with open(path, 'w') as f:
     json.dump(conf, f, indent=2)
     f.write('\n')
@@ -175,14 +123,14 @@ else
 $FILE already exists and neither jq nor python3 is installed, so it has
 been left alone. Add this to it, inside the top-level object:
 
-  "pluginConfigs": { "$ID": { "options": { "gateway_url": "$BASE" } } }
+  "env": { "SYNC_MCP_URL": "$URL" }
 EOF
   exit 1
 fi
 
 cat <<EOF
 
-Gateway: $BASE   (calls go to $BASE/mcp)
+Gateway: $URL
 
 Restart Claude Code — MCP servers are read once at startup, so the tools will not
 appear in this session. After restarting, sign in on the first tool call.

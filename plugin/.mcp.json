@@ -2,7 +2,7 @@
   "mcpServers": {
     "sync": {
       "type": "http",
-      "url": "${user_config.gateway_url}/mcp",
+      "url": "${SYNC_MCP_URL}",
       "headers": {
         "X-Sync-Session": "${CLAUDE_CODE_SESSION_ID:-}"
       }
