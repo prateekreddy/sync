@@ -110,8 +110,10 @@ export async function openBlockers(
   const blockers = await Promise.all(
     edges.map(async (b) => {
       const hit = known.get(b.issue_id);
-      if (hit) return hit;
-      return plane.getWorkItem(b.project_id ?? projectId, b.issue_id).catch(() => null);
+      const item = hit ?? (await plane.getWorkItem(b.project_id ?? projectId, b.issue_id).catch(() => null));
+      // Paired with the edge, not just collected: an unreadable blocker has no
+      // item to name itself with, and its id is the only handle left.
+      return { id: b.issue_id, item };
     }),
   );
 
@@ -120,15 +122,28 @@ export async function openBlockers(
   // costs a run and produces something a human then has to review.
   // An unrecognised state group counts as open for the same reason an unreadable
   // blocker does — the two failures are the same one seen from either end.
-  const open = blockers.filter((b) => {
-    if (!b) return true;
-    const g = groupOf.get(b.state);
+  const open = blockers.filter(({ item }) => {
+    if (!item) return true;
+    const g = groupOf.get(item.state);
     return g === undefined || !DONE.has(g);
   });
   if (open.length === 0) return [];
 
-  const names = open.map((b) => (b ? `#${b.sequence_id}` : 'an unreadable item')).join(', ');
-  return [`blocked by ${names}`];
+  // The unreadable case names the id, because that is the only thing an agent can
+  // do anything with. A blocker that was deleted out from under its relation
+  // gates the item forever — Plane cannot delete a relation, so the edge survives
+  // its own target — and the repair is `unlink`, which takes exactly this id.
+  // Saying "an unreadable item" and stopping described the trap without handing
+  // over the one value needed to get out of it, so the only way out was a human
+  // in Plane's web UI. Observed on SLATE-2, which froze a four-item chain.
+  const named = open.map(({ id, item }) =>
+    item ? `#${item.sequence_id}` : `an unreadable item (${id})`,
+  );
+  const stale = open.some(({ item }) => !item);
+  return [
+    `blocked by ${named.join(', ')}` +
+      (stale ? ' — if it no longer exists, unlink that id to stop the gate honouring it' : ''),
+  ];
 }
 
 /**

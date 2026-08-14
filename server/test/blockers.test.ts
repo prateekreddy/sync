@@ -240,10 +240,17 @@ describe('what a blocker lookup costs', () => {
     const plane = fakePlane({
       edges: { gated: { blocked_by: [{ project_id: OTHER_PROJECT, issue_id: id('elsewhere') }] } },
     });
-    // Not in BOARD, so the fetch fails and the blocker counts as open.
+    // Not in BOARD, so the fetch fails and the blocker counts as open. The id is
+    // named because it is the only handle left: an edge whose target was deleted
+    // gates the item forever — Plane cannot delete a relation — and `unlink`
+    // takes exactly this id. Saying "an unreadable item" and stopping described
+    // the trap without handing over the way out (PLANE-3, SLATE-2).
     expect(
       await verifyClaimable(plane, PROJECT, id('gated'), { pool, viewer: null }),
-    ).toEqual(['blocked by an unreadable item']);
+    ).toEqual([
+      `blocked by an unreadable item (${id('elsewhere')})` +
+        ' — if it no longer exists, unlink that id to stop the gate honouring it',
+    ]);
     // Blocker fetches only. The item under test is fetched too since SYNC-70, to
     // read its assignees, and counting that here would hide the thing this
     // measures — how many *blockers* had to be resolved.
