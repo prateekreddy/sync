@@ -443,3 +443,116 @@ describe('what the model is told about a group', () => {
     expect(groupNames.filter((n) => nativeNames.includes(n))).toEqual([]);
   });
 });
+
+/**
+ * The one board mistake an agent could not repair.
+ *
+ * `update_issue` types `parent` from `z.string().uuid()`, and `.partial()` makes
+ * it optional without making it nullable — so `parent: null` is rejected inside
+ * the child process before Plane sees it:
+ *
+ *   MCP error -32602: Expected string, received null at issue_data.parent
+ *
+ * Plane's REST API accepts it. A wrongly-set parent therefore made a container
+ * unclaimable — a parent with unfinished children is withheld by design — and
+ * the only remaining move was a comment saying so, which repairs the record for
+ * a human reader and nothing for the gate (PLANE-8).
+ */
+describe('detaching an item from its parent', () => {
+  const restCalls: Array<{ id: string; body: Record<string, unknown>; token: string }> = [];
+  const withRest = () => {
+    const d = deps();
+    let token = '';
+    return Object.assign(d, {
+      rest: {
+        as: (t: string) => {
+          token = t;
+          return {
+            updateWorkItem: async (_p: string, id: string, body: Record<string, unknown>) => {
+              restCalls.push({ id, body, token });
+              return { id, parent: null };
+            },
+          };
+        },
+        states: async () => [],
+        labels: async () => [],
+        members: async () => [],
+        itemSequences: async () => new Map(),
+        identifierFor: () => 'P',
+        listWorkItems: async () => [],
+      },
+    }) as ToolDeps;
+  };
+
+  it('goes round Plane MCP for an explicit null parent, since its schema refuses one', async () => {
+    calls.length = 0;
+    restCalls.length = 0;
+    await callTool(withRest(), actor(), 'Bearer t', 'plane_issues', {
+      action: 'update',
+      project_id: '00000000-0000-4000-8000-000000000001',
+      issue_id: '00000000-0000-4000-8000-00000000000a',
+      issue_data: { parent: null },
+    });
+
+    expect(calls).toHaveLength(0);
+    expect(restCalls).toHaveLength(1);
+    expect(restCalls[0]!.body['parent']).toBeNull();
+    // As the caller, never as the service account: this is a write, and writing
+    // as the gateway puts the wrong name in Plane's activity log.
+    expect(restCalls[0]!.token).toBe('plane_pat_test');
+  });
+
+  it('leaves every other update on the normal path', async () => {
+    // Narrow on purpose. If this branch swallowed ordinary updates it would take
+    // the whole tool off the server that validates and executes it.
+    calls.length = 0;
+    restCalls.length = 0;
+    await callTool(withRest(), actor(), 'Bearer t', 'plane_issues', {
+      action: 'update',
+      project_id: '00000000-0000-4000-8000-000000000001',
+      issue_id: '00000000-0000-4000-8000-00000000000b',
+      issue_data: { name: 'retitled' },
+    });
+
+    expect(restCalls).toHaveLength(0);
+    expect(calls[0]!.tool).toBe('update_issue');
+  });
+
+  it('tells the model that null is allowed, since the schema still says uuid', async () => {
+    // The schema an agent reads comes from upstream and types parent as a plain
+    // uuid string, so without this nothing says clearing it is possible at all.
+    const withParent = {
+      app: { log: { warn: vi.fn(), error: vi.fn() } },
+      pool: {},
+      plane: {
+        tools: async () => [
+          {
+            name: 'update_issue',
+            description: 'u',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                project_id: { type: 'string' },
+                issue_id: { type: 'string' },
+                issue_data: {
+                  type: 'object',
+                  properties: { parent: { type: 'string', format: 'uuid' } },
+                },
+              },
+              required: ['project_id', 'issue_id', 'issue_data'],
+            },
+          },
+        ],
+      },
+    } as unknown as ToolDeps;
+
+    const tools = await listTools(withParent);
+    const issues = tools.find((t) => t.name === 'plane_issues')!;
+    const parent = (
+      issues.inputSchema as {
+        properties: { issue_data: { properties: Record<string, { description?: string }> } };
+      }
+    ).properties.issue_data.properties['parent'];
+    expect(parent?.description).toMatch(/null to detach/i);
+  });
+});

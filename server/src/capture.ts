@@ -104,15 +104,21 @@ export interface CaptureResult {
    */
   discoveredFromInferred?: boolean | undefined;
   /**
-   * Set to 'recent' when the guess came from work that has already finished
-   * rather than from a lease still held.
+   * How strong the guess is, so two guesses of different strength do not look
+   * identical in a reply:
    *
-   * Two guesses of different strength should not look identical in a reply. "You
-   * are holding this right now" is nearly a fact; "you finished this two hours
-   * ago" is an inference about a session, and an agent deciding whether to correct
-   * it needs to know which one it got.
+   * - `held` — you are holding this right now, which is nearly a fact.
+   * - `recent` — you finished this a while ago; an inference about a session.
+   * - `other-session` — this lease belongs to your agent identity but to a
+   *   DIFFERENT session. It may be you before a restart, or another agent
+   *   authenticating as the same token; the gateway cannot tell. The link is
+   *   still offered because a wrong relates_to edge is cheap, but no parent is
+   *   inherited from it — see `inheritParent` and PLANE-8.
+   *
+   * An agent deciding whether to correct the provenance needs to know which of
+   * these it got.
    */
-  discoveredFromBasis?: 'held' | 'recent' | undefined;
+  discoveredFromBasis?: 'held' | 'recent' | 'other-session' | undefined;
   /** Set when the item was created but could not be put in the module. */
   moduleError?: string | undefined;
   /**
@@ -182,8 +188,10 @@ async function inferSource(
   pool: Pool,
   actor: Actor,
   input: CaptureInput,
-): Promise<{ id: string; inferred: boolean; live: boolean } | null> {
-  if (input.discoveredFrom) return { id: input.discoveredFrom, inferred: false, live: false };
+): Promise<{ id: string; inferred: boolean; live: boolean; mine: boolean } | null> {
+  if (input.discoveredFrom) {
+    return { id: input.discoveredFrom, inferred: false, live: false, mine: true };
+  }
   if (input.parentId) return null;
 
   const recent = await lastWorkedOn(pool, {
@@ -192,7 +200,9 @@ async function inferSource(
     sessionId: input.sessionId ?? null,
   }).catch(() => null);
 
-  return recent ? { id: recent.workItemId, inferred: true, live: recent.live } : null;
+  return recent
+    ? { id: recent.workItemId, inferred: true, live: recent.live, mine: recent.mine }
+    : null;
 }
 
 /**
@@ -273,14 +283,35 @@ async function inheritModule(
  * to whoever claims the source than an orphan was. Delivery is a separate
  * problem, solved by the briefing `claim` returns. This one is about whether the
  * board describes a plan.
+ *
+ * ONLY from a lease the caller's own session took, which is the asymmetry with
+ * `discoveredFrom` and the point of PLANE-8. The lease table keys on agent
+ * identity, so two agents authenticating as `agent:dev2/worker-1` are one row
+ * set: on 2026-08-03 agent B claimed a flaky-test item at 07:41:27 and agent A's
+ * unrelated capture a minute later was filed as its sibling, under a container
+ * neither the capture nor its author had anything to do with.
+ *
+ * The two inferences differ in what a wrong one costs, so they get different
+ * rules. A wrong `discoveredFrom` is a relates_to edge — noise, and reported as
+ * inferred so a reader can discount it. A wrong parent makes a container
+ * unclaimable, because a parent with unfinished children is withheld by design;
+ * unrelated work then blocks an epic and nobody finds out until they wonder why
+ * it never becomes available. That is worth losing the inference over.
+ *
+ * The test is positive evidence of a MISMATCH — both sessions known and
+ * different — not absence of a match. A client that cannot set the session
+ * header, and a lease claimed before sessions existed, both read as "cannot
+ * tell", and declining there would remove a working inference to guard against
+ * nothing detectable.
  */
 async function inheritParent(
   plane: PlaneClient,
   input: CaptureInput,
-  source: { id: string } | null,
+  source: { id: string; mine?: boolean } | null,
 ): Promise<{ id: string; inherited: boolean } | null> {
   if (input.parentId) return { id: input.parentId, inherited: false };
   if (!source) return null;
+  if (source.mine === false) return null;
 
   // Bounded for the same reason as the module lookup: capture must stay trivial,
   // and an unreachable Plane must cost a missing convenience rather than
@@ -441,7 +472,9 @@ export async function capture(
           // deciding what to trust needs to know which this was.
           !source.inferred
             ? `<p>Discovered while working on a related item, by ${actor.holder}.</p>`
-            : source.live
+            : !source.mine
+              ? `<p>Captured by ${actor.holder}. Provenance inferred from a lease held under the same agent identity in a different session, so it may not be this caller's work — not stated, and no parent was inherited from it.</p>`
+              : source.live
               ? `<p>Captured by ${actor.holder} while it held the linked item. Provenance inferred from the lease, not stated.</p>`
               : `<p>Captured by ${actor.holder} shortly after it finished the linked item. Provenance inferred from what it was last working on, not stated.</p>`,
         )
@@ -450,7 +483,14 @@ export async function capture(
         ...result,
         discoveredFrom: source.id,
         ...(source.inferred
-          ? { discoveredFromInferred: true, discoveredFromBasis: source.live ? ('held' as const) : ('recent' as const) }
+          ? {
+              discoveredFromInferred: true,
+              discoveredFromBasis: !source.mine
+                ? ('other-session' as const)
+                : source.live
+                  ? ('held' as const)
+                  : ('recent' as const),
+            }
           : {}),
       };
     }

@@ -283,6 +283,56 @@ function projectArg(args: Record<string, unknown>): string | null {
   return null;
 }
 
+/**
+ * Detaching a sub-item from its parent, which Plane's own MCP server cannot do.
+ *
+ * `update_issue` types `parent` from a Zod schema as `z.string().uuid()`, and
+ * `.partial()` makes it optional without making it nullable — so `parent: null`
+ * is rejected inside the child process before Plane ever sees it:
+ *
+ *   MCP error -32602: Expected string, received null at issue_data.parent
+ *
+ * Plane's REST API accepts it. `PATCH /work-items/<id>/` with `{"parent": null}`
+ * clears the field, and this gateway already speaks that API — so the only thing
+ * standing between an agent and an undo was a schema one layer above it.
+ *
+ * It matters more than a missing convenience. A wrong parent is the one board
+ * mistake an agent could not repair: a parent with unfinished children is
+ * withheld by design, so a mis-filed item makes a container unclaimable and the
+ * only remaining option was a comment saying so, which repairs the record for a
+ * human and nothing for the gate (PLANE-8).
+ *
+ * Narrow on purpose. It fires only for `update_issue` carrying an explicit null
+ * parent, and forwards everything else — including the rest of the same call,
+ * which goes through Plane's MCP server as usual. Returning null here means "not
+ * my case, carry on", so the normal path stays the default rather than becoming
+ * one branch of two.
+ *
+ * Runs as the CALLER, never as the service account: this is a write, and writing
+ * as the gateway would put the wrong name in Plane's activity log.
+ */
+async function detachParent(
+  deps: ToolDeps,
+  actor: Actor,
+  upstreamName: string,
+  args: Record<string, unknown>,
+): Promise<unknown | null> {
+  if (upstreamName !== 'update_issue' || !deps.rest) return null;
+  const data = args['issue_data'];
+  if (!data || typeof data !== 'object') return null;
+  const fields = data as Record<string, unknown>;
+  if (!('parent' in fields) || fields['parent'] !== null) return null;
+
+  const projectId = projectArg(args) ?? actor.defaultProjectId;
+  const workItemId = args['issue_id'];
+  if (!projectId || typeof workItemId !== 'string') return null;
+
+  const updated = await deps.rest
+    .as(actor.planeToken)
+    .updateWorkItem(projectId, workItemId, fields);
+  return { content: [{ type: 'text', text: JSON.stringify(updated, null, 2) }] };
+}
+
 export interface ToolResult {
   content: Array<{ type: 'text'; text: string }>;
   isError?: boolean;
@@ -592,7 +642,9 @@ export async function callTool(
   const named = book ? await resolveIds(book, forwarded, projectId) : forwarded;
 
   const checked = await checkToolCall({ pool: deps.pool, actor }, upstreamName, named);
-  const raw = await deps.plane.call(actor.planeToken, upstreamName, checked);
+  const raw =
+    (await detachParent(deps, actor, upstreamName, checked)) ??
+    (await deps.plane.call(actor.planeToken, upstreamName, checked));
 
   // Ids to names on the way out. Before projection, deliberately: resolution
   // changes values rather than adding keys, so a caller that narrowed with

@@ -524,6 +524,17 @@ export interface RecentWork {
   workItemId: string;
   /** True when the lease is still live, so the guess is a fact rather than a memory. */
   live: boolean;
+  /**
+   * True when the caller's own session took this lease.
+   *
+   * False means the row belongs to the same agent IDENTITY but a different
+   * session — two agents authenticating as `agent:dev2/worker-1`, or the same
+   * agent before a restart. The gateway cannot tell those apart, and the
+   * difference decides whether "what this agent was doing" is a statement about
+   * the caller at all. Always false when the caller sent no session id, because
+   * an unknown session cannot be claimed to match.
+   */
+  mine: boolean;
 }
 
 /**
@@ -549,9 +560,20 @@ export async function lastWorkedOn(
   pool: Pool,
   opts: { holder: string; projectId: string; sessionId?: string | null; withinMs?: number },
 ): Promise<RecentWork | null> {
-  const { rows } = await pool.query<{ work_item_id: string; live: boolean }>(
+  const { rows } = await pool.query<{ work_item_id: string; live: boolean; mine: boolean }>(
     `select work_item_id,
-            (state = 'held' and expires_at > now()) as live
+            (state = 'held' and expires_at > now()) as live,
+            -- Whether this lease could be the caller's own session's work.
+            --
+            -- False ONLY when both sessions are known and they differ — positive
+            -- evidence that another session sharing this agent identity took it.
+            -- Absence of evidence is not mismatch: a caller that sends no session
+            -- (a client that cannot set headers) and a lease claimed before
+            -- sessions existed both read as "cannot tell", and declining there
+            -- would remove a working inference to guard against nothing
+            -- detectable. The ordering below prefers a match; this reports
+            -- whether one was actually found. See PLANE-8.
+            not ($4::text is not null and session_id is not null and session_id <> $4) as mine
        from lease
       where holder = $1
         and project_id = $2
@@ -565,7 +587,7 @@ export async function lastWorkedOn(
     [opts.holder, opts.projectId, (opts.withinMs ?? RECENT_WORK_MS) / 1000, opts.sessionId ?? null],
   );
   const row = rows[0];
-  return row ? { workItemId: row.work_item_id, live: row.live } : null;
+  return row ? { workItemId: row.work_item_id, live: row.live, mine: row.mine } : null;
 }
 
 /**

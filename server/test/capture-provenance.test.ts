@@ -207,6 +207,60 @@ describe('when the agent is not holding one tidy lease', () => {
     expect(out.discoveredFrom).toBe(here);
   });
 
+  it('does not file a note under a parent belonging to another session', async () => {
+    // PLANE-8, and the expensive half. The lease table keys on agent IDENTITY,
+    // so two agents authenticating as agent:dev2/worker-1 are one row set. On
+    // 2026-08-03 agent B claimed a flaky-test item at 07:41:27 and agent A's
+    // unrelated capture a minute later became its sibling, under a container
+    // neither had touched — and a parent with unfinished children is withheld by
+    // design, so unrelated work made an epic unclaimable.
+    const theirs = randomUUID();
+    await lease.claim(pool, {
+      workItemId: theirs,
+      projectId: PROJECT,
+      holder: actor.holder,
+      ttlSeconds: 600,
+      sessionId: 'their-window',
+    });
+
+    const plane = fakePlane();
+    // Their item has a parent, so there is something to inherit wrongly.
+    Object.assign(plane, {
+      getWorkItem: async () => ({ id: theirs, parent: randomUUID() }),
+    });
+
+    const out = await write(plane, { sessionId: 'my-window' });
+
+    expect(out.parentId).toBeUndefined();
+    expect(out.parentInherited).toBeUndefined();
+    // The cheap half is still offered — a wrong relates_to edge costs noise, not
+    // a frozen container — but it is labelled, so a reader can discount it.
+    expect(out.discoveredFrom).toBe(theirs);
+    expect(out.discoveredFromBasis).toBe('other-session');
+  });
+
+  it('still inherits a parent from the session that took the lease', async () => {
+    // The other direction, so the guard cannot pass by never inheriting at all.
+    const mine = randomUUID();
+    const container = randomUUID();
+    await lease.claim(pool, {
+      workItemId: mine,
+      projectId: PROJECT,
+      holder: actor.holder,
+      ttlSeconds: 600,
+      sessionId: 'my-window',
+    });
+
+    const plane = fakePlane();
+    Object.assign(plane, { getWorkItem: async () => ({ id: mine, parent: container }) });
+
+    const out = await write(plane, { sessionId: 'my-window' });
+
+    expect(out.parentId).toBe(container);
+    expect(out.parentInherited).toBe(true);
+    expect(out.discoveredFromBasis).toBe('held');
+  });
+
   it('does not reach back past the window', async () => {
     // Yesterday's work is not where today's note came from.
     const stale = randomUUID();

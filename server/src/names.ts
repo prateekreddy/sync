@@ -93,10 +93,26 @@ const HINT: Record<Kind, string> = {
   item: 'Takes a readable id ("SYNC-12") or an item id, and is returned as the readable id.',
 };
 
+/**
+ * Field-specific additions, for what the kind's shared hint cannot say.
+ *
+ * `parent` is the only one so far and it earns its place: Plane's MCP schema
+ * types it as a plain uuid string, so nothing tells a model that clearing it is
+ * possible at all — and a wrong parent is the one board mistake an agent could
+ * not repair, because a parent with unfinished children is withheld by design
+ * (PLANE-8). The gateway accepts an explicit null and PATCHes it through; see
+ * `detachParent` in tools.ts.
+ */
+const FIELD_NOTE: Record<string, string> = {
+  parent: 'Pass null to detach this item from its parent.',
+};
+
 /** The sentence to append to a field's description, if it is one we translate. */
 export const nameHint = (field: string): string | undefined => {
   const kind = FIELD_KIND[field];
-  return kind ? HINT[kind] : undefined;
+  if (!kind) return undefined;
+  const note = FIELD_NOTE[field];
+  return note ? `${HINT[kind]} ${note}` : HINT[kind];
 };
 
 interface Entry {
