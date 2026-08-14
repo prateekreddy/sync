@@ -6,6 +6,12 @@ deliberate: that endpoint also creates Plane's default workflow states, and the
 readiness gate decides what is claimable by reading state *groups*. A project
 built without them would accept work that could never be picked up.
 
+Everything here assumes grant_access.py has already run, which is what makes the
+projects below visible and writable to this token at all — see the long note
+there. Without it, adopting a project made in the web UI is impossible rather
+than merely awkward: Plane does not list a project you are not in, so the
+identifier looks free and this script tries to create a second one.
+
 Run by provision.sh:
     python3 plane_api.py <base_url> <token> <slug> <project_name> <identifier> <user_id>...
 Prints the project id on stdout.
@@ -42,10 +48,26 @@ def die(what, status, body):
     sys.exit(1)
 
 
+def list_projects():
+    """Every project, not merely the first page.
+
+    Plane paginates this endpoint, so reading `results` once covers 100 projects
+    and then stops — and stopping early here does not fail, it just means an
+    identifier that already exists looks free and gets created a second time.
+    """
+    out, path = [], "/projects/"
+    while True:
+        status, page = call("GET", path)
+        if status >= 400:
+            die("list projects", status, page)
+        out.extend(page.get("results", []))
+        if not page.get("next_page_results") or not page.get("next_cursor"):
+            return out
+        path = f"/projects/?cursor={page['next_cursor']}"
+
+
 # ── project ──────────────────────────────────────────────────────────────────
-status, existing = call("GET", "/projects/")
-if status >= 400:
-    die("list projects", status, existing)
+existing = list_projects()
 
 # Modules are the epic layer, and Plane gates them per project behind
 # `module_view`. Without it every module call fails -- creating one returns
@@ -55,12 +77,11 @@ if status >= 400:
 FEATURES = {"module_view": True}
 
 project = None
-match = [p for p in existing.get("results", []) if IDENT and p.get("identifier") == IDENT]
+match = [p for p in existing if IDENT and p.get("identifier") == IDENT]
 if not IDENT:
-    # No project asked for. Everything below still runs: the gateway's own
-    # membership is not about the project this script may have created, it is
-    # about every project it is expected to serve.
-    print("no project requested; ensuring gateway access only", file=sys.stderr)
+    print("no project requested", file=sys.stderr)
+    print("")
+    sys.exit(0)
 elif match:
     project = match[0]
     print(f"project {IDENT} already exists ({project['id']})", file=sys.stderr)
@@ -76,41 +97,22 @@ else:
         die("create project", status, project)
     print(f"created project {IDENT} ({project['id']})", file=sys.stderr)
 
-pid = project["id"] if project else ""
+pid = project["id"]
 
-# ── the gateway's own account ────────────────────────────────────────────────
-# This token becomes PLANE_API_KEY, and the gateway reads with it rather than
-# with the caller's: `find`, `board`, `why`, `next` and the `claim` precheck all
-# go through the service client. So it needs project membership like any agent —
-# and it has been getting it by accident, because Plane makes the creator of a
-# project a member and this script creates the project.
-#
-# That accident does not survive contact with a project made any other way. A
-# project created in the web UI, or by a different user, leaves the gateway able
-# to write through the caller's token and unable to read its own workflow states:
-# every readiness call answers `Plane 403 on GET /projects/<id>/states/` while
-# comments and issue reads keep working, so it looks like a half-broken gateway
-# rather than a missing membership. Observed 2026-08-14 on exactly that shape.
-#
-# Asking who this token belongs to is one request and makes the invariant
-# explicit rather than incidental.
-status, me = call("GET", "/users/me/", root=f"{BASE.rstrip('/')}/api/v1")
-if status >= 400:
-    die("identify the provisioning token", status, me)
-service_account = str(me.get("id", ""))
-if not service_account:
-    die("identify the provisioning token", status, {"missing": "id"})
-
-# ── members ──────────────────────────────────────────────────────────────────
+# ── agents on this project ───────────────────────────────────────────────────
 # Read first, then add only what is missing. Re-adding an existing member returns
 # a bare 400 "The payload is not valid", indistinguishable from a genuinely
 # malformed request — so tolerating 400 here would silently hide the real thing.
 # An agent that is not a project member gets 403 on every write, which is a
 # confusing way to discover a provisioning bug.
-def ensure_members(project_id, ident, uids):
-    status, current = call("GET", f"/projects/{project_id}/members/")
+#
+# Only the project this run asked for, and only the agents it was asked to make.
+# The gateway's own account is not handled here: it needs EVERY project, which
+# this API cannot deliver at all — see grant_access.py.
+if MEMBER_IDS:
+    status, current = call("GET", f"/projects/{pid}/members/")
     if status >= 400:
-        die(f"list members of {ident}", status, current)
+        die(f"list members of {IDENT}", status, current)
 
     # Plane paginates project *lists* but returns members as a bare array, so
     # accept either shape rather than assuming the one this version happens to
@@ -118,34 +120,12 @@ def ensure_members(project_id, ident, uids):
     rows = current if isinstance(current, list) else current.get("results", [])
     present = {str(m.get("member") or m.get("member_id") or m.get("id")) for m in rows}
 
-    for uid in uids:
+    for uid in MEMBER_IDS:
         if not uid or uid in present:
             continue
-        status, body = call("POST", f"/projects/{project_id}/members/", {"member": uid, "role": 15})
+        status, body = call("POST", f"/projects/{pid}/members/", {"member": uid, "role": 15})
         if status >= 400:
-            die(f"add member {uid} to {ident}", status, body)
-        who = "gateway service account" if uid == service_account else "agent"
-        print(f"added {who} {uid} to {ident}", file=sys.stderr)
-
-
-# The gateway serves whatever project a caller asks for, so its own account needs
-# every project rather than the one this run happened to touch. That is not a
-# widening of what anyone can reach: authorisation is the CALLER's, checked
-# per-request against their own Plane project list before the service client is
-# used at all (server/src/access.ts, and the `canRead` calls in routes.ts). The
-# service account's breadth is what makes those reads possible; it is not what
-# decides who may have them.
-#
-# Re-running is how a project created later gets picked up — there is no hook
-# from Plane saying one appeared.
-status, everything = call("GET", "/projects/")
-if status >= 400:
-    die("list projects", status, everything)
-
-for p in everything.get("results", []):
-    # Agents go only on the project they were provisioned for; the service
-    # account goes everywhere.
-    extra = MEMBER_IDS if pid and p.get("id") == pid else []
-    ensure_members(p["id"], p.get("identifier") or p["id"], [service_account, *extra])
+            die(f"add agent {uid} to {IDENT}", status, body)
+        print(f"added agent {uid} to {IDENT}", file=sys.stderr)
 
 print(pid)

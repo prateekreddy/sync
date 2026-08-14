@@ -21,3 +21,9 @@ deploy/plane/
 # the box can spare. Committing one would push a single machine's layout onto
 # every other deployment.
 deploy/docker-compose.override.yml
+
+# Python bytecode from running the deploy scripts locally. `plane_api.pyc` was
+# committed by accident in fe75fd3; it is a build output of a script that only
+# ever runs as `python3 plane_api.py`.
+__pycache__/
+*.pyc

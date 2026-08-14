@@ -20,11 +20,11 @@ docker compose up -d                        # first boot pulls ~2GB
 `provision.sh` prints the Plane sign-in. That is the whole server install.
 
 It creates **no project and no agents**. Make projects in Plane however you like,
-then run it again per project so the gateway can read them:
+then run it again — with no flags — so the gateway can read them:
 
 ```bash
-./provision.sh --identifier PLANE           # adopt one made in the UI
-./provision.sh --identifier SYNC --project "Sync Platform"   # or make one
+./provision.sh                              # picks up every project, incl. new ones
+./provision.sh --identifier SYNC --project "Sync Platform"   # or make one here
 ```
 
 That second run is not optional for a project you want the gateway to serve, and it
@@ -158,27 +158,43 @@ this for you; in this mode nobody does.
 up and restarts the `api` container on the run that does so, because that container
 caches the flag.
 
+**Every run gives the gateway's own account access to every project in the
+workspace.** No flag asks for it. That matters more than it sounds: the gateway
+reads with `PLANE_API_KEY` rather than with the caller's token, so `find`, `board`,
+`why`, `next` and the `claim` precheck all run as that account. Without the
+membership every one of them answers `Plane 403 on GET /projects/<id>/…` while
+comments and issue reads keep working — a gateway that looks half-broken rather
+than one missing a permission.
+
+Re-run it after making a project, in the UI or anywhere else: Plane offers no hook
+that says one appeared, so a re-run is how the gateway picks it up.
+
+This one step goes through Plane's ORM (`grant_access.py`) rather than its public
+API, which is the only part of provisioning that does. The API cannot do it, twice
+over: `GET /projects/` shows you only the projects you are already in plus the
+public ones, so a private project you were never added to is invisible; and
+`POST /projects/<id>/members/` requires you to be a project **admin of that
+project** already, so an account outside it cannot let itself in. A loop over the
+public API therefore skips exactly the projects that need fixing and reports
+success — which is what happened, twice, before this existed.
+
+Authorisation is unaffected: it stays the caller's, checked per request against
+their own Plane project list before the service client is used at all
+(`server/src/access.ts`; `server/test/serviceaccess.test.ts` fails if a route
+forgets). The service account's breadth is what makes those reads possible, not
+what decides who may have them.
+
 With `--identifier` it also creates a project with Plane's default workflow states —
-or **adopts an existing one** with that identifier, which is the more useful half:
-it is how a project made in Plane's UI gets the membership described below. Nothing
-is created twice, so re-running against an existing project only repairs it.
+or **adopts an existing one** with that identifier. Nothing is created twice, so
+re-running against an existing project only repairs it. You need this only to have
+provisioning make a project, or to put `--agents` on one.
 
 With `--agents` it creates one Plane user per agent, an API token for each, and the
 gateway tokens. Without it, none — see **Adding an agent** in
 [`docs/onboarding.md`](../docs/onboarding.md) for the self-service path.
 
-It also makes the gateway's own account a member of the project. That matters more
-than it sounds: the gateway reads with `PLANE_API_KEY` rather than with the caller's
-token, so `find`, `board`, `why`, `next` and the `claim` precheck all run as that
-account. Without the membership every one of them answers
-`Plane 403 on GET /projects/<id>/states/` while comments and issue reads keep
-working — a gateway that looks half-broken rather than one missing a permission.
-Provisioning used to get this by accident, because Plane makes the creator of a
-project a member and this script creates the project; a project made in the UI, or
-by another user, did not get it.
-
-It is idempotent — re-run it to add agents, add that membership to a project made
-elsewhere, or repair a half-finished setup.
+It is idempotent — re-run it to pick up new projects, add agents, or repair a
+half-finished setup.
 
 If a Plane upgrade breaks it, do the same four things in the UI (sign up, workspace,
 project, API token) and put the token in `deploy/.env`.

@@ -9,10 +9,14 @@
 # Creates: an admin you can sign in as, a workspace, and the gateway. That is all
 # it creates on its own.
 #
+# Every run gives the gateway's own account access to every project in the
+# workspace, which is what its reads depend on — including projects made in the
+# web UI, and projects made since the last run. That part is not optional and
+# needs no flags.
+#
 # --identifier makes a project with Plane's default workflow states, or adopts an
-# existing one with that identifier — which is how you grant the gateway's own
-# account the project membership every one of its reads depends on. Run it again
-# for each project the gateway should serve.
+# existing one with that identifier. Only needed when you want provisioning to
+# create a project or to put --agents on one.
 #
 # --agents mints Plane users and gateway tokens up front. Without it none are
 # created, because people mint their own through the browser sign-in or
@@ -36,10 +40,10 @@ AGENTS=""
 # install whose work lives in projects made elsewhere got a permanently empty
 # SYNC board beside them.
 #
-# Naming one is how you ask for it, and it is also the repair path for a project
-# made in Plane's UI: pass an identifier that already exists and provisioning
-# adopts it rather than creating a second, which is what grants the gateway's own
-# account the membership its reads depend on.
+# Naming one is how you ask for it. Passing an identifier that already exists
+# adopts that project rather than creating a second, so it is also how --agents
+# joins a project made in Plane's UI. The gateway's own access is no longer among
+# the reasons to pass it: step 3 does that for every project, unasked.
 PROJECT_NAME=""
 PROJECT_ID_PREFIX=""
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@sync.local}"
@@ -53,7 +57,7 @@ while [ $# -gt 0 ]; do
     --identifier) PROJECT_ID_PREFIX="$2"; shift 2 ;;
     --email)      ADMIN_EMAIL="$2"; shift 2 ;;
     --workspace)  WS_SLUG="$2"; shift 2 ;;
-    -h|--help)    sed -n '2,17p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,26p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -175,20 +179,54 @@ if [ "$(jq_ "['setup_done_flipped']")" = "True" ]; then
   done
 fi
 
-# ── 3. project access, through the public API ────────────────────────────────
-# Runs every time, project or no project. Two different things happen here and
-# only one of them is optional:
+# ── 3. the gateway's own project access ──────────────────────────────────────
+# Runs every time, project or no project, and BEFORE the project step: the
+# gateway reads with PLANE_API_KEY rather than with the caller's token, so a
+# project it is not in serves nothing — and adopting an existing project below
+# needs this to have happened first, because Plane does not list a project you
+# are not a member of.
 #
-#   The gateway's own account is made a member of EVERY project, always. It reads
-#   with PLANE_API_KEY rather than with the caller's token, so without that it
-#   can serve nothing — and re-running is what picks up a project created since,
-#   because Plane offers no hook that says one appeared.
+# Re-running is what picks up a project created since, because Plane offers no
+# hook that says one appeared.
 #
-#   A project is created or adopted only when --identifier or --project asked for
-#   one, and only that project gets the agents added to it. Agents must be
-#   members or every write comes back 403, which is a baffling way to find out
-#   that provisioning half-failed — so plane_api.py treats any failure here as
-#   fatal rather than pressing on.
+# Through the ORM, unlike everything else about projects here, because the public
+# API can neither see those projects nor let this account join them. The long
+# version is in grant_access.py.
+# `|| true` so a non-zero exit does not abort under `set -e` before the reason can
+# be read: grant_access.py reports why it failed on stdout, and swallowing that to
+# exit silently is the failure mode this whole step exists to remove.
+GRANT_RAW=$(dc exec -T \
+  -e SERVICE_EMAIL="$ADMIN_EMAIL" \
+  -e WS_SLUG="$WS_SLUG" \
+  api python manage.py shell < grant_access.py || true)
+
+GRANT=$(printf '%s' "$GRANT_RAW" | sed -n 's/^GRANT_JSON://p' | tail -1)
+[ -n "$GRANT" ] || {
+  echo "could not grant the gateway project access; Plane said:" >&2
+  printf '%s\n' "$GRANT_RAW" | tail -20 >&2
+  exit 1
+}
+python3 - "$GRANT" <<'PY' || exit 1
+import json, sys
+g = json.loads(sys.argv[1])
+if "error" in g:
+    sys.exit(f"could not grant the gateway project access: {g['error']}")
+# Said out loud every run. The failure this replaces was a loop that covered
+# fewer projects than it claimed and printed nothing at all.
+print(f"gateway account: {len(g['granted'])} projects joined, "
+      f"{len(g['repaired'])} repaired, {g['already']} already in, of {g['total']}")
+for k in ("granted", "repaired"):
+    if g[k]:
+        print(f"  {k}: {', '.join(g[k])}")
+PY
+
+# ── 4. the project, through the public API ───────────────────────────────────
+# Optional. A project is created or adopted only when --identifier or --project
+# asked for one, and only that project gets the agents added to it. Agents must
+# be members or every write comes back 403, which is a baffling way to find out
+# that provisioning half-failed — so plane_api.py treats any failure here as
+# fatal rather than pressing on.
+PROJECT_ID=""
 if [ -n "$PROJECT_ID_PREFIX" ] || [ -n "$PROJECT_NAME" ]; then
   # Either flag alone is enough to mean "yes, a project". The identifier is the
   # part Plane matches on, so it is the one derived when only a name was given.
@@ -197,18 +235,18 @@ if [ -n "$PROJECT_ID_PREFIX" ] || [ -n "$PROJECT_NAME" ]; then
     [ -n "$PROJECT_ID_PREFIX" ] || { echo "--project '${PROJECT_NAME}' has no letters or digits to build an identifier from; pass --identifier" >&2; exit 2; }
   fi
   [ -n "$PROJECT_NAME" ] || PROJECT_NAME="$PROJECT_ID_PREFIX"
+
+  MEMBER_IDS=""
+  for name in $(printf '%s' "$AGENTS" | tr ',' ' '); do
+    MEMBER_IDS="$MEMBER_IDS $(jq_ "['agents']['${name}']['user_id']")"
+  done
+
+  # shellcheck disable=SC2086
+  PROJECT_ID=$(python3 plane_api.py "$BASE" "$ADMIN_TOKEN" "$WS_SLUG" \
+    "$PROJECT_NAME" "$PROJECT_ID_PREFIX" $MEMBER_IDS)
 fi
 
-MEMBER_IDS=""
-for name in $(printf '%s' "$AGENTS" | tr ',' ' '); do
-  MEMBER_IDS="$MEMBER_IDS $(jq_ "['agents']['${name}']['user_id']")"
-done
-
-# shellcheck disable=SC2086
-PROJECT_ID=$(python3 plane_api.py "$BASE" "$ADMIN_TOKEN" "$WS_SLUG" \
-  "$PROJECT_NAME" "$PROJECT_ID_PREFIX" $MEMBER_IDS)
-
-# ── 4. record what the gateway needs, then start it ──────────────────────────
+# ── 5. record what the gateway needs, then start it ──────────────────────────
 python3 - "$JSON" "$PROJECT_ID" "$WS_SLUG" <<'PY'
 import json, re, sys
 data, project_id, slug = json.loads(sys.argv[1]), sys.argv[2], sys.argv[3]
@@ -304,13 +342,19 @@ if [ "$gw_ok" = 1 ] && [ -n "$GIT_SHA" ]; then
   else
     echo "warning: gateway is serving ${live:0:7}, not the ${GIT_SHA:0:7} just built — the old container may still be up" >&2
   fi
+elif [ "$gw_ok" = 1 ]; then
+  # No sha to compare against, so this deploy cannot be checked at all. Worth
+  # saying: silence here reads as a clean install, and a gateway that answers
+  # `"sha":null` forever is how "which code is running?" became unanswerable on
+  # a live host three times.
+  echo "warning: no commit sha available here, so the gateway will report sha:null and this deploy cannot be verified" >&2
 fi
 # Not fatal — token issuance below goes through `docker compose exec`, not HTTP,
 # so it can still succeed. But say so, because the previous version of this loop
 # fell through silently and left a dead gateway looking like a clean install.
 [ "$gw_ok" = 1 ] || echo "warning: gateway did not answer /healthz${GW:+ at $GW}; check: docker compose logs gateway" >&2
 
-# ── 5. agent credentials ─────────────────────────────────────────────────────
+# ── 6. agent credentials ─────────────────────────────────────────────────────
 # Only when asked for. See the note on AGENTS: minting is self-service, so the
 # ordinary run creates none and this section says nothing.
 #
