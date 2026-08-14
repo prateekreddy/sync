@@ -569,11 +569,52 @@ describe('who the item ends up with', () => {
 });
 
 describe('finishing work', () => {
-  it('clears the assignee on complete, as release already did', async () => {
-    // An assignee means somebody is on this, and once the work is reported done
-    // nobody is. Leaving it made every finished item read as assigned-to-a-human,
-    // which under this rule would withhold it forever.
+  it('leaves the name on an item that closes, because that is who did it', async () => {
+    // An assignee means two things depending on where the item sits. On an open
+    // item it means "somebody is on this" and this rule withholds it from
+    // everyone else. On a closed one it is the only record of authorship the
+    // board has, and `screen()` withholds anything outside backlog/unstarted
+    // regardless — so keeping it costs nothing and clearing it lost the record.
+    // Without it there was no way to say "this person finished this" except
+    // through raw `update`, which is the path that destroyed SLATE-948.
     const plane = fakePlane();
+    await mirrorComplete(plane, pool, {
+      projectId: PROJECT,
+      workItemId: MINE,
+      actor: { holder: 'agent:t', principal: 'human:me@example.com', planeUserId: ME } as Actor,
+      outcome: 'done',
+      close: true,
+    });
+    const write = updates.find((u) => u.id === MINE)!;
+    // Not written at all, rather than written back: re-sending it would race the
+    // takeover case, where the item is deliberately on the approving human.
+    expect(write.body).not.toHaveProperty('assignees');
+    expect(write.body['state']).toBe(STATES[0]!.id);
+  });
+
+  it('clears the name when the item does not actually close', async () => {
+    // `close: false` leaves it claimable, so a name on it would withhold it from
+    // the next agent — the failure the old unconditional clear was protecting
+    // against, and it still applies here.
+    const plane = fakePlane();
+    await mirrorComplete(plane, pool, {
+      projectId: PROJECT,
+      workItemId: MINE,
+      actor: { holder: 'agent:t', principal: 'human:me@example.com', planeUserId: ME } as Actor,
+      outcome: 'done',
+      close: false,
+    });
+    expect(updates.find((u) => u.id === MINE)?.body['assignees']).toEqual([]);
+  });
+
+  it('clears the name when the project has no completed state to move it to', async () => {
+    // The condition is "did it land somewhere completed", not "was close asked
+    // for". A project with no completed state group leaves the item OPEN after a
+    // close, and an open item with a name on it is withheld forever — which is
+    // exactly the case the old comment was written about.
+    const plane = Object.assign(fakePlane(), {
+      stateByGroup: async () => undefined,
+    }) as unknown as PlaneClient;
     await mirrorComplete(plane, pool, {
       projectId: PROJECT,
       workItemId: MINE,

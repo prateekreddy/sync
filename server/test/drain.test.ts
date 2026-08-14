@@ -165,9 +165,10 @@ describe('the drain replays it', () => {
 
     expect(result.settled).toBe(1);
     expect((await owed(id)).pending_mirror).toBeNull();
-    // The item really was closed and unassigned, not merely marked as done.
+    // The item really was closed, not merely marked as done — and it keeps the
+    // name of whoever finished it, which is the record a replay must not lose.
     expect(updates.find((u) => u.id === id)?.body['state']).toBe('done');
-    expect(updates.find((u) => u.id === id)?.body['assignees']).toEqual([]);
+    expect(updates.find((u) => u.id === id)?.body).not.toHaveProperty('assignees');
   });
 
   it('keeps the outcome text, so the comment is the one the agent wrote', async () => {

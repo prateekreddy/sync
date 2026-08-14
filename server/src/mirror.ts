@@ -308,15 +308,26 @@ export async function mirrorComplete(
       actor: portable(args.actor),
     });
     try {
-      // The assignee goes whether or not the item closes, and it is one write
-      // with the state rather than two. An assignee means "somebody is on this",
-      // and once the work is reported finished nobody is — leaving the name
-      // behind is what made every completed item read as assigned-to-a-human,
-      // which under the SYNC-70 rule would withhold it forever.
+      // Whether the name stays is decided by whether the item actually lands in a
+      // completed state — not by whether the caller asked to close it.
+      //
+      // An assignee means two different things depending on where the item sits.
+      // On an open item it means "somebody is on this", and the SYNC-70 rule
+      // withholds it from everyone else; leaving a name on a finished-but-open
+      // item withholds it forever. On a closed one it means "this is who did it",
+      // which is the only record of authorship the board has — and `screen()`
+      // withholds anything outside backlog/unstarted regardless of assignee, so
+      // keeping it costs nothing there. reconcile.ts already assumes this: its
+      // "lease ended, still In Progress" rule exists precisely because a
+      // completed item is expected to keep a name on it.
+      //
+      // Keyed on `done` rather than on `args.close` because those come apart: a
+      // project with no completed state group leaves the item OPEN after a close,
+      // and clearing is right for exactly that case. `close: false` keeps
+      // clearing too — the item stays claimable and someone else may want it.
       const done = args.close ? await plane.stateByGroup(args.projectId, 'completed') : undefined;
       await plane.updateWorkItem(args.projectId, args.workItemId, {
-        ...(done ? { state: done.id } : {}),
-        assignees: [],
+        ...(done ? { state: done.id } : { assignees: [] }),
       });
       await plane.comment(
         args.projectId,
