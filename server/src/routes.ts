@@ -54,7 +54,7 @@ import {
 } from './ghcheck.js';
 import { gather } from './gather.js';
 import { decompose } from './decompose.js';
-import { GatewayError, HTTP_STATUS, RECOVERY } from './errors.js';
+import { GatewayError, HTTP_STATUS, RECOVERY, recoveryFor } from './errors.js';
 import * as lease from './lease.js';
 import { escapeHtml } from './html.js';
 import { reinstate, retract } from './retraction.js';
@@ -324,7 +324,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       return reply.status(HTTP_STATUS[err.code]).send({
         error: err.code,
         message: err.message,
-        recovery: RECOVERY[err.code],
+        recovery: recoveryFor(err),
         ...err.detail,
       });
     }
@@ -1198,10 +1198,18 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
             },
           );
         }
-        throw new GatewayError('NOT_CLAIMABLE', `Not ready: ${blockers.join('; ')}`, {
-          workItemId: b.workItemId,
-          blockers,
-        });
+        // Its own recovery line, because the code's is a statement of fact that
+        // is false here: nobody holds this item, the gate withheld it. Sending a
+        // reader to the lease table for an absent holder is what PLANE-10
+        // reported, and the two refusals want opposite next moves — wait or work
+        // the blocker, versus pick something else.
+        throw new GatewayError(
+          'NOT_CLAIMABLE',
+          `Not ready: ${blockers.join('; ')}`,
+          { workItemId: b.workItemId, blockers },
+          'Nobody holds this item — it is not ready. Fix what the reasons name, or work the ' +
+            'blocker they name, or pick a different item. `why` on this item lists every reason.',
+        );
       }
       const l = await lease.claim(pool, {
         workItemId: b.workItemId,

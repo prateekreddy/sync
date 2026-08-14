@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { Pool } from './db.js';
 import type { Actor } from './auth.js';
-import { GatewayError, HTTP_STATUS, RECOVERY } from './errors.js';
+import { GatewayError, HTTP_STATUS, RECOVERY, recoveryFor } from './errors.js';
 import type { PlaneMcp, ToolSpec } from './planemcp.js';
 import {
   GROUPED_UPSTREAM,
@@ -616,7 +616,7 @@ export const toolErrorBody = (err: GatewayError) => ({
   body: {
     error: err.code,
     message: err.message,
-    recovery: RECOVERY[err.code],
+    recovery: recoveryFor(err),
     ...err.detail,
   },
 });

@@ -55,11 +55,29 @@ export class GatewayError extends Error {
     readonly code: ErrorCode,
     message: string,
     readonly detail: Record<string, unknown> = {},
+    /**
+     * Advice for this refusal specifically, when the code's own line would be
+     * wrong rather than merely vague.
+     *
+     * One code can cover refusals that want opposite next moves. NOT_CLAIMABLE is
+     * both "another agent holds this until 12:33" — pick something else — and
+     * "blocked by #844, which is not done" — work the blocker or wait, and there
+     * is no holder to look for. The shared line sent readers to the lease table
+     * for a holder that was not there (PLANE-10).
+     *
+     * Use sparingly. A per-throw override that drifts from the table is how
+     * guidance stops being consistent; this exists for the case where the table
+     * makes a statement of fact that is false.
+     */
+    readonly recovery?: string,
   ) {
     super(message);
     this.name = 'GatewayError';
   }
 }
+
+/** The advice to give for one error: its own if it has one, its code's otherwise. */
+export const recoveryFor = (err: GatewayError): string => err.recovery ?? RECOVERY[err.code];
 
 /** Transport mapping lives in exactly one place. */
 export const HTTP_STATUS: Record<ErrorCode, number> = {

@@ -11,7 +11,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { Actor } from './auth.js';
-import { GatewayError, RECOVERY } from './errors.js';
+import { GatewayError, recoveryFor } from './errors.js';
 import { callTool, listTools, type AskHuman, type ToolDeps } from './tools.js';
 
 /**
@@ -270,7 +270,7 @@ function build(deps: ToolDeps, ctx: Context): Server {
       if (err instanceof GatewayError) {
         return {
           isError: true,
-          content: [{ type: 'text', text: `${err.code}: ${err.message}\n\nWhat to do: ${RECOVERY[err.code]}` }],
+          content: [{ type: 'text', text: `${err.code}: ${err.message}\n\nWhat to do: ${recoveryFor(err)}` }],
         } as CallToolResult;
       }
       throw err;

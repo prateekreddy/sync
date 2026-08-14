@@ -210,6 +210,20 @@ describe('board counts blockers the same way', () => {
     const p = (await board(fakePlane(), pool, { projectId: PROJECT })).project;
     expect(p.done + p.held + p.ready + p.blocked).toBe(p.total);
   });
+
+  it('never offers through `next` an item `claim` will refuse as blocked', async () => {
+    // PLANE-10, from the other end. `next` is the path an agent actually takes,
+    // and a blocked item came back as its FIRST candidate — so every pass spent
+    // its first claim on a refusal. find(ready) and next share a predicate now,
+    // but that is an internal fact; this asserts the thing that was observed.
+    const plane = fakePlane();
+    const offered = await readyCandidates(plane, pool, { projectId: PROJECT, limit: 50 });
+    expect(offered.map((c) => c.workItemId)).not.toContain(id('gated'));
+
+    // And the same item, asked directly, is still refused — so the agreement is
+    // both of them withholding it rather than both of them having gone soft.
+    expect(await verifyClaimable(plane, PROJECT, id('gated'), { pool })).not.toEqual([]);
+  });
 });
 
 describe('what a blocker lookup costs', () => {

@@ -9,7 +9,7 @@ import {
   DecomposeBody,
   GatherBody,
 } from '../src/toolspec.js';
-import { RECOVERY } from '../src/errors.js';
+import { GatewayError, RECOVERY, recoveryFor } from '../src/errors.js';
 
 /**
  * A refusal an agent cannot act on is nearly as bad as a wrong answer.
@@ -161,6 +161,27 @@ describe('the recovery line tells the caller what to do', () => {
     // all INVALID, none with `fields`. A recovery line naming "the listed
     // fields" would send those callers looking for something not there.
     expect(RECOVERY.INVALID).not.toMatch(/listed field/i);
+  });
+
+  it('lets one refusal override advice that would be false for it', () => {
+    // NOT_CLAIMABLE covers two refusals wanting opposite next moves: "another
+    // agent holds this until 12:33" and "blocked by #844, which is not done".
+    // The shared line asserts a holder, and for the second there is none — so a
+    // reader went to the lease table looking for one that was not there
+    // (PLANE-10). The override exists for advice that is false, not merely vague.
+    const blocked = new GatewayError(
+      'NOT_CLAIMABLE',
+      'Not ready: blocked by #844',
+      {},
+      'Nobody holds this item — it is not ready.',
+    );
+    expect(recoveryFor(blocked)).toMatch(/nobody holds this item/i);
+    expect(recoveryFor(blocked)).not.toBe(RECOVERY.NOT_CLAIMABLE);
+
+    // Contention keeps the table's line, so the override cannot quietly become
+    // the way every error writes its own guidance.
+    const contended = new GatewayError('NOT_CLAIMABLE', 'agent:x holds this item');
+    expect(recoveryFor(contended)).toBe(RECOVERY.NOT_CLAIMABLE);
   });
 });
 
