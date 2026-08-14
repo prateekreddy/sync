@@ -263,7 +263,8 @@ describe('what a blocker lookup costs', () => {
       await verifyClaimable(plane, PROJECT, id('gated'), { pool, viewer: null }),
     ).toEqual([
       `blocked by an unreadable item (${id('elsewhere')})` +
-        ' — if it no longer exists, unlink that id to stop the gate honouring it',
+        ' — deleted, or somewhere this gateway cannot see. Waiting will not clear it: ' +
+        'unlink that id if the item is gone, otherwise ask a human to look at it',
     ]);
     // Blocker fetches only. The item under test is fetched too since SYNC-70, to
     // read its assignees, and counting that here would hide the thing this

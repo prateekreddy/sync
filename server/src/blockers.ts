@@ -129,20 +129,29 @@ export async function openBlockers(
   });
   if (open.length === 0) return [];
 
-  // The unreadable case names the id, because that is the only thing an agent can
-  // do anything with. A blocker that was deleted out from under its relation
-  // gates the item forever — Plane cannot delete a relation, so the edge survives
-  // its own target — and the repair is `unlink`, which takes exactly this id.
-  // Saying "an unreadable item" and stopping described the trap without handing
-  // over the one value needed to get out of it, so the only way out was a human
-  // in Plane's web UI. Observed on SLATE-2, which froze a four-item chain.
+  // The unreadable case names the id and says what kind of stuck this is.
+  //
+  // Two things were wrong with "blocked by an unreadable item" on its own. It
+  // handed over nothing to act on — and a blocker deleted out from under its
+  // relation gates the item forever, since Plane cannot delete a relation, so the
+  // edge outlives its own target and `unlink` takes exactly this id. And it reads
+  // as transient, which it is not: nothing the agent does will clear it, so an
+  // agent that waits or comes back later is doing the one thing that cannot work
+  // instead of escalating, which is the only thing that can (PLANE-1, PLANE-3;
+  // SLATE-2 froze a four-item chain behind it).
+  //
+  // Both causes are named because the gateway cannot tell them apart from here: a
+  // missing item and one it has no access to are the same 404.
   const named = open.map(({ id, item }) =>
     item ? `#${item.sequence_id}` : `an unreadable item (${id})`,
   );
   const stale = open.some(({ item }) => !item);
   return [
     `blocked by ${named.join(', ')}` +
-      (stale ? ' — if it no longer exists, unlink that id to stop the gate honouring it' : ''),
+      (stale
+        ? ' — deleted, or somewhere this gateway cannot see. Waiting will not clear it: ' +
+          'unlink that id if the item is gone, otherwise ask a human to look at it'
+        : ''),
   ];
 }
 
