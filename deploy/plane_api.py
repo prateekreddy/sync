@@ -19,9 +19,9 @@ BASE, TOKEN, SLUG, NAME, IDENT, *MEMBER_IDS = sys.argv[1:]
 ROOT = f"{BASE.rstrip('/')}/api/v1/workspaces/{SLUG}"
 
 
-def call(method, path, body=None):
+def call(method, path, body=None, root=ROOT):
     req = urllib.request.Request(
-        ROOT + path,
+        root + path,
         method=method,
         data=json.dumps(body).encode() if body is not None else None,
         headers={"X-API-Key": TOKEN, **({"Content-Type": "application/json"} if body else {})},
@@ -72,6 +72,29 @@ else:
 
 pid = project["id"]
 
+# ── the gateway's own account ────────────────────────────────────────────────
+# This token becomes PLANE_API_KEY, and the gateway reads with it rather than
+# with the caller's: `find`, `board`, `why`, `next` and the `claim` precheck all
+# go through the service client. So it needs project membership like any agent —
+# and it has been getting it by accident, because Plane makes the creator of a
+# project a member and this script creates the project.
+#
+# That accident does not survive contact with a project made any other way. A
+# project created in the web UI, or by a different user, leaves the gateway able
+# to write through the caller's token and unable to read its own workflow states:
+# every readiness call answers `Plane 403 on GET /projects/<id>/states/` while
+# comments and issue reads keep working, so it looks like a half-broken gateway
+# rather than a missing membership. Observed 2026-08-14 on exactly that shape.
+#
+# Asking who this token belongs to is one request and makes the invariant
+# explicit rather than incidental.
+status, me = call("GET", "/users/me/", root=f"{BASE.rstrip('/')}/api/v1")
+if status >= 400:
+    die("identify the provisioning token", status, me)
+service_account = str(me.get("id", ""))
+if not service_account:
+    die("identify the provisioning token", status, {"missing": "id"})
+
 # ── members ──────────────────────────────────────────────────────────────────
 # Read first, then add only what is missing. Re-adding an existing member returns
 # a bare 400 "The payload is not valid", indistinguishable from a genuinely
@@ -87,12 +110,16 @@ if status >= 400:
 rows = current if isinstance(current, list) else current.get("results", [])
 present = {str(m.get("member") or m.get("member_id") or m.get("id")) for m in rows}
 
-for uid in MEMBER_IDS:
+# The service account first, then the agents. Order matters only for the message
+# a failure produces: without the gateway's own membership nothing else it does
+# on this project works, so it is the one worth naming first.
+for uid in [service_account, *MEMBER_IDS]:
     if uid in present:
         continue
     status, body = call("POST", f"/projects/{pid}/members/", {"member": uid, "role": 15})
     if status >= 400:
         die(f"add project member {uid}", status, body)
-    print(f"added project member {uid}", file=sys.stderr)
+    who = "gateway service account" if uid == service_account else "agent"
+    print(f"added project member {uid} ({who})", file=sys.stderr)
 
 print(pid)

@@ -14,11 +14,13 @@ decided by one line in `.env`.
 cd deploy
 ./gen-env.sh --domain your-host --port 80   # writes .env with real secrets
 docker compose up -d                        # first boot pulls ~2GB
-./provision.sh                              # workspace, project, agents, gateway
+./provision.sh                              # workspace, project, gateway
 ```
 
-`provision.sh` prints the Plane sign-in, the project id, and one gateway token per
-agent. That is the whole server install.
+`provision.sh` prints the Plane sign-in and the project id. That is the whole server
+install. It creates **no agents** — people mint their own by signing in through the
+browser, so an agent account exists because somebody asked for one. Pass
+`--agents worker-1,worker-2` if you want them up front instead.
 
 Do not skip `gen-env.sh`. Plane's published compose file ships *working defaults* for
 `SECRET_KEY`, the MinIO credentials and the RabbitMQ password — they are in a public
@@ -133,14 +135,34 @@ Also turn **Modules** on in the project's settings. Plane gates them per project
 and provisioning normally does it for you; without it every module call fails,
 and the 404 reads like a wrong URL rather than a disabled feature.
 
+And add the user that owns that API token to the project as a Member. The gateway
+reads with it, not with the caller's token, so without the membership `find`,
+`board`, `why`, `next` and `claim` all answer `Plane 403 on GET
+/projects/<id>/states/` while writes and comments keep working. Provisioning does
+this for you; in this mode nobody does.
+
 ## What provisioning does
 
-`provision.sh` creates the admin account, the workspace, one Plane user per agent,
-an API token for each, the project with Plane's default workflow states, and the
-gateway tokens. It marks the instance set up and restarts the `api` container on the
-run that does so, because that container caches the flag.
+`provision.sh` creates the admin account, the workspace, and the project with Plane's
+default workflow states. It marks the instance set up and restarts the `api`
+container on the run that does so, because that container caches the flag.
 
-It is idempotent — re-run it to add agents or repair a half-finished setup.
+With `--agents` it also creates one Plane user per agent, an API token for each, and
+the gateway tokens. Without it, none — see **Adding an agent** in
+[`docs/onboarding.md`](../docs/onboarding.md) for the self-service path.
+
+It also makes the gateway's own account a member of the project. That matters more
+than it sounds: the gateway reads with `PLANE_API_KEY` rather than with the caller's
+token, so `find`, `board`, `why`, `next` and the `claim` precheck all run as that
+account. Without the membership every one of them answers
+`Plane 403 on GET /projects/<id>/states/` while comments and issue reads keep
+working — a gateway that looks half-broken rather than one missing a permission.
+Provisioning used to get this by accident, because Plane makes the creator of a
+project a member and this script creates the project; a project made in the UI, or
+by another user, did not get it.
+
+It is idempotent — re-run it to add agents, add that membership to a project made
+elsewhere, or repair a half-finished setup.
 
 If a Plane upgrade breaks it, do the same four things in the UI (sign up, workspace,
 project, API token) and put the token in `deploy/.env`.

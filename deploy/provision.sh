@@ -2,11 +2,13 @@
 #
 # Turn a running-but-empty Plane into a tracker your agents can use.
 #
-#   ./provision.sh [--agents worker-1,worker-2,worker-3] [--project "Sync Platform"]
+#   ./provision.sh [--agents worker-1,worker-2] [--project "Sync Platform"]
 #
 # Creates: an admin you can sign in as, a workspace, a project with Plane's
-# default workflow states, one Plane user per agent, and the gateway tokens the
-# agents authenticate with. Then starts the gateway.
+# default workflow states, and the gateway. Pass --agents to have Plane users and
+# gateway tokens minted for them at the same time; without it none are created,
+# because people mint their own through the browser sign-in or /v1/agent-tokens
+# and an unused agent is a real Plane account with real project access.
 #
 # Idempotent — safe to re-run to add agents or repair a half-finished setup. It
 # never prints a token it did not just create, because only hashes are kept.
@@ -14,7 +16,13 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-AGENTS="worker-1,worker-2,worker-3"
+# Deliberately empty. This used to default to three workers, so every deployment
+# got three Plane users and three gateway tokens whether anyone had asked for one
+# or not — accounts nobody signs into, each a real project member. Minting is
+# self-service (the browser sign-in, or POST /v1/agent-tokens), so provisioning
+# does not need to guess; --agents is still here for the case where a script
+# genuinely wants them up front.
+AGENTS=""
 PROJECT_NAME="Sync Platform"
 PROJECT_ID_PREFIX="SYNC"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@sync.local}"
@@ -109,7 +117,7 @@ echo
 echo "reaching Plane at ${BASE}"
 
 # ── 2. users, workspace, tokens ──────────────────────────────────────────────
-echo "provisioning workspace '${WS_SLUG}' and agents: ${AGENTS}"
+echo "provisioning workspace '${WS_SLUG}'${AGENTS:+ and agents: ${AGENTS}}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-$(openssl rand -base64 18 | tr -d '\n=+/' | cut -c1-16)}"
 
 RAW=$(dc exec -T \
@@ -263,23 +271,34 @@ fi
 [ "$gw_ok" = 1 ] || echo "warning: gateway did not answer /healthz${GW:+ at $GW}; check: docker compose logs gateway" >&2
 
 # ── 5. agent credentials ─────────────────────────────────────────────────────
+# Only when asked for. See the note on AGENTS: minting is self-service, so the
+# ordinary run creates none and this section says nothing.
+#
 # The agent gets ONLY the gateway token below. It must never receive the Plane
 # token that sits behind it: a Plane Member key lets an agent set `assignees`
 # directly, which silently bypasses the lease and puts two agents on one item.
-echo
-echo "───────────────────────────────────────────────────────────────────────"
-echo " Agent credentials — shown once. Only hashes are stored."
-echo "───────────────────────────────────────────────────────────────────────"
-for name in $(printf '%s' "$AGENTS" | tr ',' ' '); do
-  uid=$(jq_ "['agents']['${name}']['user_id']")
-  ptok=$(jq_ "['agents']['${name}']['token']")
-  gtok=$(dc exec -T gateway node dist/cli.js issue-token \
-      --name "$name" --principal "human:$(whoami)" \
-      --plane-user "$uid" --plane-token "$ptok" \
-      --project "$PROJECT_ID" \
-    | grep -oE 'sync_agent_[a-f0-9]+' | head -1)
-  printf '  %-12s %s\n' "$name" "$gtok"
-done
+if [ -n "$AGENTS" ]; then
+  echo
+  echo "───────────────────────────────────────────────────────────────────────"
+  echo " Agent credentials — shown once. Only hashes are stored."
+  echo "───────────────────────────────────────────────────────────────────────"
+  for name in $(printf '%s' "$AGENTS" | tr ',' ' '); do
+    uid=$(jq_ "['agents']['${name}']['user_id']")
+    ptok=$(jq_ "['agents']['${name}']['token']")
+    # The principal is the human the agent acts for, and it ends up in
+    # `holderChain` and on every Plane comment the agent writes. It used to be
+    # `$(whoami)` — the shell account running this script, so a deployment
+    # provisioned as root attributed all its agents to `human:root`, which is
+    # not a person and cannot be looked up. The admin is the identity this
+    # install actually has.
+    gtok=$(dc exec -T gateway node dist/cli.js issue-token \
+        --name "$name" --principal "human:${ADMIN_EMAIL}" \
+        --plane-user "$uid" --plane-token "$ptok" \
+        --project "$PROJECT_ID" \
+      | grep -oE 'sync_agent_[a-f0-9]+' | head -1)
+    printf '  %-12s %s\n' "$name" "$gtok"
+  done
+fi
 
 cat <<EOF
 
