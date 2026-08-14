@@ -350,10 +350,33 @@ export async function mirrorComplete(
       // stays open goes back to the assignees it had before the claim, exactly as
       // `mirrorReturn` does — same reason, same rule.
       const done = args.close ? await plane.stateByGroup(args.projectId, 'completed') : undefined;
+
+      // A completion that does not close puts the item back in the pool, state
+      // and all — the same ending an expired lease gives it.
+      //
+      // It used to end the lease and leave the state where `claim` advanced it,
+      // so the item read "In Progress" with nobody holding it. The two ways a
+      // lease can end disagreed, and in the wrong direction: timing out silently
+      // left a cleaner board than finishing deliberately with an outcome
+      // recorded. `board`'s per-module counts come from the lease table and
+      // stayed right, so the two halves of one board contradicted each other
+      // (PLANE-2, observed on SLATE-19).
+      //
+      // Only when close was explicitly false. A caller that asked to close and
+      // found no completed state has a project-configuration problem, and
+      // un-starting work somebody just reported finished would be a worse answer
+      // than leaving it where it is. The outcome comment records the completion
+      // either way, so nothing about it is lost by moving the state.
+      const reopened =
+        args.close === false ? await plane.stateByGroup(args.projectId, 'unstarted') : undefined;
+
       await plane.updateWorkItem(args.projectId, args.workItemId, {
         ...(done
           ? { state: done.id }
-          : { assignees: await priorAssignees(pool, args.workItemId) }),
+          : {
+              ...(reopened ? { state: reopened.id } : {}),
+              assignees: await priorAssignees(pool, args.workItemId),
+            }),
       });
       await plane.comment(
         args.projectId,

@@ -40,8 +40,8 @@ import { mirrorReclaim, mirrorReturn } from './mirror.js';
 import type { PlaneClient, WorkItem } from './plane.js';
 
 /**
- * The four ways the two sides disagree, kept distinct because the right response
- * differs for each — and two of them must never be "fix it".
+ * The five ways the two sides disagree, kept distinct because the right response
+ * differs for each — and three of them must never be "fix it".
  */
 export type DriftKind =
   /** Lease is live; Plane does not show it claimed. Our write was lost. Repairable. */
@@ -51,7 +51,24 @@ export type DriftKind =
   /** Someone else's name on an item we hold. A person intervened. Report only. */
   | 'humanIntervened'
   /** Plane shows work in progress that no lease covers. Report only. */
-  | 'untracked';
+  | 'untracked'
+  /**
+   * In a started state with nobody assigned and no live lease. Report only.
+   *
+   * The gap the other four left. `staleAssignee` and `untracked` both require a
+   * name on the item, so an item that is In Progress with NO assignee and no
+   * lease matched nothing and was invisible to every count — which is precisely
+   * "nobody is working this and the board says somebody is". It was findable
+   * only by knowing to run `find(holder: none, stateGroup: started)`, and
+   * PLANE-7 is about how finding it depended on a human asking the right
+   * question.
+   *
+   * Never repaired. Unlike `staleAssignee` there is no name to prove the state
+   * came from us, so moving it would be the gateway overruling a person who set
+   * it by hand — and the 2026-08-10 run is on record for what a repair on a
+   * class this broad does to a board.
+   */
+  | 'stalled';
 
 export interface Drift {
   kind: DriftKind;
@@ -133,6 +150,7 @@ const EMPTY: Record<DriftKind, number> = {
   staleAssignee: 0,
   humanIntervened: 0,
   untracked: 0,
+  stalled: 0,
 };
 
 interface LeaseRow {
@@ -242,14 +260,35 @@ export function classify(
   // Work in progress the gateway knows nothing about. Pre-gateway items and
   // hand-edited ones both land here, which is why it is reported and never
   // touched: there is no lease to be authoritative with.
+  //
+  // The unassigned case is `stalled` rather than `untracked`, and it is the one
+  // that used to fall through everything: with no name on the item, neither this
+  // loop nor `staleAssignee` above matched it, so an item nobody was working
+  // while the board said otherwise was counted nowhere.
+  //
+  // `live.has` rather than `leased.has`, deliberately. An item whose lease has
+  // ENDED and which is still in a started state is stalled — that is the SLATE-19
+  // shape exactly — and keying on "has ever had a lease" would hide it.
+  const live = new Set(leases.filter((l) => l.live).map((l) => l.work_item_id));
   for (const i of items) {
-    if (leased.has(i.id)) continue;
+    if (live.has(i.id)) continue;
     if (groupOf(i.state) !== 'started') continue;
-    if (!i.assignees?.length) continue;
+    if (i.assignees?.length) {
+      if (leased.has(i.id)) continue;
+      out.push({
+        kind: 'untracked',
+        workItemId: i.id,
+        detail: 'in progress and assigned in Plane, with no lease behind it',
+      });
+      continue;
+    }
+    // `undefined` is not `[]`, here as everywhere: a listing that omitted the
+    // field tells us nothing, and reporting on it would fire for every item.
+    if (i.assignees === undefined) continue;
     out.push({
-      kind: 'untracked',
+      kind: 'stalled',
       workItemId: i.id,
-      detail: 'in progress and assigned in Plane, with no lease behind it',
+      detail: 'in progress in Plane, with nobody assigned and nobody holding it',
     });
   }
 

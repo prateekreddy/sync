@@ -203,6 +203,51 @@ describe('releasing an item puts it back as it was found', () => {
     expect(lastWrite(id)['assignees']).toEqual([]);
   });
 
+  it('sends a non-closing completion back to the pool, state and all', async () => {
+    // PLANE-2. `complete(close: false)` ended the lease and left the state where
+    // `claim` had advanced it, so the item read "In Progress" with nobody
+    // holding it — and `board`'s per-module counts, which come from the lease
+    // table, said the opposite. The two ways a lease can end disagreed, in the
+    // wrong direction: timing out silently left a cleaner board than finishing
+    // deliberately with an outcome recorded.
+    assigneesBefore = [];
+    const id = await claimed();
+
+    updates = [];
+    await mirrorComplete(fakePlane(), pool, {
+      projectId: PROJECT,
+      workItemId: id,
+      actor,
+      outcome: 'my half is done, the rest is not',
+      close: false,
+    });
+
+    expect(lastWrite(id)['state']).toBe('todo');
+  });
+
+  it('does not un-start work a caller said was finished', async () => {
+    // The narrow case: close was asked for and the project has no completed
+    // state to move to. That is a configuration problem, and answering it by
+    // reopening finished work would be worse than leaving the state alone. The
+    // outcome comment records the completion either way.
+    const plane = Object.assign(fakePlane(), {
+      stateByGroup: async (_p: string, group: string) =>
+        group === 'completed' ? undefined : STATES.find((s) => s.group === group),
+    }) as unknown as PlaneClient;
+    const id = await claimed();
+
+    updates = [];
+    await mirrorComplete(plane, pool, {
+      projectId: PROJECT,
+      workItemId: id,
+      actor,
+      outcome: 'done',
+      close: true,
+    });
+
+    expect(lastWrite(id)).not.toHaveProperty('state');
+  });
+
   it('applies the same rule to a completion that does not close the item', async () => {
     // `complete(close: false)` leaves the item open and claimable, so it is the
     // same situation as a release and gets the same answer. A completion that

@@ -124,6 +124,44 @@ describe('comparing the board with the lease table', () => {
     ]);
   });
 
+  it('names an item in progress that nobody holds and nobody is assigned', async () => {
+    // The gap the other four classes left. `staleAssignee` and `untracked` both
+    // require a name on the item, so an item In Progress with NO assignee and no
+    // live lease matched nothing and was counted nowhere — which is exactly
+    // "nobody is working this and the board says somebody is". It was findable
+    // only by knowing to run find(holder: none, stateGroup: started), and
+    // PLANE-7 is about how finding it depended on a human asking that question.
+    const id = randomUUID();
+    await held(id);
+    await pool.query(
+      `update lease set state = 'released', ended_at = now(), expires_at = now()
+        where work_item_id = $1`,
+      [id],
+    );
+    expect(await kinds([item({ id, assignees: [], state: 'doing' })])).toEqual(['stalled']);
+  });
+
+  it('names one that was never leased at all, since a person can strand it too', async () => {
+    // Fixing complete(close: false) narrows this and does not remove it: an item
+    // can be set In Progress by hand and then abandoned, with no lease ever.
+    expect(await kinds([item({ assignees: [], state: 'doing' })])).toEqual(['stalled']);
+  });
+
+  it('stays quiet when the listing did not say who is assigned', async () => {
+    // `undefined` is not `[]`, here as everywhere. A listing that omitted the
+    // field tells us nothing, and reading unknown as empty would report every
+    // in-progress item on the board at once.
+    expect(await kinds([item({ assignees: undefined, state: 'doing' })])).toEqual([]);
+  });
+
+  it('says nothing about an item somebody is actively holding', async () => {
+    // The guard against the new class swallowing normal work: a live lease with
+    // the name on it is the ordinary state of every claim in flight.
+    const id = randomUUID();
+    await held(id);
+    expect(await kinds([item({ id, assignees: [AGENT_USER], state: 'doing' })])).toEqual([]);
+  });
+
   it('says nothing about a finished item that still names who did it', async () => {
     // The one that nearly did real damage. Measured on the first live pass this
     // reported 65 items, all of them finished: `mirrorComplete` sets the done
