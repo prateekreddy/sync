@@ -81,7 +81,7 @@ function recordingPlane(): { plane: PlaneClient; sent: Sent } {
   return { plane, sent };
 }
 
-async function harness() {
+async function harness(planeUserId?: string) {
   const { plane, sent } = recordingPlane();
   const app = Fastify();
   registerRoutes(app, {
@@ -99,7 +99,11 @@ async function harness() {
   await app.ready();
 
   const name = `t-cap-${randomUUID().slice(0, 8)}/worker`;
-  const { token } = await issueToken(pool, { name, principal: 'human:t@example.com' });
+  const { token } = await issueToken(pool, {
+    name,
+    principal: 'human:t@example.com',
+    ...(planeUserId ? { planeUserId } : {}),
+  });
   const actor = await authenticate(pool, `Bearer ${token}`);
 
   const call = (args: Record<string, unknown>) =>
@@ -438,6 +442,113 @@ describe('capture reports what it applied', () => {
 
     expect(out['deduped']).toBe(true);
     expect(out['notApplied']).toBeUndefined();
+    await app.close();
+  });
+});
+
+/**
+ * Reserving what you just wrote down.
+ *
+ * `claim` is the only other route to an assignee and it always declares the item
+ * In Progress, so there was no way to say "this is mine, I have not started it"
+ * — and a board with six items parked under one holder read as six pieces of
+ * work in flight (PLANE-12).
+ *
+ * Scoped to creation, and to yourself, on purpose. Reserving an item that
+ * already exists is unbounded in count and — unlike a lease, which expires —
+ * unbounded in time, so one agent could park the backlog and every other agent
+ * would be refused. Creation is self-limiting: you can only reserve what you
+ * just wrote.
+ */
+describe('reserving a capture for yourself', () => {
+  const parse = (res: { content: Array<{ text: string }> }) =>
+    JSON.parse(res.content[0]?.text ?? '{}') as Record<string, unknown>;
+  const ME = randomUUID();
+
+  it('puts the caller on the new item, without starting it', async () => {
+    const { call, sent, app } = await harness(ME);
+    const out = parse(
+      await call({ projectId: PROJECT, title: `reserve ${randomUUID()}`, body: 'x', reserve: true }),
+    );
+
+    expect(sent.created[0]?.['assignees']).toEqual([ME]);
+    expect(out['reserved']).toBe(true);
+    // Reserved, not started: nothing here sets a state, so it stays where a new
+    // item lands. That is the whole distinction this exists for.
+    expect(sent.created[0]).not.toHaveProperty('state');
+    await app.close();
+  });
+
+  it('leaves the item unassigned when nobody asked', async () => {
+    const { call, sent, app } = await harness(ME);
+    await call({ projectId: PROJECT, title: `plain ${randomUUID()}`, body: 'x' });
+    expect(sent.created[0]).not.toHaveProperty('assignees');
+    await app.close();
+  });
+
+  it('refuses to reserve an item that already existed', async () => {
+    // The loophole this closes: capture a near-duplicate title and the reply
+    // hands back somebody else's item. Reserving THAT would be a way to take
+    // work by writing a note, which is exactly what scoping to creation rules
+    // out. Reported rather than silently skipped.
+    const { plane, sent } = recordingPlane();
+    const existing = randomUUID();
+    Object.assign(plane, {
+      search: async () => [
+        { id: existing, name: 'somebody elses item', sequence_id: 7, project__identifier: 'SYNC' },
+      ],
+    });
+
+    const app = Fastify();
+    registerRoutes(app, {
+      pool,
+      plane,
+      allowAgentClose: true,
+      evidencePolicy: 'warn',
+      planeMcp: null,
+      planeBaseUrl: 'http://plane.invalid',
+      workspaceSlug: 'ws',
+      github: null,
+      allowMinting: false,
+      mintRatePerMinute: 10,
+    });
+    await app.ready();
+
+    const name = `t-cap-${randomUUID().slice(0, 8)}/worker`;
+    const { token } = await issueToken(pool, {
+      name,
+      principal: 'human:t@example.com',
+      planeUserId: ME,
+    });
+    const actor = await authenticate(pool, `Bearer ${token}`);
+
+    const out = parse(
+      await callTool({ app, pool, plane: null }, actor, `Bearer ${token}`, 'capture', {
+        projectId: PROJECT,
+        title: 'somebody elses item',
+        body: 'x',
+        reserve: true,
+      }),
+    );
+
+    expect(out['deduped']).toBe(true);
+    expect(out['reserved']).toBeUndefined();
+    expect(out['notApplied']).toEqual(['reserve']);
+    expect(sent.created).toHaveLength(0);
+    await app.close();
+  });
+
+  it('says so rather than silently skipping when the agent has no Plane identity', async () => {
+    // A reservation the caller believes in and Plane never heard of is worse
+    // than one that was refused.
+    const { call, sent, app } = await harness();
+    const out = parse(
+      await call({ projectId: PROJECT, title: `no id ${randomUUID()}`, body: 'x', reserve: true }),
+    );
+
+    expect(sent.created[0]).not.toHaveProperty('assignees');
+    expect(out['reserved']).toBeUndefined();
+    expect(out['notApplied']).toEqual(['reserve']);
     await app.close();
   });
 });

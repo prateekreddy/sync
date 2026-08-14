@@ -55,6 +55,23 @@ export interface CaptureInput {
    * explicitly to place work somewhere neither of those would put it.
    */
   moduleId?: string | undefined;
+  /**
+   * Reserve the new item for whoever is capturing it.
+   *
+   * Sets the caller's own Plane user as the assignee, which under the SYNC-70
+   * rule withholds it from every other agent while leaving it claimable by this
+   * one — "mine, not started yet", which nothing else expresses. `claim` is the
+   * only other route to an assignee and it always declares the item In Progress,
+   * so a board where six items are parked under one holder reads as six pieces of
+   * work in flight (PLANE-12).
+   *
+   * Self only, and only on creation. Both restrictions are the same decision: an
+   * agent may reserve work it just wrote down, because that is bounded by what it
+   * created, while reserving items that already exist is unbounded in count and —
+   * unlike a lease, which expires — unbounded in time. One agent could park the
+   * backlog and every other agent would be refused.
+   */
+  reserve?: boolean | undefined;
   idempotencyKey?: string | undefined;
   /**
    * Which client session this capture was written in, from the header the plugin
@@ -119,6 +136,13 @@ export interface CaptureResult {
    * these it got.
    */
   discoveredFromBasis?: 'held' | 'recent' | 'other-session' | undefined;
+  /**
+   * True when `reserve` was asked for and the new item carries the caller's name.
+   *
+   * Absent on the dedup path even when `reserve` was sent — an existing item is
+   * handed back untouched, and `notApplied` says so.
+   */
+  reserved?: boolean | undefined;
   /** Set when the item was created but could not be put in the module. */
   moduleError?: string | undefined;
   /**
@@ -370,6 +394,11 @@ export async function capture(
   // working in.
   const source = await inferSource(pool, actor, input);
 
+  // An agent with no Plane identity of its own has nobody to reserve for. Not an
+  // error: the capture is the point and the reservation is an extra, so it is
+  // reported as not applied rather than refused.
+  const reserving = Boolean(input.reserve && actor.planeUserId);
+
   let result: CaptureResult;
   if (dupe) {
     // Dedup and decomposition interact badly if left alone. An agent that breaks a
@@ -399,6 +428,11 @@ export async function capture(
     const notApplied = [
       ...(input.priority && input.priority !== 'none' ? ['priority'] : []),
       ...(input.labels?.length ? ['labels'] : []),
+      // Named rather than silently ignored, and never applied here. Reserving on
+      // dedup would put this caller's name on an item somebody else already
+      // wrote — reachable by capturing a near-duplicate title, which is a way to
+      // take work that has nothing to do with writing anything down.
+      ...(input.reserve ? ['reserve'] : []),
     ];
     result = {
       workItemId: dupe.id,
@@ -440,6 +474,11 @@ export async function capture(
       // gates nothing, it tells a reader whether to take the wording as a person's
       // or as another agent's shorthand. Verified to persist through the API.
       external_source: actor.holder,
+      // Only on this branch, and the dedup branch below must never do it: an
+      // agent that captures a near-duplicate title would otherwise reserve
+      // somebody else's existing item, which is exactly the unbounded case this
+      // is scoped to avoid.
+      ...(reserving ? { assignees: [actor.planeUserId] } : {}),
     });
     result = {
       workItemId: created.id,
@@ -455,6 +494,11 @@ export async function capture(
       // caller can compare it with its own request.
       priority: input.priority ?? 'none',
       ...(input.labels?.length ? { labels: input.labels } : {}),
+      ...(reserving ? { reserved: true } : {}),
+      // Asked for and not done, because this agent has no Plane user to reserve
+      // for. Said out loud: a reservation the caller believes in and Plane never
+      // heard of is worse than one that was refused.
+      ...(input.reserve && !reserving ? { notApplied: ['reserve'] } : {}),
     };
 
     // Provenance. Plane has no `discovered_from` relation type, so this is

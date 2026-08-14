@@ -140,6 +140,19 @@ export const CaptureBody = z.object({
         'the reply says when it was inherited. Pass it to place work in a module neither of ' +
         'those would have chosen.',
     ),
+  reserve: z
+    .boolean()
+    .optional()
+    .describe(
+      'Put your own name on the new item, reserving it without saying you have started. Other ' +
+        'agents are then refused it until a human reassigns it, while it stays claimable by you ' +
+        'and stays in the backlog — which is what `claim` cannot express, since claiming always ' +
+        'declares the item In Progress. Use it for work you intend to pick up next; it does not ' +
+        'reserve against another window of your own agent, and only a lease does that. Ignored ' +
+        'when the capture deduplicates against an item that already exists — reserving somebody ' +
+        "else's work is not something writing a note should be able to do — and the reply says " +
+        'so under notApplied.',
+    ),
   idempotencyKey: z.string().max(200).optional().describe('Pass a stable key if you may retry.'),
 });
 
