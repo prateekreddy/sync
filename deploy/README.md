@@ -14,13 +14,24 @@ decided by one line in `.env`.
 cd deploy
 ./gen-env.sh --domain your-host --port 80   # writes .env with real secrets
 docker compose up -d                        # first boot pulls ~2GB
-./provision.sh                              # workspace, project, gateway
+./provision.sh                              # admin, workspace, gateway
 ```
 
-`provision.sh` prints the Plane sign-in and the project id. That is the whole server
-install. It creates **no agents** — people mint their own by signing in through the
-browser, so an agent account exists because somebody asked for one. Pass
-`--agents worker-1,worker-2` if you want them up front instead.
+`provision.sh` prints the Plane sign-in. That is the whole server install.
+
+It creates **no project and no agents**. Make projects in Plane however you like,
+then run it again per project so the gateway can read them:
+
+```bash
+./provision.sh --identifier PLANE           # adopt one made in the UI
+./provision.sh --identifier SYNC --project "Sync Platform"   # or make one
+```
+
+That second run is not optional for a project you want the gateway to serve, and it
+is not about creating anything — see **What provisioning does** below for why the
+gateway needs its own membership. Agents work the same way: people mint their own by
+signing in through the browser, so an account exists because somebody asked for one.
+Pass `--agents worker-1,worker-2` to have them up front instead.
 
 Do not skip `gen-env.sh`. Plane's published compose file ships *working defaults* for
 `SECRET_KEY`, the MinIO credentials and the RabbitMQ password — they are in a public
@@ -143,12 +154,17 @@ this for you; in this mode nobody does.
 
 ## What provisioning does
 
-`provision.sh` creates the admin account, the workspace, and the project with Plane's
-default workflow states. It marks the instance set up and restarts the `api`
-container on the run that does so, because that container caches the flag.
+`provision.sh` creates the admin account and the workspace. It marks the instance set
+up and restarts the `api` container on the run that does so, because that container
+caches the flag.
 
-With `--agents` it also creates one Plane user per agent, an API token for each, and
-the gateway tokens. Without it, none — see **Adding an agent** in
+With `--identifier` it also creates a project with Plane's default workflow states —
+or **adopts an existing one** with that identifier, which is the more useful half:
+it is how a project made in Plane's UI gets the membership described below. Nothing
+is created twice, so re-running against an existing project only repairs it.
+
+With `--agents` it creates one Plane user per agent, an API token for each, and the
+gateway tokens. Without it, none — see **Adding an agent** in
 [`docs/onboarding.md`](../docs/onboarding.md) for the self-service path.
 
 It also makes the gateway's own account a member of the project. That matters more

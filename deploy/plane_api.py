@@ -54,8 +54,14 @@ if status >= 400:
 # repaired on re-runs so projects made before this still get it.
 FEATURES = {"module_view": True}
 
-match = [p for p in existing.get("results", []) if p.get("identifier") == IDENT]
-if match:
+project = None
+match = [p for p in existing.get("results", []) if IDENT and p.get("identifier") == IDENT]
+if not IDENT:
+    # No project asked for. Everything below still runs: the gateway's own
+    # membership is not about the project this script may have created, it is
+    # about every project it is expected to serve.
+    print("no project requested; ensuring gateway access only", file=sys.stderr)
+elif match:
     project = match[0]
     print(f"project {IDENT} already exists ({project['id']})", file=sys.stderr)
     missing = {k: v for k, v in FEATURES.items() if project.get(k) != v}
@@ -70,7 +76,7 @@ else:
         die("create project", status, project)
     print(f"created project {IDENT} ({project['id']})", file=sys.stderr)
 
-pid = project["id"]
+pid = project["id"] if project else ""
 
 # ── the gateway's own account ────────────────────────────────────────────────
 # This token becomes PLANE_API_KEY, and the gateway reads with it rather than
@@ -101,25 +107,45 @@ if not service_account:
 # malformed request — so tolerating 400 here would silently hide the real thing.
 # An agent that is not a project member gets 403 on every write, which is a
 # confusing way to discover a provisioning bug.
-status, current = call("GET", f"/projects/{pid}/members/")
-if status >= 400:
-    die("list project members", status, current)
-
-# Plane paginates project *lists* but returns members as a bare array, so accept
-# either shape rather than assuming the one this version happens to send.
-rows = current if isinstance(current, list) else current.get("results", [])
-present = {str(m.get("member") or m.get("member_id") or m.get("id")) for m in rows}
-
-# The service account first, then the agents. Order matters only for the message
-# a failure produces: without the gateway's own membership nothing else it does
-# on this project works, so it is the one worth naming first.
-for uid in [service_account, *MEMBER_IDS]:
-    if uid in present:
-        continue
-    status, body = call("POST", f"/projects/{pid}/members/", {"member": uid, "role": 15})
+def ensure_members(project_id, ident, uids):
+    status, current = call("GET", f"/projects/{project_id}/members/")
     if status >= 400:
-        die(f"add project member {uid}", status, body)
-    who = "gateway service account" if uid == service_account else "agent"
-    print(f"added project member {uid} ({who})", file=sys.stderr)
+        die(f"list members of {ident}", status, current)
+
+    # Plane paginates project *lists* but returns members as a bare array, so
+    # accept either shape rather than assuming the one this version happens to
+    # send.
+    rows = current if isinstance(current, list) else current.get("results", [])
+    present = {str(m.get("member") or m.get("member_id") or m.get("id")) for m in rows}
+
+    for uid in uids:
+        if not uid or uid in present:
+            continue
+        status, body = call("POST", f"/projects/{project_id}/members/", {"member": uid, "role": 15})
+        if status >= 400:
+            die(f"add member {uid} to {ident}", status, body)
+        who = "gateway service account" if uid == service_account else "agent"
+        print(f"added {who} {uid} to {ident}", file=sys.stderr)
+
+
+# The gateway serves whatever project a caller asks for, so its own account needs
+# every project rather than the one this run happened to touch. That is not a
+# widening of what anyone can reach: authorisation is the CALLER's, checked
+# per-request against their own Plane project list before the service client is
+# used at all (server/src/access.ts, and the `canRead` calls in routes.ts). The
+# service account's breadth is what makes those reads possible; it is not what
+# decides who may have them.
+#
+# Re-running is how a project created later gets picked up — there is no hook
+# from Plane saying one appeared.
+status, everything = call("GET", "/projects/")
+if status >= 400:
+    die("list projects", status, everything)
+
+for p in everything.get("results", []):
+    # Agents go only on the project they were provisioned for; the service
+    # account goes everywhere.
+    extra = MEMBER_IDS if pid and p.get("id") == pid else []
+    ensure_members(p["id"], p.get("identifier") or p["id"], [service_account, *extra])
 
 print(pid)

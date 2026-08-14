@@ -2,13 +2,21 @@
 #
 # Turn a running-but-empty Plane into a tracker your agents can use.
 #
-#   ./provision.sh [--agents worker-1,worker-2] [--project "Sync Platform"]
+#   ./provision.sh
+#   ./provision.sh --identifier SYNC --project "Sync Platform"
+#   ./provision.sh --identifier PLANE          # adopt a project made in the UI
 #
-# Creates: an admin you can sign in as, a workspace, a project with Plane's
-# default workflow states, and the gateway. Pass --agents to have Plane users and
-# gateway tokens minted for them at the same time; without it none are created,
-# because people mint their own through the browser sign-in or /v1/agent-tokens
-# and an unused agent is a real Plane account with real project access.
+# Creates: an admin you can sign in as, a workspace, and the gateway. That is all
+# it creates on its own.
+#
+# --identifier makes a project with Plane's default workflow states, or adopts an
+# existing one with that identifier — which is how you grant the gateway's own
+# account the project membership every one of its reads depends on. Run it again
+# for each project the gateway should serve.
+#
+# --agents mints Plane users and gateway tokens up front. Without it none are
+# created, because people mint their own through the browser sign-in or
+# /v1/agent-tokens, and an unused agent is a real Plane account with real access.
 #
 # Idempotent — safe to re-run to add agents or repair a half-finished setup. It
 # never prints a token it did not just create, because only hashes are kept.
@@ -23,8 +31,17 @@ cd "$(dirname "$0")"
 # does not need to guess; --agents is still here for the case where a script
 # genuinely wants them up front.
 AGENTS=""
-PROJECT_NAME="Sync Platform"
-PROJECT_ID_PREFIX="SYNC"
+# Also empty, for the same reason as AGENTS. This used to create a project called
+# "Sync Platform" on every run whether the deployment wanted one or not, so an
+# install whose work lives in projects made elsewhere got a permanently empty
+# SYNC board beside them.
+#
+# Naming one is how you ask for it, and it is also the repair path for a project
+# made in Plane's UI: pass an identifier that already exists and provisioning
+# adopts it rather than creating a second, which is what grants the gateway's own
+# account the membership its reads depend on.
+PROJECT_NAME=""
+PROJECT_ID_PREFIX=""
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@sync.local}"
 WS_SLUG="${WS_SLUG:-sync}"
 WS_NAME="${WS_NAME:-Sync}"
@@ -36,7 +53,7 @@ while [ $# -gt 0 ]; do
     --identifier) PROJECT_ID_PREFIX="$2"; shift 2 ;;
     --email)      ADMIN_EMAIL="$2"; shift 2 ;;
     --workspace)  WS_SLUG="$2"; shift 2 ;;
-    -h|--help)    sed -n '2,12p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,17p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -158,10 +175,30 @@ if [ "$(jq_ "['setup_done_flipped']")" = "True" ]; then
   done
 fi
 
-# ── 3. project and project members, through the public API ───────────────────
-# Agents must be project members or every write comes back 403 — which is a
-# baffling way to find out that provisioning half-failed, so plane_api.py treats
-# any failure here as fatal rather than pressing on.
+# ── 3. project access, through the public API ────────────────────────────────
+# Runs every time, project or no project. Two different things happen here and
+# only one of them is optional:
+#
+#   The gateway's own account is made a member of EVERY project, always. It reads
+#   with PLANE_API_KEY rather than with the caller's token, so without that it
+#   can serve nothing — and re-running is what picks up a project created since,
+#   because Plane offers no hook that says one appeared.
+#
+#   A project is created or adopted only when --identifier or --project asked for
+#   one, and only that project gets the agents added to it. Agents must be
+#   members or every write comes back 403, which is a baffling way to find out
+#   that provisioning half-failed — so plane_api.py treats any failure here as
+#   fatal rather than pressing on.
+if [ -n "$PROJECT_ID_PREFIX" ] || [ -n "$PROJECT_NAME" ]; then
+  # Either flag alone is enough to mean "yes, a project". The identifier is the
+  # part Plane matches on, so it is the one derived when only a name was given.
+  if [ -z "$PROJECT_ID_PREFIX" ]; then
+    PROJECT_ID_PREFIX=$(printf '%s' "$PROJECT_NAME" | tr -cd '[:alnum:]' | tr '[:lower:]' '[:upper:]' | cut -c1-5)
+    [ -n "$PROJECT_ID_PREFIX" ] || { echo "--project '${PROJECT_NAME}' has no letters or digits to build an identifier from; pass --identifier" >&2; exit 2; }
+  fi
+  [ -n "$PROJECT_NAME" ] || PROJECT_NAME="$PROJECT_ID_PREFIX"
+fi
+
 MEMBER_IDS=""
 for name in $(printf '%s' "$AGENTS" | tr ',' ' '); do
   MEMBER_IDS="$MEMBER_IDS $(jq_ "['agents']['${name}']['user_id']")"
@@ -185,7 +222,10 @@ def put(key, value):
 
 put('PLANE_API_KEY', data['admin_token'])
 put('PLANE_WORKSPACE_SLUG', slug)
-put('PLANE_PROJECT_ID', project_id)
+# Only when a project was provisioned. Writing an empty value would look like a
+# configured default that resolves to nothing.
+if project_id:
+    put('PLANE_PROJECT_ID', project_id)
 
 # Compose reads COMPOSE_PROFILES from this file, so from here on a plain
 # `docker compose up -d` brings the gateway up with everything else. Append
@@ -291,10 +331,13 @@ if [ -n "$AGENTS" ]; then
     # provisioned as root attributed all its agents to `human:root`, which is
     # not a person and cannot be looked up. The admin is the identity this
     # install actually has.
+    # Bound to a project only if there is one. An agent with no default names a
+    # project on every call, which is the documented behaviour — passing an
+    # empty --project instead would bind it to nothing and fail later.
     gtok=$(dc exec -T gateway node dist/cli.js issue-token \
         --name "$name" --principal "human:${ADMIN_EMAIL}" \
         --plane-user "$uid" --plane-token "$ptok" \
-        --project "$PROJECT_ID" \
+        ${PROJECT_ID:+--project "$PROJECT_ID"} \
       | grep -oE 'sync_agent_[a-f0-9]+' | head -1)
     printf '  %-12s %s\n' "$name" "$gtok"
   done
@@ -306,7 +349,7 @@ cat <<EOF
  Plane      ${WEB_URL:-http://localhost:${PORT}}
  sign in    ${ADMIN_EMAIL}
  password   ${ADMIN_PASSWORD}
- project    ${PROJECT_ID}
+ project    ${PROJECT_ID:-none — make one in Plane, then re-run with --identifier <ID> so the gateway can read it}
 
  Point each agent at it, with that agent's token from above:
 
