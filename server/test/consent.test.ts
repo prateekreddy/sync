@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { consentPage } from '../src/oauth.js';
+import { consentPage, defaultAgentLabel } from '../src/oauth.js';
 import { resolveProject } from '../src/mint.js';
 
 /**
@@ -107,5 +107,85 @@ describe('resolving what someone typed', () => {
 
   it('returns null rather than a false match when the list is empty', () => {
     expect(resolveProject([], 'Sync Platform')).toBeNull();
+  });
+});
+
+/**
+ * The agent name is the holder identity — `holder` is `agent:<name>`, and every
+ * lease, takeover check and revocation keys on it. So it has to be unique per
+ * concurrently-running agent, and it has to mean something to whoever reads the
+ * board. The field was prefilled with `worker-1`, which delivered neither, and
+ * made the failure the default rather than an edge case:
+ *
+ *   - Accept it on a second machine and the mint upserts on name. The ownership
+ *     guard only refuses a DIFFERENT Plane user, so a same-owner re-mint passes
+ *     and silently rotates the first machine's token. That box then gets
+ *     UNAUTHENTICATED with nothing to explain it.
+ *   - Two agents under one name are one holder, so leases give them no mutual
+ *     exclusion at all and `held` reports one agent's work as the other's.
+ *
+ * Both were reported from a real fleet. The client registration is a better
+ * answer than anything a person types, because it is already the thing that
+ * should be unique: one installation.
+ */
+describe('the agent name a sign-in defaults to', () => {
+  const client = (clientId: string, clientName: string | null) => ({
+    clientId,
+    redirectUris: ['https://example.test/cb'],
+    clientName,
+  });
+
+  it('is stable for one installation, so signing in again re-authenticates it', () => {
+    // The property that stops a second sign-in minting an agent beside the
+    // first. Same client, same label, same agent_token row.
+    const c = client('sync_client_a4f2c1d9e8b7', 'Claude Code');
+    expect(defaultAgentLabel(c)).toBe(defaultAgentLabel(c));
+  });
+
+  it('differs between two installs of the same client', () => {
+    // The one that matters most: two boxes both running Claude Code register
+    // under the same NAME, so the name alone cannot separate them. Getting this
+    // wrong is the silent-token-rotation bug, reintroduced.
+    const one = defaultAgentLabel(client('sync_client_a4f2c1d9e8b7', 'Claude Code'));
+    const two = defaultAgentLabel(client('sync_client_ffffffffffff', 'Claude Code'));
+    expect(one).not.toBe(two);
+  });
+
+  it('stays readable, because a human reads it off the board', () => {
+    // `agent:you/9f3c2a` on a contested item tells nobody anything. The client's
+    // own name is already the most useful thing available.
+    expect(defaultAgentLabel(client('sync_client_a4f2c1d9e8b7', 'Claude Code'))).toMatch(
+      /^claude-code-/,
+    );
+  });
+
+  it('still produces a usable name when the client registered without one', () => {
+    // client_name is optional in RFC 7591, and a name that throws or comes back
+    // empty would block the sign-in entirely.
+    const anon = defaultAgentLabel(client('sync_client_a4f2c1d9e8b7', null));
+    expect(anon).toMatch(/^agent-/);
+    expect(anon).not.toBe(defaultAgentLabel(client('sync_client_ffffffffffff', null)));
+  });
+
+  it('survives a client name that is punctuation, and cannot escape its own namespace', () => {
+    // The label is concatenated as `<owner>/<label>`, so a `/` here would let a
+    // client claim another person's namespace.
+    const odd = defaultAgentLabel(client('sync_client_a4f2c1d9e8b7', '../../root user!'));
+    expect(odd).not.toMatch(/[/\\]/);
+    expect(odd).toMatch(/^[a-z0-9._-]+$/);
+  });
+
+  it('is what the form offers, so nobody has to think about it', () => {
+    const html = consentPage({
+      action: '/oauth/authorize',
+      hidden: {},
+      agentDefault: 'claude-code-a4f2c1',
+    });
+    expect(html).toContain('value="claude-code-a4f2c1"');
+    // And it must not be mandatory: a caller who clears it gets the default
+    // rather than a refusal.
+    expect(/<input name="agent"[^>]*\srequired/.test(html)).toBe(false);
+    // The name it used to ship, which is the collision this replaced.
+    expect(html).not.toContain('value="worker-1"');
   });
 });

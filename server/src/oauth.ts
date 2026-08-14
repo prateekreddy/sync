@@ -108,6 +108,47 @@ export function authorizeRedirect(args: {
 export interface RegisteredClient {
   clientId: string;
   redirectUris: string[];
+  /** What the client called itself at registration, e.g. "Claude Code". */
+  clientName: string | null;
+}
+
+/**
+ * What to call the agent this client is signing in, when nobody says otherwise.
+ *
+ * The agent name is the holder identity — `holder` is `agent:<name>`, and every
+ * lease, takeover check and revocation keys on it. So two things have to be true
+ * of it at once, and a human typing a name into a form reliably delivers
+ * neither: it must be unique per concurrently-running agent, and it must mean
+ * something to whoever reads the board.
+ *
+ * The field used to be prefilled with `worker-1`, which made the failure the
+ * DEFAULT rather than an edge case. Accept it on a second machine and the mint
+ * upserts on name — the ownership guard only refuses a different Plane user, so
+ * a same-owner re-mint passes and silently rotates the first machine's token,
+ * which then gets UNAUTHENTICATED with nothing to explain it. And if both do end
+ * up holding tokens under one name they are one holder, so leases give them no
+ * mutual exclusion and `held` reports one agent's work as the other's. Both were
+ * reported from a real fleet.
+ *
+ * The client registration is a better answer than anything a person can type,
+ * because it is already exactly the thing that should be unique: one
+ * installation. The id makes it collision-proof, the name makes it readable, and
+ * it is stable — signing in again from the same install returns the same label,
+ * so it re-authenticates that agent rather than minting another beside it.
+ */
+export function defaultAgentLabel(client: RegisteredClient): string {
+  const clean = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 24);
+
+  const base = clean(client.clientName ?? '') || 'agent';
+  // Two installs of the same client register under the same name, so the name
+  // alone is not enough. The id is what distinguishes them.
+  const suffix = client.clientId.replace(/^sync_client_/, '').slice(0, 6);
+  return suffix ? `${base}-${suffix}` : base;
 }
 
 /**
@@ -134,7 +175,9 @@ export async function registerClient(
     'insert into oauth_client (client_id, client_name, redirect_uris) values ($1, $2, $3)',
     [clientId, name, uris],
   );
-  return { clientId, redirectUris: uris, client_name: name };
+  // `client_name` is the RFC 7591 field this endpoint echoes back to the client;
+  // `clientName` is the same value in the shape the rest of this module uses.
+  return { clientId, redirectUris: uris, clientName: name, client_name: name };
 }
 
 /**
@@ -160,12 +203,23 @@ export function assertSafeRedirect(uri: string): void {
 }
 
 export async function findClient(pool: Pool, clientId: string): Promise<RegisteredClient | null> {
-  const { rows } = await pool.query<{ client_id: string; redirect_uris: string[] }>(
-    'update oauth_client set last_used_at = now() where client_id = $1 returning client_id, redirect_uris',
+  const { rows } = await pool.query<{
+    client_id: string;
+    redirect_uris: string[];
+    client_name: string | null;
+  }>(
+    'update oauth_client set last_used_at = now() where client_id = $1 ' +
+      'returning client_id, redirect_uris, client_name',
     [clientId],
   );
   const row = rows[0];
-  return row ? { clientId: row.client_id, redirectUris: row.redirect_uris } : null;
+  return row
+    ? {
+        clientId: row.client_id,
+        redirectUris: row.redirect_uris,
+        clientName: row.client_name,
+      }
+    : null;
 }
 
 /**
@@ -246,6 +300,8 @@ export function consentPage(args: {
   projects?: { id: string; name: string }[];
   error?: string;
   planeUrl?: string;
+  /** From `defaultAgentLabel`. Editable, but correct without being touched. */
+  agentDefault?: string;
 }): string {
   const hidden = Object.entries(args.hidden)
     .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`)
@@ -296,8 +352,8 @@ ${args.error ? `<div class="err">${esc(args.error)}</div>` : ''}
   <label>Plane personal token <small>${tokenHelp}</small>
     <input name="planeToken" type="password" placeholder="plane_api_…" required autofocus>
   </label>
-  <label>Agent name <small>namespaced to you, so this is yours alone</small>
-    <input name="agent" value="worker-1" required>
+  <label>Agent name <small>this machine's agent, namespaced to you — change it only if you want a name you will recognise</small>
+    <input name="agent" value="${esc(args.agentDefault ?? '')}" placeholder="left blank, one is chosen for you">
   </label>
   ${projectField}
   <button type="submit">Authorize</button>

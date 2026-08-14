@@ -79,8 +79,15 @@ The page it opens is served by the gateway itself, and asks for three things:
 | | |
 |---|---|
 | **Plane personal token** | from Plane → your profile → Personal access tokens |
-| **Agent name** | namespaced to you, so the name is yours alone |
+| **Agent name** | already filled in, from the client that is signing in — leave it |
 | **Project** | a dropdown, filled from what that token can see — or blank to choose per call |
+
+The name is worth leaving alone unless you want one you will recognise. It is
+the *holder identity* — every lease and every takeover check keys on it — so two
+machines sharing one name are one holder, and the lease stops separating them.
+The prefilled value comes from the client's own registration, which is unique per
+installation and stable across sign-ins, so it cannot collide with another box
+and signing in again re-authenticates this agent rather than adding another.
 
 The token you hand over is what the gateway writes to Plane *as you*, so your
 name appears on the board rather than a shared service account. What comes back

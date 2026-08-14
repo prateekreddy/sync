@@ -22,6 +22,7 @@ import {
   authServerMetadata,
   authorizeRedirect,
   consentPage,
+  defaultAgentLabel,
   findClient,
   issueCode,
   protectedResourceMetadata,
@@ -560,7 +561,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
 
   app.get('/oauth/authorize', async (req, reply) => {
     const q = AuthorizeQuery.parse(req.query);
-    await checkAuthorize(q);
+    const client = await checkAuthorize(q);
     return reply.type('text/html').header('X-Frame-Options', 'DENY').send(
       consentPage({
         action: '/oauth/authorize',
@@ -570,6 +571,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
           code_challenge: q.code_challenge,
           ...(q.state ? { state: q.state } : {}),
         },
+        agentDefault: defaultAgentLabel(client),
         ...(deps.planeWebUrl ? { planeUrl: deps.planeWebUrl } : {}),
       }),
     );
@@ -612,7 +614,11 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         code_challenge: z.string().min(20),
         state: z.string().optional(),
         planeToken: z.string().min(1),
-        agent: z.string().min(1).max(40),
+        // Optional now. The consent page prefills it from the client
+        // registration, and a caller that clears the field gets the same value
+        // rather than a refusal — see defaultAgentLabel for why the name is not
+        // a thing a person should have to invent.
+        agent: z.string().max(40).optional(),
         projectId: z.string().optional(),
       })
       .parse(req.body);
@@ -627,13 +633,21 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       );
     }
 
-    await checkAuthorize({ ...form, response_type: 'code', code_challenge_method: 'S256' });
+    const client = await checkAuthorize({
+      ...form,
+      response_type: 'code',
+      code_challenge_method: 'S256',
+    });
+    // Falls back rather than refusing: a blank field means "you pick", and the
+    // value it picks is stable per installation, so signing in again from this
+    // client re-authenticates the same agent instead of minting one beside it.
+    const agent = form.agent?.trim() || defaultAgentLabel(client);
 
     let minted: { token: string; name: string };
     try {
       minted = await mintFor({
         planeToken: form.planeToken,
-        agent: form.agent,
+        agent,
         ...(form.projectId ? { projectId: form.projectId } : {}),
       });
     } catch (err) {
@@ -648,6 +662,9 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
             code_challenge: form.code_challenge,
             ...(form.state ? { state: form.state } : {}),
           },
+          // The name they actually used, not a fresh default: a retry after a
+          // bad Plane token should not silently rename the agent they chose.
+          agentDefault: agent,
           error: err instanceof GatewayError ? err.message : 'Could not issue a token.',
           ...(deps.planeWebUrl ? { planeUrl: deps.planeWebUrl } : {}),
         }),
