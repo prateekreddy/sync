@@ -4,7 +4,13 @@ import { find } from '../src/find.js';
 import { PlaneClient } from '../src/plane.js';
 import type { Relations, State, WorkItem } from '../src/plane.js';
 import { explain, verifyClaimable } from '../src/readiness.js';
-import { reinstate, retract, retractedIn, retractionsFor } from '../src/retraction.js';
+import {
+  reinstate,
+  retract,
+  retractedEdges,
+  retractedIn,
+  retractionsFor,
+} from '../src/retraction.js';
 import { relationsWith, NO_RELATIONS } from './relations.js';
 import { createPool } from '../src/db.js';
 
@@ -193,6 +199,77 @@ describe('the decision is recorded, not just applied', () => {
     expect(rows.length).toBe(1);
     expect(rows[0]).toMatchObject({ active: false });
     // And it is not counted while inactive.
+    expect((await retractedIn(pool, PROJECT)).size).toBe(0);
+  });
+});
+
+/**
+ * PLANE-15. Retraction began as a gate concept, so every row was a `blocked_by`
+ * and the relation column was decoration. Once `unlink` took a relation the
+ * column became load-bearing, and the two read paths diverged: the gate wants one
+ * kind across a project, a briefing wants every kind on one item.
+ */
+describe('retraction is per relation kind', () => {
+  it('does not ungate a blocked_by when the relates_to on the same pair is retracted', async () => {
+    // The dangerous direction. Tidying up a noisy relates_to must not quietly
+    // release work that a real dependency is still holding.
+    await retract(pool, {
+      projectId: PROJECT,
+      workItemId: id('gated'),
+      blockerId: id('blocker'),
+      relation: 'relates_to',
+      reason: 'the relates_to was noise',
+    });
+    expect(await verifyClaimable(fakePlane(), PROJECT, id('gated'), { pool })).toEqual([
+      `blocked by #${BOARD[1]!.sequence_id}`,
+    ]);
+  });
+
+  it('keeps both kinds on one pair as separate decisions', async () => {
+    await retractBlocker();
+    await retract(pool, {
+      projectId: PROJECT,
+      workItemId: id('gated'),
+      blockerId: id('blocker'),
+      relation: 'relates_to',
+      reason: 'and this one too',
+    });
+    const edges = await retractedEdges(pool, id('gated'));
+    expect(edges).toEqual(new Set([`${id('blocker')}|blocked_by`, `${id('blocker')}|relates_to`]));
+  });
+
+  it('reinstates one kind without reinstating the other', async () => {
+    await retractBlocker();
+    await retract(pool, {
+      projectId: PROJECT,
+      workItemId: id('gated'),
+      blockerId: id('blocker'),
+      relation: 'relates_to',
+      reason: 'and this one too',
+    });
+    await reinstate(pool, {
+      workItemId: id('gated'),
+      blockerId: id('blocker'),
+      relation: 'relates_to',
+    });
+    // The blocked_by retraction stands, so the item is still claimable...
+    expect(await verifyClaimable(fakePlane(), PROJECT, id('gated'), { pool })).toEqual([]);
+    // ...and only the relates_to came back.
+    expect(await retractedEdges(pool, id('gated'))).toEqual(
+      new Set([`${id('blocker')}|blocked_by`]),
+    );
+  });
+
+  it('keeps the gate looking only at blocked_by', async () => {
+    // retractedIn feeds the readiness gate, which is about one kind. A relates_to
+    // row leaking into that set would disregard a real dependency.
+    await retract(pool, {
+      projectId: PROJECT,
+      workItemId: id('gated'),
+      blockerId: id('blocker'),
+      relation: 'relates_to',
+      reason: 'noise',
+    });
     expect((await retractedIn(pool, PROJECT)).size).toBe(0);
   });
 });

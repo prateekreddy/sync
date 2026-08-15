@@ -390,6 +390,17 @@ export const LinkBody = z.object({
 export const UnlinkBody = z.object({
   projectId: uuid,
   workItemId: uuid,
+  /**
+   * Which relation to stop honouring — the same vocabulary `link` writes with, so
+   * an edge can be undone with the arguments that created it (PLANE-15).
+   *
+   * Defaulted, unlike `reason`, because `blocked_by` is the kind that gates and
+   * so the overwhelming majority of what anyone unlinks. A caller who means
+   * another kind and forgets is not left guessing: the reply's `presentInPlane`
+   * is computed against the relation actually named, so retracting a `blocked_by`
+   * that was never there comes back false.
+   */
+  relation: z.enum(['blocking', 'blocked_by', 'duplicate', 'relates_to']).default('blocked_by'),
   targets: z.array(uuid).min(1).max(20),
   // Required, and deliberately not defaulted. Removing a dependency is a
   // judgement someone will want to audit, and "" would be the value every caller
@@ -696,11 +707,15 @@ export const NATIVE_TOOLS: NativeTool[] = [
   },
   {
     name: 'unlink',
-    title: 'This dependency is not real',
+    title: 'This relation is not real',
     description:
-      'Stop the readiness gate honouring a blocked_by relation, so work it was wrongly gating ' +
-      'can be claimed again. Use it when a dependency stops being true — the scope changed, or ' +
-      'the edge was a mistake. `reason` is required and is recorded against the decision. ' +
+      'Undo a relation you should not have created, with the same arguments you created it with. ' +
+      'Defaults to blocked_by, the kind that gates: retracting one lets work it was wrongly ' +
+      'gating be claimed again. Pass `relation` to undo a relates_to or duplicate — those gate ' +
+      'nothing, but a claim briefing shows open related items with their text, so a wrong one ' +
+      'reads to the next claimer as a requirement. Use it when a relation stops being true — the ' +
+      'scope changed, or the edge was a mistake. `reason` is required and is recorded against ' +
+      'the decision. ' +
       'Note what this does NOT do: Plane\'s API cannot delete a relation, so the edge stays ' +
       'visible in Plane and a comment is written on the item saying it is no longer enforced. ' +
       'Delete it in Plane\'s UI to make the two agree. Pass reinstate: true to put it back.',

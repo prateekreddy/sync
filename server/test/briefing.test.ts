@@ -206,6 +206,113 @@ describe('linked items', () => {
 });
 
 /**
+ * PLANE-15: retraction existed only for the readiness gate, so it meant something
+ * only for `blocked_by`.
+ *
+ * A wrong `relates_to` gates nothing, which is why it was left out — but it is
+ * not free. These briefings list open related items first and WITH THEIR TEXT,
+ * exactly so a linked constraint reaches the claimer. That is what makes a bogus
+ * edge expensive: it arrives in the same position, with the same weight, and
+ * reads as a requirement to honour. So the place an agent can undo it has to be
+ * the place it is read.
+ */
+describe('retracted edges', () => {
+  const retracted = (...keys: string[]) => () => Promise.resolve(new Set(keys));
+
+  it('omits a retracted relates_to, which is the only place it was visible', async () => {
+    const plane = fakePlane({
+      items: { a: item({ id: 'a' }), c: item({ id: 'c', name: 'Not actually related' }) },
+      relations: { relates_to: [{ project_id: PROJECT, issue_id: 'c' }] },
+    });
+    const b = await briefing(plane, {
+      projectId: PROJECT,
+      workItemId: 'a',
+      retracted: retracted('c|relates_to'),
+    });
+    expect(b.related).toEqual([]);
+  });
+
+  it('retracts per kind — a retracted relates_to leaves a blocked_by briefed', async () => {
+    const plane = fakePlane({
+      items: { a: item({ id: 'a' }), c: item({ id: 'c' }), d: item({ id: 'd' }) },
+      relations: {
+        blocked_by: [{ project_id: PROJECT, issue_id: 'd' }],
+        relates_to: [{ project_id: PROJECT, issue_id: 'c' }],
+      },
+    });
+    const b = await briefing(plane, {
+      projectId: PROJECT,
+      workItemId: 'a',
+      retracted: retracted('c|relates_to'),
+    });
+    expect(b.related.map((r) => r.workItemId)).toEqual(['d']);
+  });
+
+  it('keeps a pair whose OTHER relation is retracted, under the kind that stands', async () => {
+    // Plane keeps every relation on a pair rather than replacing one, so a pair
+    // can hold two kinds at once. The briefing dedupes to the first kind it
+    // finds; if the filter ran after that dedupe, retracting the first kind would
+    // drop the pair entirely and hide an edge nobody retracted.
+    const plane = fakePlane({
+      items: { a: item({ id: 'a' }), c: item({ id: 'c' }) },
+      relations: {
+        blocked_by: [{ project_id: PROJECT, issue_id: 'c' }],
+        relates_to: [{ project_id: PROJECT, issue_id: 'c' }],
+      },
+    });
+    const b = await briefing(plane, {
+      projectId: PROJECT,
+      workItemId: 'a',
+      retracted: retracted('c|blocked_by'),
+    });
+    expect(b.related).toHaveLength(1);
+    expect(b.related[0]?.relation).toBe('relates_to');
+  });
+
+  it('does not look retractions up when the item has no relations at all', async () => {
+    // This sits in the path of every claim. A project that has never retracted
+    // anything should pay nothing for the feature.
+    let looked = 0;
+    const plane = fakePlane({ items: { a: item({ id: 'a' }) } });
+    await briefing(plane, {
+      projectId: PROJECT,
+      workItemId: 'a',
+      retracted: () => {
+        looked++;
+        return Promise.resolve(new Set<string>());
+      },
+    });
+    expect(looked).toBe(0);
+  });
+
+  it('briefs normally when no retractions are supplied', async () => {
+    const plane = fakePlane({
+      items: { a: item({ id: 'a' }), c: item({ id: 'c' }) },
+      relations: { relates_to: [{ project_id: PROJECT, issue_id: 'c' }] },
+    });
+    const b = await briefing(plane, { projectId: PROJECT, workItemId: 'a' });
+    expect(b.related).toHaveLength(1);
+  });
+
+  it('says the briefing failed rather than silently dropping the filter', async () => {
+    // The lookup lives inside briefingFor's catch deliberately. A briefing built
+    // as though nothing were retracted would show edges the gateway is not
+    // honouring, and look completely healthy doing it.
+    const plane = fakePlane({
+      items: { a: item({ id: 'a' }), c: item({ id: 'c' }) },
+      relations: { relates_to: [{ project_id: PROJECT, issue_id: 'c' }] },
+    });
+    const out = await briefingFor(plane, {
+      projectId: PROJECT,
+      workItemId: 'a',
+      retracted: () => Promise.reject(new Error('database gone')),
+    });
+    expect(out.briefing).toBeNull();
+    expect(out.briefingError).toContain('database gone');
+  });
+});
+
+/**
  * The lease is the thing the agent asked for, and by the time a briefing is built
  * it is already held. Every failure here has to degrade the answer, never revoke
  * the claim.
@@ -377,6 +484,92 @@ describe('claim hands the briefing over with the lease', () => {
     expect(body.briefing.related[0]?.description).toBe('The obvious reading is wrong.');
 
     await pool.query('delete from lease where work_item_id = $1', [target]);
+    await app.close();
+  });
+
+  it('drops a retracted edge from the briefing an agent is actually handed', async () => {
+    // The half of PLANE-15 that could most easily have been declared done while
+    // changing nothing: `unlink` writing a relates_to row, `briefing()` filtering
+    // correctly, and `claim` never passing the two to each other. Nothing would
+    // have errored — the agent would just have kept seeing the retracted edge.
+    const projectId = randomUUID();
+    const target = randomUUID();
+    const noise = randomUUID();
+
+    const items: Record<string, WorkItem> = {
+      [target]: item({ id: target, sequence_id: 20, description_html: '<p>Criteria.</p>' }),
+      [noise]: item({ id: noise, sequence_id: 21, name: 'Linked by mistake' }),
+    };
+
+    const plane = Object.assign(
+      fakePlane({ items, relations: { relates_to: [{ project_id: projectId, issue_id: noise }] } }),
+      {
+        listWorkItems: async () => Object.values(items),
+        comment: async () => ({}),
+        updateWorkItem: async () => items[target],
+        relate: async () => ({}),
+      },
+    ) as unknown as PlaneClient;
+    Object.assign(plane, {
+      as: () => plane,
+      listProjects: async () => [{ id: projectId, identifier: 'T', name: 'Test' }],
+    });
+
+    const app = Fastify();
+    registerRoutes(app, {
+      pool,
+      plane,
+      allowAgentClose: true,
+      evidencePolicy: 'warn',
+      planeMcp: null,
+      planeBaseUrl: 'http://plane.invalid',
+      workspaceSlug: 'ws',
+      github: null,
+      allowMinting: false,
+      mintRatePerMinute: 10,
+    });
+    await app.ready();
+
+    process.env.GATEWAY_TOKEN_KEY ??= 'a'.repeat(64);
+    const { token } = await issueToken(pool, {
+      name: `t-brief-${randomUUID().slice(0, 8)}/worker`,
+      principal: 'human:t@example.com',
+      planeToken: 'plane_pat_test',
+    });
+    const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
+
+    const briefed = async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/claim',
+        headers,
+        payload: { projectId, workItemId: target, ttlSeconds: 60 },
+      });
+      const body = JSON.parse(res.body) as { briefing: { related: Array<{ title: string }> } };
+      await pool.query('delete from lease where work_item_id = $1', [target]);
+      return body.briefing.related.map((r) => r.title);
+    };
+
+    expect(await briefed()).toEqual(['Linked by mistake']);
+
+    // Through the real tool, with the arguments PLANE-15 asks for.
+    const undone = await app.inject({
+      method: 'POST',
+      url: '/v1/unlink',
+      headers,
+      payload: {
+        projectId,
+        workItemId: target,
+        relation: 'relates_to',
+        targets: [noise],
+        reason: 'linked the wrong item',
+      },
+    });
+    expect(undone.statusCode).toBe(200);
+
+    expect(await briefed()).toEqual([]);
+
+    await pool.query('delete from relation_retraction where project_id = $1', [projectId]);
     await app.close();
   });
 });

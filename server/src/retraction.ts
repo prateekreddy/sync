@@ -110,6 +110,10 @@ export async function reinstate(
  *
  * One query per browse rather than one per item, for the same reason the blocker
  * pass is budgeted: this sits in the path of every `find`, `next` and `board`.
+ *
+ * Scoped to one relation kind — `blocked_by` unless asked otherwise — because
+ * this feeds the readiness gate, and `blocked_by` is the only kind that gates.
+ * See `retractedEdges` for the other shape and why there are two.
  */
 export async function retractedIn(
   pool: Pool,
@@ -123,6 +127,31 @@ export async function retractedIn(
     [projectId, relation],
   );
   return new Set(rows.map((r) => `${r.work_item_id}|${r.blocker_id}`));
+}
+
+/**
+ * Every live retraction on ONE item, as a set of `blocker|relation` keys.
+ *
+ * A second key shape, deliberately, and the difference is worth stating because
+ * mixing them up would silently disregard the wrong edges. `retractedIn` answers
+ * "across this project, which items have a retracted blocker" — one relation
+ * kind, many items. This answers "on this one item, which edges of ANY kind are
+ * retracted" — one item, every kind. The gate needs the first and cannot use the
+ * second; a briefing needs the second and cannot use the first.
+ *
+ * Retraction started life as a gate concept, so `blocked_by` was the only kind
+ * that could be retracted at all. Once `unlink` took a relation, the other kinds
+ * needed somewhere to be honoured, and a briefing is that place: it is where a
+ * `relates_to` is actually read (PLANE-15).
+ */
+export async function retractedEdges(pool: Pool, workItemId: string): Promise<Set<string>> {
+  const { rows } = await pool.query<{ blocker_id: string; relation: string }>(
+    `select blocker_id, relation
+       from relation_retraction
+      where work_item_id = $1 and active`,
+    [workItemId],
+  );
+  return new Set(rows.map((r) => `${r.blocker_id}|${r.relation}`));
 }
 
 /** Live retractions on one item, for `why` to explain itself with. */

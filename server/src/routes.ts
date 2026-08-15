@@ -57,7 +57,7 @@ import { decompose } from './decompose.js';
 import { GatewayError, HTTP_STATUS, RECOVERY, recoveryFor } from './errors.js';
 import * as lease from './lease.js';
 import { escapeHtml } from './html.js';
-import { reinstate, retract } from './retraction.js';
+import { reinstate, retract, retractedEdges } from './retraction.js';
 import { mirrorClaim, mirrorComplete, mirrorReturn } from './mirror.js';
 import type { PlaneClient } from './plane.js';
 import type { PlaneMcp } from './planemcp.js';
@@ -1335,7 +1335,15 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         // the absence being left to speak for itself — it cannot (SYNC-67).
         ...(await briefingFor(
           plane.as(actor.planeToken),
-          { projectId: b.projectId, workItemId: l.workItemId },
+          {
+            projectId: b.projectId,
+            workItemId: l.workItemId,
+            // A thunk, so this read happens inside briefingFor's catch. Resolving
+            // it here would put a database call between taking the lease and
+            // returning it, where a failure strands the agent holding a lease it
+            // was never told about.
+            retracted: () => retractedEdges(pool, l.workItemId),
+          },
           (err) => req.log.warn({ err, workItemId: l.workItemId }, 'briefing failed'),
         )),
       };
@@ -1411,7 +1419,15 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         // the absence being left to speak for itself — it cannot (SYNC-67).
         ...(await briefingFor(
           plane.as(actor.planeToken),
-          { projectId: b.projectId, workItemId: l.workItemId },
+          {
+            projectId: b.projectId,
+            workItemId: l.workItemId,
+            // A thunk, so this read happens inside briefingFor's catch. Resolving
+            // it here would put a database call between taking the lease and
+            // returning it, where a failure strands the agent holding a lease it
+            // was never told about.
+            retracted: () => retractedEdges(pool, l.workItemId),
+          },
           (err) => req.log.warn({ err, workItemId: l.workItemId }, 'briefing failed'),
         )),
       };
@@ -1661,18 +1677,26 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     const as = plane.as(actor.planeToken);
 
     const rel = await as.relations(b.projectId, b.workItemId).catch(() => null);
-    const present = new Set((rel?.blocked_by ?? []).map((r) => r.issue_id));
+    // The bucket named by the call, not always `blocked_by`. Reading the wrong one
+    // would make `presentInPlane` answer a question nobody asked — and it is the
+    // only signal a caller who named the wrong relation gets back.
+    const present = new Set((rel?.[b.relation] ?? []).map((r) => r.issue_id));
 
     const results = await Promise.all(
       b.targets.map(async (target) => {
         if (b.reinstate) {
-          const undone = await reinstate(pool, { workItemId: b.workItemId, blockerId: target });
+          const undone = await reinstate(pool, {
+            workItemId: b.workItemId,
+            blockerId: target,
+            relation: b.relation,
+          });
           return { target, reinstated: undone };
         }
         await retract(pool, {
           projectId: b.projectId,
           workItemId: b.workItemId,
           blockerId: target,
+          relation: b.relation,
           reason: b.reason,
           actor: actor.holder,
         });
@@ -1689,11 +1713,18 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
         .comment(
           b.projectId,
           b.workItemId,
-          `<p>${escapeHtml(actor.holder)} retracted ${b.targets.length} <code>blocked_by</code> ` +
-            `relation(s) as not real dependencies: ${escapeHtml(b.reason)}</p>` +
+          `<p>${escapeHtml(actor.holder)} retracted ${b.targets.length} ` +
+            `<code>${escapeHtml(b.relation)}</code> relation(s) as not real: ` +
+            `${escapeHtml(b.reason)}</p>` +
             `<p>Plane cannot delete a relation through its API, so the edge is still drawn here. ` +
-            `The gateway's readiness gate no longer honours it. Delete it in Plane's UI to make ` +
-            `the two agree.</p>`,
+            // Named specifically, because the two kinds stop mattering in
+            // different places and "no longer honoured" alone tells a human
+            // nothing about what changed for them.
+            (b.relation === 'blocked_by'
+              ? `The gateway's readiness gate no longer honours it, so work it was gating can be ` +
+                `claimed again. `
+              : `The gateway no longer shows it to agents claiming this item. `) +
+            `Delete it in Plane's UI to make the two agree.</p>`,
         )
         .catch(() => {});
     }

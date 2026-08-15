@@ -77,10 +77,25 @@ export interface Briefing {
 /** Relation kinds worth briefing on. Scheduling edges say nothing about how to do the work. */
 const KINDS = ['blocked_by', 'blocking', 'duplicate', 'relates_to'] as const;
 
-export async function briefing(
-  plane: PlaneClient,
-  opts: { projectId: string; workItemId: string },
-): Promise<Briefing> {
+export interface BriefingOpts {
+  projectId: string;
+  workItemId: string;
+  /**
+   * Retracted edges on this item, as `blocker|relation` keys — see retraction.ts.
+   *
+   * A loader rather than a value so the lookup happens INSIDE this function, and
+   * therefore inside `briefingFor`'s catch. The alternative — resolving it at the
+   * call site — puts a database read between acquiring a lease and returning it,
+   * where a failure strands the agent holding a lease it was never told about.
+   * That is SYNC-67 again, one layer up.
+   *
+   * Called only when there is something to filter, so a project that has never
+   * retracted anything pays nothing per claim.
+   */
+  retracted?: (() => Promise<Set<string>>) | undefined;
+}
+
+export async function briefing(plane: PlaneClient, opts: BriefingOpts): Promise<Briefing> {
   const identifier = plane.identifierFor(opts.projectId);
   const [item, rel, states, labelNames] = await Promise.all([
     plane.getWorkItem(opts.projectId, opts.workItemId),
@@ -96,12 +111,27 @@ export async function briefing(
     return g === 'completed' || g === 'cancelled';
   };
 
+  // Plane cannot delete a relation, so a wrong edge is retracted rather than
+  // removed — and a briefing is the one place a non-blocking one is ever read. A
+  // bogus `relates_to` gates nothing, but a briefing lists open related items
+  // first and with their text, so it puts noise in front of every future claimer
+  // that reads as a requirement they should honour (PLANE-15).
+  //
+  // Loaded only when there is something to filter.
+  const hasRefs = KINDS.some((k) => (rel?.[k] ?? []).length > 0);
+  const retracted = hasRefs && opts.retracted ? await opts.retracted() : new Set<string>();
+
   // Flattened with its kind attached, so one pass fetches each linked item once
   // even when two relation types name it.
   const refs: Array<{ ref: RelatedRef; relation: string }> = [];
   const seen = new Set<string>();
   for (const kind of KINDS) {
     for (const ref of rel?.[kind] ?? []) {
+      // Before the dedupe, not after. Retraction is per (target, kind), so a pair
+      // whose `blocked_by` was retracted but which is also `relates_to` must still
+      // be briefed on — as `relates_to`. Filtering after the dedupe would drop the
+      // pair on the strength of an edge nobody is honouring.
+      if (retracted.has(`${ref.issue_id}|${kind}`)) continue;
       if (seen.has(ref.issue_id)) continue;
       seen.add(ref.issue_id);
       refs.push({ ref, relation: kind });
@@ -179,7 +209,7 @@ export async function briefing(
  */
 export async function briefingFor(
   plane: PlaneClient,
-  opts: { projectId: string; workItemId: string },
+  opts: BriefingOpts,
   /** Somewhere to put the real error, since the agent only gets a summary. */
   log?: (err: unknown) => void,
 ): Promise<{ briefing: Briefing | null; briefingError?: string }> {

@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import Fastify from 'fastify';
 import { issueToken, authenticate } from '../src/auth.js';
@@ -84,6 +84,12 @@ async function harness(existing: Partial<Relations> = {}) {
 
   return { call, payload, sent, app };
 }
+
+// Retractions are rows, and these tests share one item id. Without this, a test
+// that asserts on what is retracted would be reading its predecessors' work.
+beforeEach(async () => {
+  await pool.query('delete from relation_retraction where project_id = $1', [PROJECT]);
+});
 
 afterAll(async () => {
   await pool.query("delete from agent_token where name like 't-link-%/worker'");
@@ -255,6 +261,129 @@ describe('unlink is honest about what it cannot do', () => {
       reason: '',
     });
     expect(res.isError).toBeTruthy();
+    await app.close();
+  });
+
+  /**
+   * PLANE-15: `unlink` took no relation, so it could only ever retract a
+   * `blocked_by`. An agent that wrote a wrong `relates_to` had no way to take it
+   * back — not symmetric with `link`, which writes all four kinds.
+   */
+  it('undoes a relates_to, with the arguments that created it', async () => {
+    const { call, payload, app } = await harness({
+      relates_to: [{ project_id: PROJECT, issue_id: FRESH }],
+    });
+    const res = payload(
+      await call('unlink', {
+        projectId: PROJECT,
+        workItemId: ITEM,
+        relation: 'relates_to',
+        targets: [FRESH],
+        reason: 'linked the wrong item',
+      }),
+    );
+    expect(res.results).toEqual([{ target: FRESH, retracted: true, presentInPlane: true }]);
+    await app.close();
+  });
+
+  it('checks the relation actually named, not always blocked_by', async () => {
+    // The only signal a caller who named the wrong kind gets back. Reading
+    // blocked_by here would report an edge as present on the strength of a
+    // different relation entirely.
+    const { call, payload, app } = await harness(BLOCKED_BY);
+    const res = payload(
+      await call('unlink', {
+        projectId: PROJECT,
+        workItemId: ITEM,
+        relation: 'relates_to',
+        targets: [BLOCKER],
+        reason: 'there is no relates_to here, only a blocked_by',
+      }),
+    );
+    // The retraction is still recorded — this reports, it does not refuse — but
+    // it says plainly that Plane had no such edge.
+    expect(res.results).toEqual([{ target: BLOCKER, retracted: true, presentInPlane: false }]);
+    await app.close();
+  });
+
+  it('retracts per kind, so undoing a relates_to leaves a blocked_by gating', async () => {
+    // Both kinds on the same pair. Retracting one must not quietly ungate the
+    // other — that would turn a tidy-up into an unnoticed release of real work.
+    const { call, app } = await harness({
+      blocked_by: [{ project_id: PROJECT, issue_id: BLOCKER }],
+      relates_to: [{ project_id: PROJECT, issue_id: BLOCKER }],
+    });
+    await call('unlink', {
+      projectId: PROJECT,
+      workItemId: ITEM,
+      relation: 'relates_to',
+      targets: [BLOCKER],
+      reason: 'the relates_to was noise',
+    });
+    const { rows } = await pool.query<{ relation: string }>(
+      'select relation from relation_retraction where work_item_id = $1 and active',
+      [ITEM],
+    );
+    expect(rows.map((r) => r.relation)).toEqual(['relates_to']);
+    await app.close();
+  });
+
+  it('names the relation in the comment Plane keeps', async () => {
+    const { call, sent, app } = await harness({
+      duplicate: [{ project_id: PROJECT, issue_id: FRESH }],
+    });
+    await call('unlink', {
+      projectId: PROJECT,
+      workItemId: ITEM,
+      relation: 'duplicate',
+      targets: [FRESH],
+      reason: 'not a duplicate after all',
+    });
+    expect(sent.comments[0]).toContain('duplicate');
+    // And it says what changed for a human, which differs by kind: only
+    // blocked_by gates, so only blocked_by frees work.
+    expect(sent.comments[0]).not.toContain('readiness gate');
+    await app.close();
+  });
+
+  it('still defaults to blocked_by, so callers that never passed one are unchanged', async () => {
+    const { call, payload, app } = await harness(BLOCKED_BY);
+    const res = payload(
+      await call('unlink', {
+        projectId: PROJECT,
+        workItemId: ITEM,
+        targets: [BLOCKER],
+        reason: 'scope changed',
+      }),
+    );
+    expect(res.results).toEqual([{ target: BLOCKER, retracted: true, presentInPlane: true }]);
+    await app.close();
+  });
+
+  it('reinstates the kind it is given, not the default', async () => {
+    const { call, payload, app } = await harness({
+      relates_to: [{ project_id: PROJECT, issue_id: FRESH }],
+    });
+    await call('unlink', {
+      projectId: PROJECT,
+      workItemId: ITEM,
+      relation: 'relates_to',
+      targets: [FRESH],
+      reason: 'linked the wrong item',
+    });
+    // Without the relation, this would look for a blocked_by row and find none —
+    // reporting nothing to reinstate while the relates_to stayed retracted.
+    const res = payload(
+      await call('unlink', {
+        projectId: PROJECT,
+        workItemId: ITEM,
+        relation: 'relates_to',
+        targets: [FRESH],
+        reason: 'it was the right item',
+        reinstate: true,
+      }),
+    );
+    expect(res.results).toEqual([{ target: FRESH, reinstated: true }]);
     await app.close();
   });
 
