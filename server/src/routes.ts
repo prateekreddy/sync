@@ -161,6 +161,33 @@ export function sizeSuffix(
 }
 
 /**
+ * Where the long form belongs, when a completion outcome will not fit.
+ *
+ * The generic INVALID line — "change it and call again" — is true and useless
+ * here: it says retry differently without saying how, so the caller re-authors
+ * the record to fit, and what gets cut under time pressure is the verification
+ * detail the field exists to carry. Each attempt is also a round trip against a
+ * live lease, and a lease that lapses between two of them loses the text
+ * entirely.
+ *
+ * The escape hatch already exists and nothing pointed at it: comments have no
+ * cap. Naming it at the moment of failure turns three calls into two and means
+ * nothing has to be rewritten, only moved. Rejecting rather than truncating is
+ * deliberate — truncation cuts the tail, and the tail is where the evidence is,
+ * so it would produce completions that look whole and quietly are not (PLANE-4).
+ */
+export function overlongOutcome(err: z.ZodError): string | null {
+  const hit = err.issues.some((i) => i.code === 'too_big' && i.path[0] === 'outcome');
+  if (!hit) return null;
+  return (
+    'The outcome is too long. Do not shorten it by dropping what you verified — post the full ' +
+    'record as a comment on the work item with `plane_comments add`, which has no length limit, ' +
+    'then call complete again with a short summary and the commit or PR link. Work items you ' +
+    'touched go in `refs`, which makes real relations without spending characters.'
+  );
+}
+
+/**
  * How many projects a workspace-wide search will read in full.
  *
  * The sweep is one request per project, spent from the *caller's* Plane budget
@@ -335,7 +362,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
       return reply.status(400).send({
         error: 'INVALID',
         message: 'Request validation failed',
-        recovery: RECOVERY.INVALID,
+        recovery: overlongOutcome(err) ?? RECOVERY.INVALID,
         fields: err.issues.map((i) => ({
           field: i.path.join('.') || '(body)',
           // Zod says "String must contain at most 2000 character(s)" but never

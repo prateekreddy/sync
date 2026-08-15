@@ -350,7 +350,11 @@ export const CompleteBody = Held.extend({
   outcome: noDebris(z.string().min(1).max(2000)).describe(
       'What you did, and the evidence. A commit sha, PR or issue URL, file path or work item ' +
         'id belongs here — a completion citing none of those is recorded but labelled ' +
-        '"unverified", because nobody downstream can tell it apart from one backed by nothing.',
+        '"unverified", because nobody downstream can tell it apart from one backed by nothing. ' +
+        'Capped at 2000 characters, and that is a summary field rather than the whole record: ' +
+        'if the honest account is longer, post it as a comment first with plane_comments add, ' +
+        'which has no cap, and put the summary plus the commit or PR link here. Do not shorten ' +
+        'by dropping what you verified — that is the part this exists to carry.',
     ),
   refs: z
     .array(z.string().min(2).max(32))

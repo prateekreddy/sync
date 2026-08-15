@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { sizeSuffix } from '../src/routes.js';
+import { overlongOutcome, sizeSuffix } from '../src/routes.js';
 import { callTool } from '../src/tools.js';
 import {
   CaptureBody,
@@ -144,6 +144,47 @@ describe('the field detail survives the trip to the model', () => {
     const rendered = out.content.map((c) => ('text' in c ? c.text : '')).join('\n');
 
     expect(rendered).toBe(`STALE_EPOCH: reclaimed\n\nWhat to do: ${RECOVERY.STALE_EPOCH}`);
+  });
+});
+
+describe('an outcome that will not fit says where the long form goes', () => {
+  // Rejected three times in one session on SLATE-3 — 2458 chars, then 2071 after
+  // a trim, against a 2000 cap — and five more times on this board the day this
+  // was fixed. The generic INVALID line is true and useless here: "change it and
+  // call again" says retry differently without saying how, so the caller
+  // re-authors the record, and what goes under time pressure is the verification
+  // detail the field exists to carry. Each attempt is a round trip against a live
+  // lease, and one that lapses in between loses the text (PLANE-4).
+  const tooLong = () => {
+    const r = CompleteBody.safeParse({ ...validBody, outcome: 'x'.repeat(2500) });
+    if (r.success) throw new Error('expected this to be rejected');
+    return r.error;
+  };
+
+  it('names the capless place to put it, rather than saying "try again"', () => {
+    const line = overlongOutcome(tooLong());
+    expect(line).toMatch(/plane_comments add/);
+    expect(line).toMatch(/no length limit/i);
+    // And the thing not to do, because it is what actually happens otherwise.
+    expect(line).toMatch(/verified/i);
+  });
+
+  it('points at refs too, since work items need not be spelt out in prose', () => {
+    expect(overlongOutcome(tooLong())).toMatch(/refs/);
+  });
+
+  it('stays out of the way of every other invalid request', () => {
+    // A per-case line that leaked would replace the general advice everywhere.
+    const other = CompleteBody.safeParse({ ...validBody, epoch: 0 });
+    if (other.success) throw new Error('expected this to be rejected');
+    expect(overlongOutcome(other.error)).toBeNull();
+  });
+
+  it('rejects rather than truncating, which is the option not taken', () => {
+    // Truncation cuts the tail, and the tail is where the evidence is — so it
+    // would produce completions that look whole and quietly are not. The schema
+    // still refuses; only the advice changed.
+    expect(CompleteBody.safeParse({ ...validBody, outcome: 'x'.repeat(2500) }).success).toBe(false);
   });
 });
 

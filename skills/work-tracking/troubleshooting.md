@@ -85,7 +85,7 @@ not here, the gateway is newer than this file and its own recovery line is the a
 | `REVOKED` | **a person took this item back in Plane while you held it** — they unassigned it or closed it | **stop, discard what you did, and do NOT claim it again.** Read this against `LEASE_EXPIRED` above, which looks similar and means the opposite: nothing lapsed here, somebody decided this is not your work, and re-claiming would undo their decision. Pick something else; if you think it was a mistake, say so rather than working around it |
 | `LEASE_ENDED` | already completed or released | terminal; do not re-submit, claim something else |
 | `NOT_FOUND` | no such item in this project | check the id — a uuid from another project lands here too. `search` resolves a title, `plane_issues` (`get_by_identifier`) resolves a `SYNC-42` |
-| `INVALID` | a field did not match the schema | read the lines under the message — each names the field, the limit, and what you sent. `outcome` is capped at 2000 characters, which is the one most people meet |
+| `INVALID` | a field did not match the schema | read the lines under the message — each names the field, the limit, and what you sent. `outcome` is capped at 2000 characters, which is the one most people meet — do not shorten it by cutting what you verified; post the full record as a comment with `plane_comments add`, which has no cap, and complete with a summary plus the commit link |
 | `IDEMPOTENCY_MISMATCH` | that key was used with a different body | your bug — use a new key, do not retry the old one |
 | `FORBIDDEN` | your token lacks the capability | do not retry; ask the operator |
 | `UNAUTHENTICATED` | token missing, revoked, or replaced | stop — no tool will work; ask for a new token |
